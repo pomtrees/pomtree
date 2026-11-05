@@ -5,9 +5,11 @@ import { POMTREED_KINDS } from "@pomtree/core";
 import type { ModelScript } from "@pomtree/testing";
 import { callReply, SKIP, spawnAgent, summaryOf, TIMEOUT, textReply, untilEscalation, waitDone, withStack } from "./cli-operator-kit.ts";
 
-// TODO(e2e-time-reconcile-sweep): the expiry lands on pomtreed's 30 s reconcile tick (agent.reconcileSweepMs, default 30 s), so this test takes ~35 s; set that key to 1000 to shorten it.
-// OPS-6, expiry: with a short ask.timeoutMs and no answer the sweep (reconcile timer, about every 30 s) expires the ask and answers the
-// asker with the documented default; a late operator answer is then rejected.
+// OPS-6, expiry: with a short ask.timeoutMs and no answer the sweep (reconcile timer) expires the ask and answers the asker with the
+// documented default; a late operator answer is then rejected. The expiry lands on the reconcile tick (agent.reconcileSweepMs, default
+// 30 s), so the test sets it to 1 s; the waits below are sized for that tick.
+const RECONCILE_SWEEP_MS = "1000";
+const DONE_WAIT_MS = 60_000; // the asker finishing after the expiry: ask.timeoutMs plus one tick plus the agent's turns
 test("cli operator OPS-6 (expiry): an unanswered ask expires, the asker is told, a late answer is rejected", { skip: SKIP, timeout: TIMEOUT }, async (t) => {
   const script: ModelScript = {
     name: "ops6-expiry",
@@ -23,10 +25,10 @@ test("cli operator OPS-6 (expiry): an unanswered ask expires, the asker is told,
       { id: "parked", when: {}, reply: textReply("parked") },
     ],
   };
-  await withStack({ script, set: { "ask.timeoutMs": "5000" } }, async (s) => {
+  await withStack({ script, set: { "ask.timeoutMs": "5000", "agent.reconcileSweepMs": RECONCILE_SWEEP_MS } }, async (s) => {
     const a = await spawnAgent(s, { task: "[[scn:ops6x]] ask the operator", name: "asker", budget: 500_000 });
     const esc = await untilEscalation(s, a.id);
-    const rec = await waitDone(s, a.id, 120_000);
+    const rec = await waitDone(s, a.id, DONE_WAIT_MS);
     assert.equal(rec.exit, "succeeded", JSON.stringify(rec));
     assert.equal(summaryOf(rec), "proceeded with the default");
     const told = s.stub.calls.find((c) => c.matched === "expired");

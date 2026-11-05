@@ -25,12 +25,18 @@ import type { AgentJson } from "./cli-scenarios-harness.ts";
 
 // ---- YLD-5 ----
 // It is open whether a session deadline fires while an agent is yielded (YLD-5, "verify and record"; unconfirmed).
-// Observed here: it does. The parked agent is settled `timed_out` about 5 s after its deadline (what fires it is not established; the lag
-// suggests a sweep, not the kill timer) with no wake, no new container, no model call and no exit cause. The CLI takes any positive
-// duration (`--deadline 1ms` parses), but an agent needs several seconds to start and park, so the smallest practical deadline here is 25 s.
-// TODO(e2e-time-reconcile-sweep): a yielded agent's deadline is enforced by a 30 s pomtreed sweep counted from pomtreed's start (measured: with
-// watchdog.sweepMs 1 s and a 15 s deadline it still ended 14.5 s late), so the test cannot end before about 30 s; the 25 s deadline keeps the
-// lateness bound met with margin. Its key is agent.reconcileSweepMs (see cli-recovery-tree.test.ts); setting it would let both shrink.
+// Observed here: it does. The parked agent is settled `timed_out` by the reconcile sweep, about 1 s after its deadline with the sweep at 1 s; at the default 30 s
+// sweep it was measured 4.5 s late and can be up to one tick late, with no wake, no new container, no model call and no exit cause. The CLI takes any positive
+// duration (`--deadline 1ms` parses), but an agent needs several seconds to start and park, so 15 s leaves margin for parking on a loaded host (it parked 7.9 s early on an idle one).
+// A yielded agent's deadline is enforced by pomtreed's reconcile sweep (agent.reconcileSweepMs, default 30 s, counted from pomtreed's
+// start; measured: with watchdog.sweepMs 1 s and a 15 s deadline it still ended 14.5 s late). The test sets the key to 1 s so the deadline
+// and the bounds below can be short; the lateness bound keeps margin over one tick plus the polling interval.
+const YLD5_RECONCILE_SWEEP_MS = "1000";
+const YLD5_DEADLINE = "15s"; // must exceed the time to start and park (the script sleeps 2 s first)
+const YLD5_POLL_MS = 250;
+const YLD5_END_WINDOW_MS = 15_000; // how long past the deadline to keep polling for the end
+const YLD5_MAX_LATE_MS = 5_000; // allowed lateness: one 1 s tick, the poll interval and teardown, with margin
+
 test("cli lifecycle YLD-5: a deadline that passes while the agent is yielded ends it timed_out shortly after the deadline, with no wake", {
   skip: SKIP,
   timeout: TIMEOUT,
@@ -42,32 +48,32 @@ test("cli lifecycle YLD-5: a deadline that passes while the agent is yielded end
       { id: "parked", when: { toolResults: 1 }, reply: textReply("parked") },
     ],
   };
-  await withStack({ script }, async (s) => {
-    const a = await spawnAgent(s, { task: "[[scn:yld5]] park", name: "dl", budget: 500_000, deadline: "25s" });
+  await withStack({ script, set: { "agent.reconcileSweepMs": YLD5_RECONCILE_SWEEP_MS } }, async (s) => {
+    const a = await spawnAgent(s, { task: "[[scn:yld5]] park", name: "dl", budget: 500_000, deadline: YLD5_DEADLINE });
     const shown = (await s.pomtree(["show", a.id])).json<{ deadline: { deadlineAt: number | null } }>();
     const deadlineAt = shown.deadline.deadlineAt!;
     assert.ok(Number.isFinite(deadlineAt), "the spawn must carry a finite deadline");
     let yieldedAt = 0;
     let endAt = 0;
     let rec: AgentJson | undefined;
-    while (Date.now() < deadlineAt + 45_000) {
+    while (Date.now() < deadlineAt + YLD5_END_WINDOW_MS) {
       rec = await showAgent(s, a.id);
       if (rec.state === "yielded" && !yieldedAt) yieldedAt = Date.now();
       if (["exited", "reaped"].includes(rec.state)) {
         endAt = Date.now();
         break;
       }
-      await sleep(250);
+      await sleep(YLD5_POLL_MS);
     }
     assert.ok(yieldedAt > 0 && yieldedAt < deadlineAt, `the agent must park before its deadline (parked at ${yieldedAt - deadlineAt} ms from it)`);
-    assert.ok(endAt > 0, `the parked agent was still ${rec?.state} 45 s after its deadline`);
+    assert.ok(endAt > 0, `the parked agent was still ${rec?.state} ${YLD5_END_WINDOW_MS} ms after its deadline`);
     const lateMs = endAt - deadlineAt;
     const exited = (await s.events(a.id)).filter((e) => e.payload.kind === "exited");
     t.diagnostic(
       `parked ${deadlineAt - yieldedAt} ms before the deadline; seen ended ${lateMs} ms after it as ${rec!.state}/${rec!.exit} cause ${rec!.exitCause}; exited entry ${JSON.stringify(exited.map((e) => e.payload))}`,
     );
     assert.equal(rec!.exit, "timed_out", JSON.stringify(rec));
-    assert.ok(lateMs >= -1000 && lateMs <= 15_000, `ended ${lateMs} ms after the deadline; expected within 15 s after it`);
+    assert.ok(lateMs >= -1000 && lateMs <= YLD5_MAX_LATE_MS, `ended ${lateMs} ms after the deadline; expected within ${YLD5_MAX_LATE_MS} ms after it`);
     assert.equal(exited.length, 1, "exactly one exited entry");
     assert.equal(rec!.generation, 0, "no resume: nothing woke the agent");
     assert.equal((await s.kinds(a.id, "resumed")).length, 0, "the deadline must not resume the agent");
