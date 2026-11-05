@@ -135,6 +135,7 @@ import {
   clampStateListLimit,
   encodeStateValue,
   CHECKPOINT_FORMAT,
+  canonical,
   decodeGatewayCredential,
   encodeGatewayCredential,
   IdempotencyConflictError,
@@ -327,16 +328,22 @@ export class FakeRegistry implements Registry {
   // The provider retry ladder's count per agent (bumpProviderAttempts), and each bump key's first answer.
   providerAttempts = new Map<AgentId, number>();
   private attemptKeys = new Map<string, number>();
-  private keys = new Map<string, AgentRecord>(); // idempotencyKey -> record as of the original create
-  private ops = new Map<string, AgentRecord>(); // "<op>:<key>" -> record as of the original call
+  private keys = new Map<string, { fingerprint: string; record: AgentRecord }>(); // idempotencyKey -> record as of the original create
+  private ops = new Map<string, { fingerprint?: string; record: AgentRecord }>(); // "<op>:<key>" -> record as of the original call
   private n = 0;
   private now: () => number;
   constructor(now: () => number) {
     this.now = now;
   }
   async create(a: NewAgent): Promise<AgentRecord> {
+    // The fingerprint is the request without its key, as in store-sqlite; a replay with a different request is a conflict.
+    const { idempotencyKey: _key, ...request } = a;
+    const fingerprint = JSON.stringify(canonical(request));
     const prior = this.keys.get(a.idempotencyKey);
-    if (prior) return structuredClone(prior);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new IdempotencyConflictError("registry.create", a.idempotencyKey);
+      return structuredClone(prior.record);
+    }
     const id = a.id ?? `agent-${++this.n}`;
     if (this.agents.has(id)) throw new Error(`agent ${id} already exists`);
     const t = this.now();
@@ -360,7 +367,7 @@ export class FakeRegistry implements Registry {
       updatedAt: t,
     } as AgentRecord;
     this.agents.set(id, rec);
-    this.keys.set(a.idempotencyKey, structuredClone(rec));
+    this.keys.set(a.idempotencyKey, { fingerprint, record: structuredClone(rec) });
     return structuredClone(rec);
   }
   async get(id: AgentId) {
@@ -377,11 +384,15 @@ export class FakeRegistry implements Registry {
     if (!a) throw new Error(`unknown agent ${id}`);
     return a;
   }
-  private once(op: string, key: string, fn: () => AgentRecord): AgentRecord {
+  // `scope` and `fingerprint` (both given, or neither) make a replay with a different request throw like the store's once().
+  private once(op: string, key: string, fn: () => AgentRecord, scope?: string, fingerprint?: string): AgentRecord {
     const prior = this.ops.get(`${op}:${key}`);
-    if (prior) return structuredClone(prior);
+    if (prior) {
+      if (scope !== undefined && prior.fingerprint !== undefined && prior.fingerprint !== fingerprint) throw new IdempotencyConflictError(scope, key);
+      return structuredClone(prior.record);
+    }
     const rec = fn();
-    this.ops.set(`${op}:${key}`, structuredClone(rec));
+    this.ops.set(`${op}:${key}`, { fingerprint, record: structuredClone(rec) });
     return structuredClone(rec);
   }
   async transition(
@@ -420,11 +431,17 @@ export class FakeRegistry implements Registry {
   }
   async raiseBudget(id: AgentId, deltaMicros: number, idempotencyKey: string) {
     if (!Number.isSafeInteger(deltaMicros) || deltaMicros <= 0) throw new Error("budget raise micros must be a positive safe integer");
-    return this.once("raiseBudget", idempotencyKey, () => {
-      const a = this.must(id);
-      Object.assign(a, { budgetMicros: a.budgetMicros + deltaMicros, updatedAt: this.now() });
-      return a;
-    });
+    return this.once(
+      "raiseBudget",
+      idempotencyKey,
+      () => {
+        const a = this.must(id);
+        Object.assign(a, { budgetMicros: a.budgetMicros + deltaMicros, updatedAt: this.now() });
+        return a;
+      },
+      "registry.raiseBudget",
+      JSON.stringify(canonical([id, deltaMicros])),
+    );
   }
   // Same rule as the durable store: one step (no await between the check, the journal row and the change), a withdrawal of at
   // most the root's ledger remaining, refused in full with RootWithdrawalError.
@@ -769,7 +786,7 @@ export function fakeDeterministicContext(
 // TODO(testing-mailbox-contract): the Mailbox port has no contract in port-contracts.ts; add one when the port next changes.
 export class FakeMailbox implements Mailbox {
   boxes = new Map<AgentId, { id: SignalId; signal: Signal }[]>();
-  private keys = new Set<string>();
+  private keys = new Map<string, string>(); // send key -> request fingerprint, as store-sqlite's once() keeps it
   private received = new Map<string, Delivered[]>();
   private acked = new Map<string, SignalId[]>();
   private registry?: FakeRegistry;
@@ -780,7 +797,12 @@ export class FakeMailbox implements Mailbox {
     this.strictTargets = strictTargets;
   }
   async send(to: AgentId, signal: Signal, key: string, senderGeneration?: number) {
-    if (this.keys.has(key)) return;
+    const fingerprint = JSON.stringify(canonical([to, signal]));
+    const prior = this.keys.get(key);
+    if (prior !== undefined) {
+      if (prior !== fingerprint) throw new IdempotencyConflictError("mailbox", key);
+      return;
+    }
     // Mirrors the store when strictTargets: a signal to an unknown or reaped target is rejected. Daemon-originated signals skip the sender check.
     if (this.registry && this.strictTargets) {
       const target = this.registry.agents.get(to);
@@ -792,7 +814,7 @@ export class FakeMailbox implements Mailbox {
       if (!sender) throw new Error(`unknown agent ${signal.from}`);
       if (sender.generation !== senderGeneration) throw new StaleGenerationError(signal.from, senderGeneration, sender.generation);
     }
-    this.keys.add(key);
+    this.keys.set(key, fingerprint);
     const box = this.boxes.get(to) ?? this.boxes.set(to, []).get(to)!;
     // A level kind supersedes the unconsumed one of that kind (latest wins, the survivor carries the new id).
     if (isLevelKind(signal.kind)) box.splice(0, box.length, ...box.filter((e) => e.signal.kind !== signal.kind));
@@ -1012,8 +1034,6 @@ export class FakeEscalationStore implements EscalationStore {
   all: Escalation[] = [];
   private keys = new Map<string, Escalation>();
   // Each answer key keeps its request fingerprint beside the result (idem-fingerprint), as store-sqlite's once() does.
-  // TODO(idem-fingerprint): the other fakes whose durable twin fingerprints its keys (FakeRegistry create/grant, FakeMailbox
-  // send, FakeApprovalStore decide) still return the first result for a replay with a different request instead of throwing.
   private answerKeys = new Map<string, { fingerprint: string; result: Escalation }>();
   private advanceKeys = new Map<string, Escalation>();
   private now: () => number;
@@ -1081,7 +1101,7 @@ export class FakeEscalationStore implements EscalationStore {
 export class FakeApprovalStore implements ApprovalStore {
   all: Approval[] = [];
   private keys = new Map<string, Approval>(); // create idempotency
-  private decisionKeys = new Map<string, Approval>(); // decide idempotency
+  private decisionKeys = new Map<string, { fingerprint: string; result: Approval }>(); // decide idempotency
   private timeoutKeys = new Map<string, Approval>(); // timeout idempotency (scoped apart from decide, like the store)
   private notifiedKeys = new Map<string, Approval>(); // markNotified idempotency
   private now: () => number;
@@ -1179,10 +1199,14 @@ export class FakeApprovalStore implements ApprovalStore {
     return structuredClone(cur);
   }
   async decide(id: ApprovalId, d: NewApprovalDecision, key: string): Promise<Approval> {
+    const fingerprint = JSON.stringify(canonical([id, d]));
     const prior = this.decisionKeys.get(key);
-    if (prior) return structuredClone(prior);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw new IdempotencyConflictError("approval.decide", key);
+      return structuredClone(prior.result);
+    }
     const result = this.apply(id, d.decision, d.who, d.rank, d.why, d.grantMicros);
-    this.decisionKeys.set(key, structuredClone(result));
+    this.decisionKeys.set(key, { fingerprint, result: structuredClone(result) });
     return structuredClone(result);
   }
   async timeout(id: ApprovalId, key: string): Promise<Approval> {

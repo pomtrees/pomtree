@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type {
   AgentId,
+  ApprovalStore,
   CaptureArtifact,
   CaptureIndex,
   CaptureOutcome,
@@ -12,11 +13,13 @@ import type {
   Harness,
   Journal,
   JournalEntry,
+  Mailbox,
   ModelGateway,
   Placement,
   QuotaCounters,
   Registry,
   SandboxHandle,
+  Signal,
   SpawnSpec,
   StateLimits,
   StateStore,
@@ -118,6 +121,67 @@ export async function registryProviderAttemptsContractBody(w: JournalAppendContr
   assert.equal(await r.bumpProviderAttempts(b.id, "pb:1"), 2);
   await assert.rejects(r.bumpProviderAttempts("nobody", "pn:0"));
   await assert.rejects(r.resetProviderAttempts("nobody"));
+}
+
+// ---- Idempotency-key conflicts -----------------------------------------------------------------------------------------
+
+export interface IdempotencyConflictContractWorld {
+  registry: Registry;
+  mailbox: Mailbox;
+  approvals: ApprovalStore;
+}
+
+// A key replayed with the same request returns the first result; replayed with a different request it rejects with IdempotencyConflictError
+// (scope = the operation) and changes nothing. Covers the operations whose durable store fingerprints its keys: registry create and
+// raiseBudget, mailbox send, approval decide.
+export async function idempotencyConflictContractBody(w: IdempotencyConflictContractWorld): Promise<void> {
+  const { registry, mailbox, approvals } = w;
+  const conflict = (scope: string, key: string) => (e: unknown) => {
+    assert.ok(e instanceof IdempotencyConflictError, `${scope}: expected IdempotencyConflictError, got ${String(e)}`);
+    assert.equal(e.scope, scope);
+    assert.equal(e.key, key);
+    return true;
+  };
+
+  // registry.create
+  const req = { parent: null, name: "ic", task: "t", host: "h", budgetMicros: 100, idempotencyKey: "ic-create", spec: SPEC };
+  const made = await registry.create(req);
+  assert.equal((await registry.create({ ...req })).id, made.id, "registry.create: same key and body returns the first agent");
+  await assert.rejects(() => registry.create({ ...req, task: "other" }), conflict("registry.create", "ic-create"));
+  assert.equal((await registry.list()).filter((a) => a.name === "ic").length, 1, "registry.create: a conflicting replay creates nothing");
+
+  // registry.raiseBudget
+  assert.equal((await registry.raiseBudget(made.id, 10, "ic-raise")).budgetMicros, 110);
+  assert.equal((await registry.raiseBudget(made.id, 10, "ic-raise")).budgetMicros, 110, "registry.raiseBudget: same key and body returns the first result");
+  await assert.rejects(() => registry.raiseBudget(made.id, 20, "ic-raise"), conflict("registry.raiseBudget", "ic-raise"));
+  assert.equal((await registry.get(made.id))!.budgetMicros, 110, "registry.raiseBudget: a conflicting replay raises nothing");
+
+  // mailbox.send
+  const signal: Signal = { kind: "message", from: made.id, body: "one" };
+  await mailbox.send(made.id, signal, "ic-send");
+  await mailbox.send(made.id, { ...signal }, "ic-send"); // same key and body: accepted, queued once
+  await assert.rejects(() => mailbox.send(made.id, { ...signal, body: "two" }, "ic-send"), conflict("mailbox", "ic-send"));
+  const other = await registry.create({ ...req, name: "ic-other", idempotencyKey: "ic-create-2" });
+  await assert.rejects(() => mailbox.send(other.id, signal, "ic-send"), conflict("mailbox", "ic-send"));
+  assert.deepEqual(
+    (await mailbox.peek(made.id)).map((x) => x.id),
+    ["ic-send"],
+    "mailbox: a conflicting replay queues nothing",
+  );
+  assert.deepEqual(await mailbox.peek(other.id), []);
+
+  // approval.decide
+  await approvals.create(
+    { id: "ic-ap", requester: { id: made.id, rank: "agent", generation: 0 }, action: { kind: "extension", target: "x" }, host: "h", deadlineAt: 1000 },
+    "ic-ap-create",
+  );
+  const decision = { who: "p", rank: "parent-agent" as const, decision: "approve" as const, why: "ok" };
+  const decided = await approvals.decide("ic-ap", decision, "ic-decide");
+  assert.equal(decided.state, "approved");
+  assert.deepEqual(await approvals.decide("ic-ap", { ...decision }, "ic-decide"), decided, "approval.decide: same key and body returns the first result");
+  await assert.rejects(() => approvals.decide("ic-ap", { ...decision, decision: "deny" }, "ic-decide"), conflict("approval.decide", "ic-decide"));
+  await assert.rejects(() => approvals.decide("ic-ap", { ...decision, why: "changed my mind" }, "ic-decide"), conflict("approval.decide", "ic-decide"));
+  assert.deepEqual(await approvals.get("ic-ap"), decided, "approval.decide: a conflicting replay changes nothing");
 }
 
 // ---- Journal (append / read / subscribe) -------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import {
   checkpointFenceContractBody,
   contract,
   hostStoreContractBody,
+  idempotencyConflictContractBody,
   mailboxContractBody,
   raiseBudgetContractBody,
   registryListContractBody,
@@ -21,6 +22,7 @@ import {
 import type {
   CheckpointFenceContractWorld,
   HostStoreContractWorld,
+  IdempotencyConflictContractWorld,
   MailboxContractWorld,
   RaiseBudgetContractWorld,
   RegistryListContractWorld,
@@ -40,6 +42,10 @@ contract<CheckpointFenceContractWorld>("CheckpointStore", { real: () => openStor
 
 contract<MailboxContractWorld>("Mailbox", { real: () => openStore() })("ids, level coalescing, ack", mailboxContractBody);
 
+contract<IdempotencyConflictContractWorld>("Idempotency", { real: () => openStore() })(
+  "same key and body replays; same key and different body conflicts",
+  idempotencyConflictContractBody,
+);
 contract<RaiseBudgetContractWorld>("Registry", { real: () => openStore() })("raiseBudget idempotent by key", raiseBudgetContractBody);
 contract<RegistryListContractWorld>("Registry", { real: () => openStore() })("list filters", registryListContractBody);
 

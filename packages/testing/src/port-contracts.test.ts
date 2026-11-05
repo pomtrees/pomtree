@@ -6,6 +6,7 @@ import {
   quotaCountersOpIdContractBody,
   type CaptureIndexContractWorld,
   harnessContractBody,
+  idempotencyConflictContractBody,
   hangingSandbox,
   journalAppendContractBody,
   journalUsageIdentityContractBody,
@@ -22,6 +23,7 @@ import {
   templateStoreContractBody,
   watchdogStoreContractBody,
   type HarnessContractWorld,
+  type IdempotencyConflictContractWorld,
   type JournalAppendContractWorld,
   type ModelGatewayContractWorld,
   type PlacementContractWorld,
@@ -43,6 +45,14 @@ journal("subscribe replay, tail, close", journalSubscribeContractBody);
 const registry = contract<JournalAppendContractWorld>("Registry", { fake: () => createFakes() });
 registry("setRootPool: atomic top-up and withdrawal, refused in full past the unheld remainder", registryRootPoolContractBody);
 registry("provider attempts: keyed bump, reset, per agent", registryProviderAttemptsContractBody);
+
+const idempotencyConflicts = contract<IdempotencyConflictContractWorld>("Idempotency", {
+  fake: () => {
+    const f = createFakes();
+    return { registry: f.registry, mailbox: f.mailbox, approvals: f.approvals };
+  },
+});
+idempotencyConflicts("same key and body replays; same key and different body conflicts", idempotencyConflictContractBody);
 
 const watchdogs = contract<WatchdogStoreContractWorld>("WatchdogStore", { fake: () => ({ watchdogs: createFakes().watchdogs }) });
 watchdogs("get/set idempotency, upsert, copies, clear", watchdogStoreContractBody);
