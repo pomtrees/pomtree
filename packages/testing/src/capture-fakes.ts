@@ -139,7 +139,6 @@ export class FakeCaptureIndex implements CaptureIndex {
   }
 
   async open(): Promise<CaptureJob[]> {
-    // TODO(audit-suspected-pool): no test lists open jobs whose creation order differs from id order, so the tie-break is unpinned.
     return [...this.jobs.values()]
       .filter((j) => j.state === "open")
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
