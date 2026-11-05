@@ -66,6 +66,7 @@ import { testFetchSeam, testFetchWarning } from "./test-fetch.ts";
 import { createCronExtension } from "./builtin/cron.ts";
 import { resolveSocketPath } from "./socket-path.ts";
 import { checkStateDir, isLoopbackListenHost, publishScanWarning, shortHash, stamp, uiChannelWarning } from "./config.ts";
+import { dockerSandboxDeps } from "./sandbox-deps.ts";
 import { realpathLoose, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
 import { formatStartupFailure } from "./startup-failure.ts";
 
@@ -414,16 +415,7 @@ const { node, sandbox, placement } = wireLocalHost({
   // egress-image: the daemon pins the egress-proxy image (agent.egressProxyImage, validated by the registry); relay traffic to the
   // daemon is capped at the push limit (relay-class).
   makeSandbox: (mounts) =>
-    new DockerSandbox({
-      mounts,
-      egressAuditRoot,
-      egressProxyImage: cfg["agent.egressProxyImage"], // never empty here: boot refuses an unset value (safety-boot.ts)
-      egressRelayMaxBytes: cfg["push.maxBytes"],
-      // The same storeId and bootEpoch the Daemon stamps on agent containers (store_id, daemon_epoch), so the orphan sweep and reconcile agree on ownership.
-      // TODO(main-wiring-test): main.ts is an untested shell; no seam asserts this owner reaches DockerSandbox.
-      owner: { storeId, epoch: bootEpoch },
-      warn: (message) => console.error(stamp(`pomtreed: ${message}`)),
-    }),
+    new DockerSandbox(dockerSandboxDeps({ mounts, egressAuditRoot, storeId, bootEpoch, cfg, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) })),
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
 // The host row is written before recovery so the first sync/admit sees it; the running set and queue live in the store.
