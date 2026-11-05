@@ -6,15 +6,13 @@ import { setup, spawnSpec, until } from "./test-setup.ts";
 
 test("result is durable and delivered while running; wrap-up stops before child_exited", async () => {
   let reported = false;
+  let statuses: number[] = [];
   const t = setup(async (c) => {
     const responses = await Promise.all([
       c.api("POST", "/v1/agents/self/result", { result: { summary: "done", value: 42 }, idempotencyKey: "result" }),
       c.api("POST", "/v1/agents/self/result", { result: { summary: "done", value: 42 }, idempotencyKey: "result" }),
     ]);
-    assert.deepEqual(
-      responses.map((r) => r.status),
-      [200, 200],
-    );
+    statuses = responses.map((r) => r.status);
     reported = true;
     await c.stopped;
   });
@@ -31,6 +29,7 @@ test("result is durable and delivered while running; wrap-up stops before child_
   await t.daemon.deps.registry.transition(parent.id, 0, "running", { idempotencyKey: "parent-running" });
   const child = await t.daemon.spawn(parent.id, { name: "child", task: "child", idempotencyKey: "child", wrapupMs: 60 });
   await until(async () => reported);
+  assert.deepEqual(statuses, [200, 200]);
   assert.equal((await t.daemon.get(child.id))!.state, "running");
   const rows = await t.journal.read({ agent: child.id });
   const results = rows.filter((r) => r.payload.kind === "ext.pomtreed.result");
@@ -120,23 +119,16 @@ test("recovery retains the remaining wrap-up window of a live reported sandbox",
 test("dirty work needs explicit snapshot approval and collection before the report", async () => {
   const calls: Array<{ save?: boolean; expectedFingerprint?: string; maxBytes?: number } | undefined> = [];
   let refused = false;
+  // Recorded inside the harness callback and asserted after it returns: the daemon catches a throw there as an agent failure, not a test failure.
+  let first: { status: number; body: unknown } | undefined;
+  let resultRowsBeforeApproval = -1;
+  let approved: { status: number; body: unknown } | undefined;
   const t = setup(async (c) => {
     const body = { result: { summary: "saved result" }, idempotencyKey: "result" };
-    const first = await c.api("POST", "/v1/agents/self/result", body);
-    assert.equal(first.status, 409);
-    assert.match((first.body as { error: string }).error, /--save-uncommitted snapshot/);
-    // The prefix capture_finish classifies as cause=uncommitted_work (UNCOMMITTED_WORK in agent-image ext/pomtree-browser/finish.ts).
-    assert.match((first.body as { error: string }).error, /^uncommitted work: /);
-    assert.match((first.body as { error: string }).error, /only if every uncommitted file \(see git status\) is meant to be in the result$/);
-    assert.deepEqual(
-      { code: (first.body as { code?: string }).code, uncommitted: (first.body as { uncommitted?: boolean }).uncommitted },
-      { code: "uncommitted_work", uncommitted: true },
-    );
-    assert.equal((await t.journal.read({ agent: c.agent })).filter((r) => r.payload.kind === "ext.pomtreed.result").length, 0);
+    first = await c.api("POST", "/v1/agents/self/result", body);
+    resultRowsBeforeApproval = (await t.journal.read({ agent: c.agent })).filter((r) => r.payload.kind === "ext.pomtreed.result").length;
     refused = true;
-    const approved = await c.api("POST", "/v1/agents/self/result", { ...body, saveUncommitted: "snapshot" });
-    assert.equal(approved.status, 200);
-    assert.equal((approved.body as { code?: string }).code, undefined); // negative: an accepted result carries no code
+    approved = await c.api("POST", "/v1/agents/self/result", { ...body, saveUncommitted: "snapshot" });
   });
   const original = t.sandbox.resultWork.bind(t.sandbox);
   t.sandbox.resultWork = async (id, opts) => {
@@ -157,6 +149,19 @@ test("dirty work needs explicit snapshot approval and collection before the repo
   const a = await t.spawn();
   await t.orchestrator.idle();
   assert.equal(refused, true);
+  assert.ok(first && approved);
+  assert.equal(first.status, 409);
+  assert.match((first.body as { error: string }).error, /--save-uncommitted snapshot/);
+  // The prefix capture_finish classifies as cause=uncommitted_work (UNCOMMITTED_WORK in agent-image ext/pomtree-browser/finish.ts).
+  assert.match((first.body as { error: string }).error, /^uncommitted work: /);
+  assert.match((first.body as { error: string }).error, /only if every uncommitted file \(see git status\) is meant to be in the result$/);
+  assert.deepEqual(
+    { code: (first.body as { code?: string }).code, uncommitted: (first.body as { uncommitted?: boolean }).uncommitted },
+    { code: "uncommitted_work", uncommitted: true },
+  );
+  assert.equal(resultRowsBeforeApproval, 0);
+  assert.equal(approved.status, 200);
+  assert.equal((approved.body as { code?: string }).code, undefined); // negative: an accepted result carries no code
   const maxBytes = CONFIG_DEFAULTS["push.maxBytes"];
   assert.deepEqual(calls, [{ maxBytes }, { maxBytes }, { save: true, expectedFingerprint: "snapshot", maxBytes }]);
   const kinds = (await t.journal.read({ agent: a.id })).map((r) => r.payload.kind);
@@ -166,13 +171,17 @@ test("dirty work needs explicit snapshot approval and collection before the repo
 });
 
 test("a failed approved save leaves the result unreported and can be retried", async () => {
+  // Recorded inside the harness callback and asserted after it returns: the daemon catches a throw there as an agent failure, not a test failure.
+  const statuses: number[] = [];
+  let stateAfterFailure: string | undefined;
+  let resultRowsAfterFailure = -1;
   const t = setup(async (c) => {
     const body = { result: { summary: "save" }, idempotencyKey: "result", saveUncommitted: "snapshot" };
-    assert.equal((await c.api("POST", "/v1/agents/self/result", body)).status, 409);
-    assert.equal((await t.daemon.get(c.agent))!.state, "running");
-    assert.equal((await t.journal.read({ agent: c.agent })).filter((r) => r.payload.kind === "ext.pomtreed.result").length, 0);
-    assert.equal((await c.api("POST", "/v1/agents/self/result", body)).status, 409);
-    assert.equal((await c.api("POST", "/v1/agents/self/result", { ...body, saveUncommitted: "clean" })).status, 200);
+    statuses.push((await c.api("POST", "/v1/agents/self/result", body)).status);
+    stateAfterFailure = (await t.daemon.get(c.agent))!.state;
+    resultRowsAfterFailure = (await t.journal.read({ agent: c.agent })).filter((r) => r.payload.kind === "ext.pomtreed.result").length;
+    statuses.push((await c.api("POST", "/v1/agents/self/result", body)).status);
+    statuses.push((await c.api("POST", "/v1/agents/self/result", { ...body, saveUncommitted: "clean" })).status);
   });
   t.sandbox.resultWorkResults.push(
     { dirty: true, fingerprint: "snapshot" },
@@ -189,6 +198,9 @@ test("a failed approved save leaves the result unreported and can be retried", a
   );
   const a = await t.spawn();
   await t.orchestrator.idle();
+  assert.deepEqual(statuses, [409, 409, 200]);
+  assert.equal(stateAfterFailure, "running");
+  assert.equal(resultRowsAfterFailure, 0);
   assert.equal((await t.daemon.get(a.id))!.exit, "succeeded");
 });
 
@@ -209,8 +221,9 @@ test("a wrap-up timer expiring during harness start still stops the attached ses
 });
 
 test("failed early result delivery is replayed before child_exited after settlement", async () => {
+  let status: number | undefined;
   const t = setup(async (c) => {
-    assert.equal((await c.api("POST", "/v1/agents/self/result", { result: { summary: "durable" } })).status, 500);
+    status = (await c.api("POST", "/v1/agents/self/result", { result: { summary: "durable" } })).status;
   });
   const root = await t.daemon.root();
   const parent = await t.daemon.deps.registry.create({
@@ -231,6 +244,7 @@ test("failed early result delivery is replayed before child_exited after settlem
   };
   const child = await t.daemon.spawn(parent.id, { name: "child", task: "child", idempotencyKey: "delivery-child" });
   await t.orchestrator.idle();
+  assert.equal(status, 500);
   assert.equal((await t.daemon.get(child.id))!.state, "exited");
   assert.deepEqual(await t.daemon.deps.mailbox.peek(parent.id), []);
   await t.daemon.recover();
@@ -260,6 +274,7 @@ test("an approved bundle is disposed when collection replays an already ingested
       };
     },
   };
+  let status: number | undefined;
   const t = setup(async (c) => {
     await t.journal.append({
       agent: c.agent,
@@ -268,12 +283,12 @@ test("an approved bundle is disposed when collection replays an already ingested
       payload: { kind: "ingested", key: "result-save:snapshot:saved", refs: [{ ref: "saved", commit: "commit" }] } as JournalPayload,
       idempotencyKey: "previous-save",
     });
-    const response = await c.api("POST", "/v1/agents/self/result", { result: { summary: "saved" }, saveUncommitted: "snapshot" });
-    assert.equal(response.status, 200);
+    status = (await c.api("POST", "/v1/agents/self/result", { result: { summary: "saved" }, saveUncommitted: "snapshot" })).status;
   });
   t.sandbox.resultWorkResults.push({ dirty: true, fingerprint: "snapshot" }, { dirty: false, fingerprint: "saved", bundle });
   const a = await t.spawn();
   await t.orchestrator.idle();
+  assert.equal(status, 200);
   assert.equal((await t.daemon.get(a.id))!.exit, "succeeded");
   assert.equal(disposed, true);
 });
