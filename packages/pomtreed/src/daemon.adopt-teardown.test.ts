@@ -74,8 +74,17 @@ test("two concurrent forced keyed resumes share one run: one new generation", as
   await t.orchestrator.idle();
   assert.equal((await get(t, aId)).state, "yielded");
   const g0 = (await get(t, aId)).generation;
+  // The registry's generation-bump key also collapses a second bump, so the generation alone cannot tell a shared run from two
+  // runs; count the segment launches, which only the in-flight share (Lifecycle.resuming) keeps from doubling.
+  const launches: number[] = [];
+  const resume = t.orchestrator.resume.bind(t.orchestrator);
+  t.orchestrator.resume = (agent, generation, wake) => {
+    launches.push(generation);
+    return resume(agent, generation, wake);
+  };
   const [r1, r2] = await Promise.all([t.daemon.resumeAgent(aId, "w", { forced: true }, "k-a"), t.daemon.resumeAgent(aId, "w", { forced: true }, "k-b")]);
   assert.equal(r1.generation, g0 + 1);
   assert.equal(r2.generation, g0 + 1);
   assert.equal((await get(t, aId)).generation, g0 + 1, "no second bump");
+  assert.deepEqual(launches, [g0 + 1], "one segment launch for the shared run");
 });
