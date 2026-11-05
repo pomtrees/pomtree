@@ -158,3 +158,37 @@ test("troubleshooting quotes the session default humanly and names no key; absen
   assert.ok(!fix({ ...FACTS, sessionDefaultMs: 1 }).includes("session.defaultMs"));
   assert.doesNotMatch(fix(FACTS), /default of/);
 });
+
+test("enable-pnpm: the version note does not promise the pinned pnpm before the checkout, and the prose says to run one variant", () => {
+  const step = stepById(onboardingSteps(FACTS), "enable-pnpm");
+  const note = step.commands.find((c) => c.run === "pnpm --version")?.note ?? "";
+  assert.match(note, /outside the checkout corepack fetches its own default pnpm/);
+  assert.match(note, new RegExp(`pnpm ${FACTS.pnpmVersion} \\(the pinned version\\) is fetched on the first pnpm command inside the checkout`));
+  assert.doesNotMatch(note, /^the first run downloads/);
+  assert.match(step.prose, /Run exactly one of the three `corepack enable` variants/);
+});
+
+test("start-docker offers the optional docker group command with its root, confirm and re-login caveats", () => {
+  const step = stepById(onboardingSteps(FACTS), "start-docker");
+  const cmd = step.commands.find((c) => c.run === 'sudo usermod -aG docker "$USER"');
+  assert.ok(cmd, "the usermod command is present");
+  assert.equal(cmd.needsRoot, true);
+  assert.equal(cmd.confirm, true);
+  assert.match(cmd.note ?? "", /optional/);
+  assert.match(cmd.note ?? "", /root-equivalent/);
+  assert.match(cmd.note ?? "", /log out and back in/);
+  assert.match(cmd.note ?? "", /newgrp docker/);
+  assert.match(step.prose, /root-equivalent/);
+  assert.match(step.prose, /log out and back in/);
+});
+
+test("smoke-test points the fresh terminal at the state directory before the doctor command; absent the name, no export", () => {
+  const runs = (f: SetupFacts) => stepById(onboardingSteps(f), "smoke-test").commands.map((c) => c.run);
+  const run = runs({ ...FACTS, stateDirEnv: "SOME_STATE_ENV" });
+  const exportAt = run.indexOf("export SOME_STATE_ENV=<state-dir>");
+  const doctorAt = run.indexOf("pomtree doctor --json");
+  assert.ok(exportAt >= 0, "the export command is present");
+  assert.ok(doctorAt >= 0);
+  assert.ok(exportAt < doctorAt, "the export comes before doctor");
+  assert.ok(!runs(FACTS).some((r) => r.startsWith("export ")));
+});

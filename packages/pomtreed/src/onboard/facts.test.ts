@@ -16,6 +16,7 @@ test("defaultSetupFacts fills every SetupFacts field, optional ones included", (
     reapedGraceMs: true,
     sessionDefaultMs: true,
     egressProxyImageEnv: true,
+    stateDirEnv: true,
   };
   for (const k of Object.keys(keys) as (keyof SetupFacts)[]) assert.notEqual(facts[k], undefined, k);
   assert.equal(facts.nodeRange, ">=24");

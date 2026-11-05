@@ -1,28 +1,26 @@
 // Pure renderer for GETTING_STARTED.md and the onboarding skill's references/guardrails.md, compiled from steps.ts (the one source of
 // every setup fact). The file I/O lives in packages/pomtreed/scripts/gen-getting-started.ts; the regenerate-and-compare test is
 // getting-started.test.ts. Mirrors packages/core/scripts/config-docs.ts (marker pair, splice that refuses a document without them).
+import { AGENT_STATE_WORDING, EXIT_STATUS_WORDING } from "@pomtree/core";
 import type { AgentState, ExitCause, ExitStatus } from "@pomtree/core";
 import type { Guardrail, OnboardingStep, RepoTopic, StepCommand, TroubleshootingGroup } from "./steps.ts";
 
 export const GETTING_STARTED_BEGIN = "<!-- BEGIN GENERATED: getting-started (node packages/pomtreed/scripts/gen-getting-started.ts; do not edit by hand) -->";
 export const GETTING_STARTED_END = "<!-- END GENERATED: getting-started -->";
 
-// TODO(onboard-glossary-lists): core now exports AGENT_STATE_WORDING and EXIT_STATUS_WORDING; derive these local lists from their keys; current: hand-written lists.
-// The `satisfies` plus the Exclude checks make a new state or status fail tsc until it is listed (and given a meaning) here.
-export const AGENT_STATES = ["pending", "running", "yielded", "exited", "reaped"] as const satisfies readonly AgentState[];
-export const EXIT_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "over_budget"] as const satisfies readonly ExitStatus[];
-const _allStates: Exclude<AgentState, (typeof AGENT_STATES)[number]> extends never ? true : false = true;
-const _allStatuses: Exclude<ExitStatus, (typeof EXIT_STATUSES)[number]> extends never ? true : false = true;
-void [_allStates, _allStatuses];
+// Derived from core's wording records, which are closed over AgentState and ExitStatus, so a new state or status shows up here and
+// fails tsc at STATE_MEANING / STATUS_MEANING until it is given a meaning. Object.keys keeps the records' declaration order.
+export const AGENT_STATES = Object.keys(AGENT_STATE_WORDING) as AgentState[];
+export const EXIT_STATUSES = Object.keys(EXIT_STATUS_WORDING) as ExitStatus[];
 
-const STATE_MEANING: Record<(typeof AGENT_STATES)[number], string> = {
+const STATE_MEANING: Record<AgentState, string> = {
   pending: "created, not yet started",
   running: "has a live process",
   yielded: "parked while waiting; resumes when what it waits on arrives",
   exited: "finished with an exit status and result, held until its parent or custodian collects it",
   reaped: "collected; the record and result stay in the store, and the folder is kept only for the reaped-folder grace period",
 };
-const STATUS_MEANING: Record<(typeof EXIT_STATUSES)[number], string> = {
+const STATUS_MEANING: Record<ExitStatus, string> = {
   succeeded: "finished its work",
   failed: "ended with an error; the exit cause says why",
   cancelled: "stopped on request",

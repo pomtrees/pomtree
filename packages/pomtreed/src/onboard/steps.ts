@@ -12,6 +12,7 @@ export interface SetupFacts {
   reapedGraceMs?: number; // the reaped-folder grace registry default; absent: troubleshooting points to docs/configuration.md instead of quoting it
   sessionDefaultMs?: number; // the default session length registry default; absent: troubleshooting points to docs/configuration.md instead of quoting it
   egressProxyImageEnv?: string; // the environment name of the egress proxy image decision, from the config registry; absent: the build-image step omits the unset command
+  stateDirEnv?: string; // the environment name of the state directory, from the config registry; absent: the smoke-test step omits the export command
 }
 
 /** "4 h", "90 min", "45 s" or "1500 ms": the largest unit that divides the duration exactly. */
@@ -99,13 +100,18 @@ export function onboardingSteps(facts: SetupFacts): OnboardingStep[] {
     {
       id: "enable-pnpm",
       title: "Enable pnpm",
-      prose: `pnpm ${facts.pnpmVersion} (the exact version the root \`package.json\` pins) comes through corepack. Node.js before ${COREPACK_UNBUNDLED_FROM} (so Node.js 24) bundles it; Node.js ${COREPACK_UNBUNDLED_FROM} and later does not, so install it first with the first command below. Where Node.js is installed system-wide, plain \`corepack enable\` fails with EACCES because it writes its shims next to the system \`node\`: run it as root, or install the shims into a directory you own that is on \`PATH\`. The first pnpm command downloads pnpm itself, so it needs network.`,
+      prose: `pnpm ${facts.pnpmVersion} (the exact version the root \`package.json\` pins) comes through corepack. Node.js before ${COREPACK_UNBUNDLED_FROM} (so Node.js 24) bundles it; Node.js ${COREPACK_UNBUNDLED_FROM} and later does not, so install it first with the first command below. Where Node.js is installed system-wide, plain \`corepack enable\` fails with EACCES because it writes its shims next to the system \`node\`: run it as root, or install the shims into a directory you own that is on \`PATH\`. Run exactly one of the three \`corepack enable\` variants below (plain, with sudo, or with \`--install-directory\`), not all of them. The first pnpm command downloads pnpm itself, so it needs network.`,
       commands: [
         COREPACK_INSTALL,
         COREPACK_ENABLE,
         { run: "sudo corepack enable", note: "the system-wide fix", needsRoot: true },
         { run: "corepack enable --install-directory ~/.local/bin", note: "the no-root fix; ~/.local/bin must be on PATH", confirm: true },
-        { run: "pnpm --version", note: `the first run downloads pnpm ${facts.pnpmVersion}`, network: true, confirm: true },
+        {
+          run: "pnpm --version",
+          note: `outside the checkout corepack fetches its own default pnpm on the first run; pnpm ${facts.pnpmVersion} (the pinned version) is fetched on the first pnpm command inside the checkout`,
+          network: true,
+          confirm: true,
+        },
       ],
     },
     {
@@ -147,9 +153,15 @@ export function onboardingSteps(facts: SetupFacts): OnboardingStep[] {
       id: "start-docker",
       title: "Start the Docker daemon",
       prose:
-        "The Docker daemon must be reachable by the user who runs pomtreed. On macOS, start Docker Desktop. On Linux, start the service; adding your user to the `docker` group avoids sudo but is root-equivalent on that machine, so decide that deliberately.",
+        "The Docker daemon must be reachable by the user who runs pomtreed. On macOS, start Docker Desktop. On Linux, start the service; adding your user to the `docker` group avoids sudo but is root-equivalent on that machine, so decide that deliberately. A new group membership applies only after you log out and back in (or run `newgrp docker` in the current shell).",
       commands: [
         { run: "sudo systemctl start docker", note: "Linux", needsRoot: true },
+        {
+          run: 'sudo usermod -aG docker "$USER"',
+          note: "Linux, optional: lets you use docker without sudo, but the group is root-equivalent; takes effect only after you log out and back in (or run `newgrp docker` in the current shell)",
+          needsRoot: true,
+          confirm: true,
+        },
         { run: "docker info", note: "succeeds only when the daemon is reachable" },
       ],
     },
@@ -231,9 +243,17 @@ export function onboardingSteps(facts: SetupFacts): OnboardingStep[] {
       id: "smoke-test",
       title: "Smoke test (no spend)",
       prose:
-        "None of these makes a live model call. Preflight re-checks the host; `pomtree doctor` checks the running daemon (give `pomtree` an alias first, since nothing puts it on `PATH`); the offline hn-digest scenario drives a workflow through the real stack with no model, no sandbox and no network. Starting a real agent run later costs money: only with your consent and a stated budget.",
+        "None of these makes a live model call. Preflight re-checks the host; `pomtree doctor` checks the running daemon (run it in a fresh terminal that points at the daemon's state directory, and give `pomtree` an alias first, since nothing puts it on `PATH`); the offline hn-digest scenario drives a workflow through the real stack with no model, no sandbox and no network. Starting a real agent run later costs money: only with your consent and a stated budget.",
       commands: [
         { run: `${POMTREED} preflight --repo <repo>`, note: "host check again" },
+        ...(facts.stateDirEnv === undefined
+          ? []
+          : [
+              {
+                run: `export ${facts.stateDirEnv}=<state-dir>`,
+                note: "only if the state directory is not the default (~/.pomtreed): this terminal never loaded the daemon's environment, and `pomtree` finds the daemon through it",
+              },
+            ]),
         { run: "alias pomtree='node <checkout>/packages/pomtree/src/main.ts'", note: "run `pomtree` through the alias" },
         { run: "pomtree doctor --json", note: "needs the daemon running in another terminal" },
         { run: "node examples/hn-digest/scenario.mts", note: "offline scenario, about 20 seconds, no network" },
@@ -527,7 +547,7 @@ export function setupFacts(
   rootPackageJson: string,
   minGit: readonly number[],
   defaultImage: string,
-  extra: Pick<SetupFacts, "reapedGraceMs" | "sessionDefaultMs" | "egressProxyImageEnv"> = {},
+  extra: Pick<SetupFacts, "reapedGraceMs" | "sessionDefaultMs" | "egressProxyImageEnv" | "stateDirEnv"> = {},
 ): SetupFacts {
   const pkg = JSON.parse(rootPackageJson) as { engines?: { node?: unknown }; packageManager?: unknown };
   const nodeRange = pkg.engines?.node;

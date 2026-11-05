@@ -24,14 +24,14 @@ git --version   # must be 2.38.0 or newer
 
 ## 3. Enable pnpm
 
-pnpm 10.19.0 (the exact version the root `package.json` pins) comes through corepack. Node.js before 25 (so Node.js 24) bundles it; Node.js 25 and later does not, so install it first with the first command below. Where Node.js is installed system-wide, plain `corepack enable` fails with EACCES because it writes its shims next to the system `node`: run it as root, or install the shims into a directory you own that is on `PATH`. The first pnpm command downloads pnpm itself, so it needs network.
+pnpm 10.19.0 (the exact version the root `package.json` pins) comes through corepack. Node.js before 25 (so Node.js 24) bundles it; Node.js 25 and later does not, so install it first with the first command below. Where Node.js is installed system-wide, plain `corepack enable` fails with EACCES because it writes its shims next to the system `node`: run it as root, or install the shims into a directory you own that is on `PATH`. Run exactly one of the three `corepack enable` variants below (plain, with sudo, or with `--install-directory`), not all of them. The first pnpm command downloads pnpm itself, so it needs network.
 
 ```sh
 npm install --global corepack   # needs network; ask before running; Node.js 25 and later only, which no longer bundles corepack; on a system-wide Node.js it may also need root
 corepack enable   # ask before running; once; fails with EACCES on a system-wide Node.js
 sudo corepack enable   # run this yourself as root; the system-wide fix
 corepack enable --install-directory ~/.local/bin   # ask before running; the no-root fix; ~/.local/bin must be on PATH
-pnpm --version   # needs network; ask before running; the first run downloads pnpm 10.19.0
+pnpm --version   # needs network; ask before running; outside the checkout corepack fetches its own default pnpm on the first run; pnpm 10.19.0 (the pinned version) is fetched on the first pnpm command inside the checkout
 ```
 
 ## 4. Clone the repository and install dependencies
@@ -65,10 +65,11 @@ docker version   # checks the CLI and, once started, the daemon
 
 ## 7. Start the Docker daemon
 
-The Docker daemon must be reachable by the user who runs pomtreed. On macOS, start Docker Desktop. On Linux, start the service; adding your user to the `docker` group avoids sudo but is root-equivalent on that machine, so decide that deliberately.
+The Docker daemon must be reachable by the user who runs pomtreed. On macOS, start Docker Desktop. On Linux, start the service; adding your user to the `docker` group avoids sudo but is root-equivalent on that machine, so decide that deliberately. A new group membership applies only after you log out and back in (or run `newgrp docker` in the current shell).
 
 ```sh
 sudo systemctl start docker   # run this yourself as root; Linux
+sudo usermod -aG docker "$USER"   # run this yourself as root; ask before running; Linux, optional: lets you use docker without sudo, but the group is root-equivalent; takes effect only after you log out and back in (or run `newgrp docker` in the current shell)
 docker info   # succeeds only when the daemon is reachable
 ```
 
@@ -142,10 +143,11 @@ sudo systemctl enable --now pomtreed   # run this yourself as root; systemd outp
 
 ## 15. Smoke test (no spend)
 
-None of these makes a live model call. Preflight re-checks the host; `pomtree doctor` checks the running daemon (give `pomtree` an alias first, since nothing puts it on `PATH`); the offline hn-digest scenario drives a workflow through the real stack with no model, no sandbox and no network. Starting a real agent run later costs money: only with your consent and a stated budget.
+None of these makes a live model call. Preflight re-checks the host; `pomtree doctor` checks the running daemon (run it in a fresh terminal that points at the daemon's state directory, and give `pomtree` an alias first, since nothing puts it on `PATH`); the offline hn-digest scenario drives a workflow through the real stack with no model, no sandbox and no network. Starting a real agent run later costs money: only with your consent and a stated budget.
 
 ```sh
 node packages/pomtreed/src/main.ts preflight --repo <repo>   # host check again
+export POMTREED_STATE_DIR=<state-dir>   # only if the state directory is not the default (~/.pomtreed): this terminal never loaded the daemon's environment, and `pomtree` finds the daemon through it
 alias pomtree='node <checkout>/packages/pomtree/src/main.ts'   # run `pomtree` through the alias
 pomtree doctor --json   # needs the daemon running in another terminal
 node examples/hn-digest/scenario.mts   # offline scenario, about 20 seconds, no network

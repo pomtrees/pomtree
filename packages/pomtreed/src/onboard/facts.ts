@@ -10,5 +10,6 @@ export function defaultSetupFacts(rootPackageJson: string): SetupFacts {
     reapedGraceMs: CONFIG_DEFAULTS["folder.reapedGraceMs"],
     sessionDefaultMs: CONFIG_DEFAULTS["session.defaultMs"],
     egressProxyImageEnv: CONFIG_REGISTRY.envOf.get("agent.egressProxyImage") as string,
+    stateDirEnv: CONFIG_REGISTRY.envOf.get("state.dir") as string,
   });
 }
