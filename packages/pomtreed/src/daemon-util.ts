@@ -183,8 +183,8 @@ export const clip = (s: string, n = 200) => {
   return line.length > n ? `${line.slice(0, n - 1)}…` : line;
 };
 
-// A short human-readable summary of a journal payload for the audit/chat views. Untrusted text is
-// clipped, never HTML-escaped here (the panes paint via textContent).
+// A short human-readable summary of a journal payload for the audit view. Untrusted text is
+// clipped, never HTML-escaped here (the audit pane paints via textContent).
 export function journalSummary(payload: JournalPayload): string {
   switch (payload.kind) {
     case "message":
@@ -382,7 +382,7 @@ export function redactPayload(p: JournalPayload, roots: readonly string[]): Jour
 
 export function journalRow(e: JournalEntry): JournalRow {
   const row: JournalRow = { seq: e.seq, ts: e.ts, agent: e.agent, kind: e.payload.kind, summary: journalSummary(e.payload) };
-  // Structured tool view for the chat pane (operator routes only); callId pairs call with result.
+  // Structured tool view for operator journal views (operator routes only); callId pairs call with result.
   if (e.payload.kind === "tool_call") row.tool = { callId: e.payload.callId, tool: e.payload.tool, input: e.payload.input };
   else if (e.payload.kind === "tool_result") row.tool = { callId: e.payload.callId, ok: e.payload.ok, output: e.payload.output };
   if (e.payload.kind === "signal" && e.payload.signal.kind === "child_exited" && e.payload.signal.handoff) {

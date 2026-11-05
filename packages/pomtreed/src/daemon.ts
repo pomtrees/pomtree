@@ -645,7 +645,7 @@ export class Daemon implements Driver {
   }
 
   // Operator message: an operator posts to any agent. Journals a `message_received` on the target's journal (so
-  // the chat pane's stream shows it), delivers a `human_message` signal, and asks the orchestrator to wake a
+  // operator journal views show it), delivers a `human_message` signal, and asks the orchestrator to wake a
   // yielded target. Idempotent by key at every step (a replay returns the first delivery's outcome).
   // mode "queue" (default): delivered at the agent's next inbox read / wake / steering boundary.
   // mode "interrupt": a yielded target is woken at once whatever its wait condition (the message is its resume
