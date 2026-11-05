@@ -224,7 +224,9 @@ sockdir_mode="$(stat -c '%a' "$sockdir" 2>/dev/null || stat -f '%Lp' "$sockdir" 
 log="$state/pomtreed.log"
 ( umask 077; : > "$log" )
 cd "$root"
-node packages/pomtreed/src/main.ts 2> >(trap '' INT TERM; exec tee "$log" >&2) &
+# The tee writes a marker file when it exits, so startup_failed can wait for the log to be complete (bash 3.2 cannot wait on a process substitution).
+tee_done="$state/pomtreed.log.tee-done"; rm -f "$tee_done"
+node packages/pomtreed/src/main.ts 2> >(trap '' INT TERM; tee "$log" >&2; : > "$tee_done") &
 pid=$!
 stopping=0
 stop() {
@@ -248,7 +250,9 @@ startup_hint() {
   esac
 }
 startup_failed() {
-  sleep 0.3 # let the stderr tee flush
+  # Wait (up to 3s) for the stderr tee's exit marker so the log is complete, in case a pomtreed child still holds stderr open.
+  for _ in $(seq 30); do [ -e "$tee_done" ] && break; sleep 0.1; done
+  rm -f "$tee_done"
   causes="$(grep -E '^([A-Za-z]*Error:|pomtreed: refusing to start:)' "$log" 2>/dev/null | cut -c1-300 || true)"
   cause="$(printf '%s\n' "$causes" | tail -n1)"
   [ -n "$cause" ] || cause="$(grep -Ev '^[[:space:]]*(at |$)|^Node\.js ' "$log" 2>/dev/null | tail -n1 | cut -c1-300 || true)"
