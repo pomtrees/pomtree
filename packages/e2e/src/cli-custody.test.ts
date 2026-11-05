@@ -96,7 +96,6 @@ test("cli operator CUS-6: a killed middle's exited children are held for the top
   skip: SKIP,
   timeout: TIMEOUT,
 }, async (t) => {
-  const SIB_IDS = nodeOf(`const b=s.filter(x=>/message$/.test(x.kind)).map(x=>x.body||x.text||"").join(" ").split(" ");console.log(b[1]+" "+b[2])`);
   const script: ModelScript = {
     name: "cus6",
     rules: [
@@ -122,9 +121,9 @@ test("cli operator CUS-6: a killed middle's exited children are held for the top
         when: { marker: "parent", lastUserIncludes: "[[scn:cus6sib]]", toolResults: 0 },
         reply: callReply(
           [
-            // the daemon caps one inbox long-poll at 30 s, so poll until the operator's message is in
-            `for i in $(seq 1 40); do pomtree --json inbox --wait 25000 > /tmp/ib; grep -q 'message"' /tmp/ib && break; done; echo inbox-polls=$i`,
-            `IDS=$(cat /tmp/ib | ${SIB_IDS}); A=\${IDS% *}; echo sib-target=$A`,
+            // The ids come with the answer to an ask, not from the inbox: the pomtree-mailbox extension also peeks and acks the agent's mailbox while a
+            // tool call runs, so an operator `send` raced a polling `inbox` loop (two consumers, one message) and could be consumed before the loop saw it.
+            `A=$(pomtree ask "sib: send the children ids" --wait 600000); IDS=$(echo "$A" | cut -d' ' -f2-); A=\${IDS% *}; echo sib-target=$A`,
             "pomtree wait $A --timeout 5000 > /tmp/w 2>&1; echo sib-wait-rc=$?; echo sib-wait-out=$(head -c 300 /tmp/w | tr '\\n' ' ')",
             "pomtree reap $A > /tmp/r 2>&1; echo sib-reap-rc=$?; echo sib-reap-out=$(head -c 300 /tmp/r | tr '\\n' ' ')",
             "pomtree result --summary sib-done; echo sib-result-exit=$?",
@@ -179,7 +178,7 @@ test("cli operator CUS-6: a killed middle's exited children are held for the top
     assert.deepEqual(custody.map((x) => x.child).sort(), kids.map((k) => k.id).sort(), "one journaled custody signal per child, naming the dead parent");
 
     // The sibling (not the custodian) is told to read and reap them, and is denied.
-    assert.equal((await s.pomtree(["send", sib.id, `IDS ${kids[0]!.id} ${kids[1]!.id}`])).code, 0);
+    await answerAsk(s, sib.id, "send the children ids", `IDS ${kids[0]!.id} ${kids[1]!.id}`);
     const sibRec = await waitDone(s, sib.id, 90_000);
     const sibLines = await toolLines(s, sib.id);
     t.diagnostic(`sibling: ${JSON.stringify(sibLines.filter((l) => l.startsWith("sib-")))}`);
