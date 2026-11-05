@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
+import { captureJobIdOf } from "@pomtree/core";
 import { createFakes, FakeQuotaCounters } from "./fakes.ts";
 import { FakeCaptureIndex, FakeCaptureParser } from "./capture-fakes.ts";
 import { FakeOrigin } from "./fake-origin.ts";
@@ -90,6 +91,46 @@ test("the CaptureIndex contract rejects broken adapters", async () => {
   for (const Broken of [ShortensPause, LastSettleWins, NeverJoins, NoConflict])
     await assert.rejects(() => captureIndexContractBody({ captures: new Broken() }), Broken.name);
   await captureIndexContractBody({ captures: new FakeCaptureIndex() });
+});
+
+test("FakeCaptureIndex.open lists jobs oldest first, breaking createdAt ties by id, whatever the creation or id order", async () => {
+  const at = { early: 1_000, tie: 2_000, late: 3_000 };
+  // Keys are searched so the ids oppose the expected order: the early job's id sorts last, the late job's first, and the
+  // tie pair's earlier-inserted job has the larger id. Sorting by id alone, by insertion order or by the wrong tie-break all differ.
+  const keyFor = (n: number) => `key-${n}`;
+  const idOf = (n: number, t: number) => captureJobIdOf(keyFor(n), t);
+  const pick = (ok: (n: number) => boolean) => {
+    for (let n = 0; n < 10_000; n++) if (ok(n)) return n;
+    throw new Error("no key found; widen the search in the test");
+  };
+  const tieA = pick((n) => idOf(n, at.tie) > idOf(n + 1, at.tie));
+  const tieB = tieA + 1;
+  const late = pick((n) => n !== tieA && n !== tieB && idOf(n, at.late) < idOf(tieB, at.tie));
+  const early = pick((n) => n !== late && n !== tieA && n !== tieB && idOf(n, at.early) > idOf(tieA, at.tie));
+  const lateId = idOf(late, at.late);
+  assert.ok(
+    lateId < idOf(tieB, at.tie) && idOf(tieB, at.tie) < idOf(tieA, at.tie) && idOf(tieA, at.tie) < idOf(early, at.early),
+    "fixture ids oppose time order",
+  );
+
+  const idx = new FakeCaptureIndex();
+  const job = (n: number, createdAt: number) => ({
+    key: keyFor(n),
+    request: { url: "https://www.example.com/a", render: "static" as const, purpose: "test" },
+    acquirer: "web" as const,
+    render: "static" as const,
+    requester: "ag-1",
+    generation: 1,
+    host: "host-1",
+    createdAt,
+  });
+  // Insertion order: late, tie (larger id), tie (smaller id), early.
+  await idx.begin(job(late, at.late), "b-late");
+  await idx.begin(job(tieA, at.tie), "b-tie-a");
+  await idx.begin(job(tieB, at.tie), "b-tie-b");
+  await idx.begin(job(early, at.early), "b-early");
+  const listed = (await idx.open()).map((j) => j.id);
+  assert.deepEqual(listed, [idOf(early, at.early), idOf(tieB, at.tie), idOf(tieA, at.tie), lateId]);
 });
 
 test("the QuotaCounters opId contract rejects an adapter that ignores opId", async () => {
