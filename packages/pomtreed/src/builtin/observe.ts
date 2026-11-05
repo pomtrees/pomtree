@@ -25,6 +25,17 @@ const asJournal = (deps: ExtensionDeps): Journal => ({
   spendFor: () => Promise.reject(new Error("extension journal is read-only")),
 });
 
+// TODO(ui-hardening): 'unsafe-inline' is needed until the shells' inline styles and scripts move to static files.
+// Both shells inline their CSS and script and use only same-origin EventSource/fetch; the reports page also embeds
+// same-origin /render output in an iframe or img. Neither page has a form.
+const SHELL_CSP = (embeds: string) =>
+  `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'${embeds}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+const shellHeaders = (embeds = "") => ({
+  "content-security-policy": SHELL_CSP(embeds),
+  "x-content-type-options": "nosniff",
+  "cache-control": "no-store",
+});
+
 export function createObserveExtension(opts: ObserveExtensionOptions = {}): Extension {
   let host: ExtensionHost | null = null;
   let otlpRun: RunHandle | null = null;
@@ -38,7 +49,12 @@ export function createObserveExtension(opts: ObserveExtensionOptions = {}): Exte
         method: "GET",
         path: "/live",
         scope: { kind: "public" },
-        handler: () => ({ status: 200, body: renderLivePage({ eventsPath: "/live/events" }), contentType: "text/html; charset=utf-8" }),
+        handler: () => ({
+          status: 200,
+          body: renderLivePage({ eventsPath: "/live/events" }),
+          contentType: "text/html; charset=utf-8",
+          headers: shellHeaders(),
+        }),
       });
 
       h.stream({
@@ -102,7 +118,12 @@ export function createObserveExtension(opts: ObserveExtensionOptions = {}): Exte
         method: "GET",
         path: "/reports",
         scope: { kind: "public" },
-        handler: () => ({ status: 200, body: renderReportsPage(), contentType: "text/html; charset=utf-8" }),
+        handler: () => ({
+          status: 200,
+          body: renderReportsPage(),
+          contentType: "text/html; charset=utf-8",
+          headers: shellHeaders("; img-src 'self'; frame-src 'self'"),
+        }),
       });
 
       // Operator-facing snapshot of the live tree: the same pre-formatted display rows the live view

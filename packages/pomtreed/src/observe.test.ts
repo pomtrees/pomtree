@@ -112,6 +112,32 @@ test("GET /reports serves the reports page", async () => {
   }
 });
 
+test("GET /live and GET /reports send the CSP, nosniff and no-store headers", async () => {
+  const t = setup(async () => {});
+  const path = sock();
+  const server = await listen(t.daemon, path);
+  try {
+    for (const route of ["/live", "/reports"]) {
+      const headers = await new Promise<Record<string, string | string[] | undefined>>((resolve, reject) => {
+        const req = request({ socketPath: path, path: route }, (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.headers));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      const csp = String(headers["content-security-policy"]);
+      assert.match(csp, /default-src 'none'/, route);
+      assert.match(csp, /connect-src 'self'/, route);
+      assert.match(csp, /frame-ancestors 'none'/, route);
+      assert.equal(headers["x-content-type-options"], "nosniff", route);
+      assert.equal(headers["cache-control"], "no-store", route);
+    }
+  } finally {
+    server.close();
+  }
+});
+
 test("the observe builtin registers the /live, /live/events, /v1/tree, and /reports routes", async () => {
   const t = setup(async () => {});
   const routes = t.extensions.routes().map((r) => `${r.method} ${r.path}`);
