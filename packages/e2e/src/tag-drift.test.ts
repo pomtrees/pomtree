@@ -42,6 +42,10 @@ const NOT_A_TAG: Record<string, string> = {
 };
 
 const TAG = /\b(TODO|seed)\(([a-z][a-z0-9-]*)\)/g;
+// The recognizer's pair: anything that looks like a breadcrumb (a bare token of tag-like characters in the parentheses). TAG skips a
+// malformed one (`TODO(Foo_bar)`, `TODO(foo.bar)`, `TODO(9lives)`) without a word, so it would escape the ledger check; `malformed()` reports it.
+// Placeholders (`<tag>`, `${...}`) and calls with arguments (`seed(t, "c1")`) hold characters outside this token, so they never look like tags.
+const LOOKS_LIKE_TAG = /\b(TODO|seed)\(([A-Za-z0-9_.-]+)\)/g;
 
 export interface Mention {
   tag: string; // as written, e.g. "TODO(gw-contract)" or "seed(evals)"
@@ -58,6 +62,36 @@ export function breadcrumbs(text: string): Mention[] {
     }
   });
   return out;
+}
+
+// Every breadcrumb-shaped mention in `text` that TAG does not accept and NOT_A_TAG does not excuse, e.g. "TODO(Foo_bar)".
+export function malformed(text: string): Mention[] {
+  const out: Mention[] = [];
+  text.split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(LOOKS_LIKE_TAG)) {
+      const name = m[2] ?? "";
+      if (!/^[a-z][a-z0-9-]*$/.test(name) && !Object.hasOwn(NOT_A_TAG, name)) out.push({ tag: `${m[1]}(${name})`, line: i + 1 });
+    }
+  });
+  return out;
+}
+
+// Malformed breadcrumbs in code files, as `path:line: form` sites.
+export function malformedSites(files: Map<string, string>): string[] {
+  const sites: string[] = [];
+  for (const [path, text] of files) {
+    if (!CODE_DIRS.test(path) || LEDGER.test(path) || HANDOFF.test(path)) continue;
+    for (const { tag, line } of malformed(text)) sites.push(`${path}:${line}: ${tag}`);
+  }
+  return sites;
+}
+
+export function malformedMessage(sites: string[]): string {
+  return [
+    `${sites.length} breadcrumb(s) look like a tag but do not match the tag pattern, so the ledger check would silently skip them:`,
+    ...sites.map((s) => `    ${s}`),
+    "  Rename each to a lowercase-hyphen tag matching [a-z][a-z0-9-]* (for example TODO(foo-bar)); if the text is not a breadcrumb, add its name to NOT_A_TAG with a reason.",
+  ].join("\n");
 }
 
 // The text of a ledger bullet's first line up to the first ": " outside parentheses (a tag's own parentheses balance, so they
@@ -178,6 +212,37 @@ test("negative control: a code breadcrumb with no ledger header is reported with
   assert.match(msg, /TODO\(orphan\) appears in code but has no ledger entry/);
   assert.match(msg, /packages\/a\/a\.ts:3/);
   assert.match(msg, /- \[P2\] `TODO\(orphan\)`:/);
+});
+
+test("malformed breadcrumbs are detected, with valid tags and placeholders left alone", () => {
+  for (const bad of ["TODO(Foo_bar)", "TODO(foo.bar)", "TODO(9lives)", "seed(Foo_bar)", "seed(foo.bar)", "seed(9lives)", "TODO(Foo)", "TODO(foo_bar)"]) {
+    assert.deepEqual(
+      malformed(`// ${bad} x`).map((m) => m.tag),
+      [bad],
+      bad,
+    );
+    assert.deepEqual(breadcrumbs(`// ${bad} x`), [], `${bad} is skipped by the strict recognizer, which is why the detector exists`);
+  }
+  assert.deepEqual(malformed("a\n// TODO(ok-tag) and TODO(Bad_one)"), [{ tag: "TODO(Bad_one)", line: 2 }]);
+  assert.deepEqual(malformed(`// TODO(gw-contract) seed(evals) TODO(a1) TODO(tag) TODO(<tag>) TODO(\${t.gap}) seed(t, "c1") seed(t)`), []);
+});
+
+test("negative control: a malformed breadcrumb in a code file is reported as path:line: form with the cause and the action", () => {
+  const sites = malformedSites(sample({ "packages/a/a.ts": "x\n// TODO(Foo_bar) y", "docs/n.md": "TODO(Foo_bar)", "TODO.md": "- `TODO(Foo_bar)`: z" }));
+  assert.deepEqual(sites, ["packages/a/a.ts:2: TODO(Foo_bar)"]);
+  const msg = malformedMessage(sites);
+  assert.match(msg, /packages\/a\/a\.ts:2: TODO\(Foo_bar\)/);
+  assert.match(msg, /do not match the tag pattern/);
+  assert.match(msg, /Rename each to a lowercase-hyphen tag/);
+});
+
+test("no code file holds a malformed TODO(...) or seed(...) breadcrumb", () => {
+  const code = new Map<string, string>();
+  eachTrackedFile((path, text) => {
+    if (CODE_DIRS.test(path) && path !== SELF) code.set(path, text);
+  });
+  const sites = malformedSites(code);
+  if (sites.length > 0) assert.fail(`\n${malformedMessage(sites)}\n`);
 });
 
 test("every TODO(tag) or seed(tag) in a code file is tracked in a ledger", { skip: skipNoLedger() }, () => {
