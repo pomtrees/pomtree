@@ -112,7 +112,7 @@ jobs:
       # layers before per-commit copies, so a source change reuses them. A miss (new Dockerfile or evicted cache) is just a cold build.
       # build.ts, not docker/build-push-action, builds the image: it compiles the `bundle` build context and stamps the revision labels.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/agent-image-cache
           key: agent-image-buildx-${{ hashFiles('packages/agent-image/Dockerfile', 'packages/agent-image/scripts/build.ts') }}-${{ github.sha }}
@@ -131,7 +131,7 @@ jobs:
         shell: bash
         timeout-minutes: 5
         run: docker save pomtree/agent:dev | zstd -T0 -q -o "$RUNNER_TEMP/agent-image.tar.zst"
-      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/agent-image.tar.zst
           key: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
@@ -183,7 +183,7 @@ jobs:
           if have < floor:
               sys.exit(f"git {have} is below the floor {floor}: real-git tests would skip")
           PY
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/agent-image.tar.zst
           key: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
