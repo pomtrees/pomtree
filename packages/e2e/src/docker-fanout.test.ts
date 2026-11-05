@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Harness } from "@pomtree/core";
