@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { AgentRecord, Schedule, SpawnIntent } from "@pomtree/core";
 import { DEFAULT_MAX_CATCH_UP, jitterFor } from "@pomtree/sched";
 import { openStore } from "@pomtree/store-sqlite";
+import { FakeModelCatalog } from "@pomtree/testing";
 import { handle } from "./api.ts";
 import { createCronExtension } from "./builtin/cron.ts";
 import { createExtensionRegistry } from "./extensions.ts";
@@ -313,4 +314,26 @@ test("jitter is a durable due-gate: the fire waits until t+jitter without holdin
   await sweepAll(t);
   assert.equal((await children(t)).length, 1);
   assert.equal(await t.fakes.schedules.lastFired("m"), T0 + 60_000);
+});
+
+// Daemon.spawn resolves a model-less spawn's model (lifecycle.ts defaultModelPick), so a cron fire that names none must get it too.
+// Cheapest branch: the catalog's resolved (Pi settings) default over the first listed, since the fake catalog takes the default as an argument.
+test("a cron fire naming no model gets the catalog's resolved default through Daemon.spawn, not the first listed", async () => {
+  const models = [
+    { provider: "p", id: "first" },
+    { provider: "p", id: "settings-default" },
+  ];
+  const modelOf = async (catalog: FakeModelCatalog): Promise<string | undefined> => {
+    let clock = T0;
+    const t = setup(async (c) => void (await c.stopped), { now: () => clock, models: catalog });
+    await t.operator("PUT", "/v1/schedules/m", { cron: "* * * * *", task: "tick", missed: "catch-up" });
+    clock = T0 + 90_000;
+    await t.cronExt.sweep();
+    const [kid] = await children(t);
+    assert.ok(kid && kid.executor === "container");
+    return kid.spec.model;
+  };
+  assert.equal(await modelOf(new FakeModelCatalog(models, models[1])), "settings-default");
+  // Negative: when the catalog's default is the first listed, that one is used, so the assertion above depends on the default being applied.
+  assert.equal(await modelOf(new FakeModelCatalog(models, models[0])), "first");
 });
