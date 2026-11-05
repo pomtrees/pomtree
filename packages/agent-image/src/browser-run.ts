@@ -269,7 +269,7 @@ export function chromiumArgs(proxy: string, userAgent?: string): string[] {
     "--disable-background-networking",
     "--disable-component-update",
     "--disable-sync",
-    // Chromium background traffic (updater, time sync, hints, pings, reporting). Observed to still reach the audited proxy: android.clients.google.com:443 (GCM check-in) and update.googleapis.com:443 (component updater); no switch in the pinned Chromium stops them (see BROWSER_BACKGROUND in sandbox-docker browser-real-article.test.ts).
+    // Chromium background traffic (updater, time sync, hints, pings, reporting). Observed to still reach the audited proxy: android.clients.google.com:443 (GCM check-in) and update.googleapis.com:443 (component updater); no switch in the pinned Chromium stops them (see BROWSER_BACKGROUND in sandbox-docker egress.ts).
     "--disable-default-apps",
     "--no-pings",
     "--disable-domain-reliability",

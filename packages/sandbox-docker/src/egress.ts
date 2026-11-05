@@ -17,6 +17,8 @@ export const EGRESS_SOCKET_PATH = `${EGRESS_SOCKET_DIR}/${EGRESS_SOCKET_NAME}`;
 // Where the agent image's egress COPY (agent-image Dockerfile) puts the proxy entrypoint: the sidecar runs it, pomtreed's boot probe checks it.
 export const EGRESS_PROXY_PATH = "/opt/pomtree/egress/proxy.ts";
 export const EGRESS_PROXY_MEMORY_BYTES = 128 * 1024 ** 2;
+// Chromium background traffic that no switch in chromiumArgs suppresses in the pinned Chromium (GCM check-in, component updater and the component download it triggers) and that still reaches the audited proxy. It fires whether or not the article is reachable, so it is not evidence of page leakage; it is listed explicitly rather than waved through, so any other off-domain authority still fails. Everything else (clients2.google.com time sync, optimizationguide-pa) is suppressed and must not reappear.
+export const BROWSER_BACKGROUND: ReadonlySet<string> = new Set(["android.clients.google.com:443", "update.googleapis.com:443", "edgedl.me.gvt1.com:80"]);
 export function defaultDenyEgress(spec: SandboxSpec): SandboxSpec {
   return spec.egress ? spec : { ...spec, egress: { allow: [] } };
 }

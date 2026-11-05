@@ -13,6 +13,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BROWSER_BACKGROUND } from "../../packages/sandbox-docker/src/egress.ts";
 import { articlePageText, evidenceOf, modelResult, READ_FIRST_PAGE_CALL, textsIn } from "./content-harness.mts";
 import { liveDefaultDeadlineMs, createLiveBaseRepo, openLiveContentRuntime, planCaps, requireLiveUpstream } from "./content-live-runtime.mts";
 import { CONFIG_DEFAULTS } from "../../packages/core/src/index.ts";
@@ -36,8 +37,8 @@ function navigationRegionOf(content: Buffer): string | undefined {
 const SENTINEL = "sk-or-v1-BROWSER-SMOKE-SENTINEL-never-reaches-the-container";
 const ARTICLE = "https://www.rfc-editor.org/rfc/rfc2324.html";
 const PHRASE = "Hyper Text Coffee Pot Control Protocol";
-// Chromium background traffic no switch in chromiumArgs suppresses (see BROWSER_BACKGROUND in packages/sandbox-docker/src/browser-real-article.test.ts).
-const BACKGROUND = new Set(["android.clients.google.com", "update.googleapis.com", "edgedl.me.gvt1.com"]);
+// Chromium background traffic no switch in chromiumArgs suppresses (see BROWSER_BACKGROUND in packages/sandbox-docker/src/egress.ts); hosts only, since authorities are compared by hostOf (port stripped).
+const BACKGROUND = new Set([...BROWSER_BACKGROUND].map((a) => a.slice(0, a.lastIndexOf(":"))));
 // Named audit baseline: Pi calls pi.dev from inside the container. Observed in a real gated run, audited and default-deny-adjacent (it appears as
 // an audited row), and NOT proven disableable: no documented switch has been found (TODO(web) item (v)). Every other host must still fail.
 const PI_BASELINE = new Set(["pi.dev"]);

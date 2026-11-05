@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DEFAULTS } from "@pomtree/core";
 import { DockerSandbox } from "./docker.ts";
+import { BROWSER_BACKGROUND } from "./egress.ts";
 import { AUDIT_CHAIN_RE, DiskEgressAudit, sealAuditChain, type EgressAuditRecord } from "./audit.ts";
 import { IMAGE, pinnedImage, gate, testEgressNetwork } from "./docker-gate.ts";
 import { containerConfigTestEnv, OFFLINE_BROWSER_EXT, offlineBrowserExtMount, stubMounts, wsMount } from "./test-mounts.ts";
@@ -19,8 +20,6 @@ const ARTICLE = "https://www.rfc-editor.org/rfc/rfc2324.html";
 const PHRASE = "Hyper Text Coffee Pot Control Protocol";
 // Every authority the page is expected to pull; anything else (private, loopback, metadata, unknown host) fails the test.
 const PAGE_AUTHORITIES = new Set(["www.rfc-editor.org:443"]);
-// Chromium background traffic that no switch in chromiumArgs suppresses in the pinned Chromium (GCM check-in, component updater and the component download it triggers); listed explicitly rather than waved through. Everything else (clients2.google.com time sync, optimizationguide-pa) is suppressed and must not reappear.
-const BROWSER_BACKGROUND = new Set(["android.clients.google.com:443", "update.googleapis.com:443", "edgedl.me.gvt1.com:80"]);
 const skip =
   gate() ||
   (process.env.PTREE_NET_TESTS !== "1" && "PTREE_NET_TESTS not set (public-web test; offline CI skips)") ||

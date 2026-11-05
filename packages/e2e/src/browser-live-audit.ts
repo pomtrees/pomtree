@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BROWSER_BACKGROUND } from "@pomtree/sandbox-docker";
 import { CAPTURE_REPORT_NAMES } from "../../agent-image/src/browser-capture.ts";
 import { BROWSER_INTERACTIVE_TOOLS } from "../../agent-image/src/browser-run.ts";
 import { registrableDomain } from "./browser-live.ts";
@@ -23,10 +24,6 @@ export interface AuditRow {
   outcome: string;
   [k: string]: unknown;
 }
-
-// Traffic Chromium emits on its own (component updates, safe-browsing lookups). It fires whether or not the article is reachable,
-// so it is not evidence of page leakage; it is named exactly so that any other off-domain authority still fails.
-export const BROWSER_BACKGROUND: ReadonlySet<string> = new Set(["android.clients.google.com:443", "update.googleapis.com:443", "edgedl.me.gvt1.com:80"]);
 
 // The host's Chrome DevTools port on loopback. A page that tries to reach it is probing for a way to drive the host browser, so
 // the egress policy must refuse it; a denial here is the expected outcome, and any other denial is a policy surprise.
