@@ -695,8 +695,7 @@ export function hangingSandbox(id = "sb-hanging"): SandboxHandle {
 
 const HARNESS_KINDS = new Set(["message", "tool_call", "tool_result", "usage", "error", "user_input", "provider_error", "settled"]);
 
-// TODO(testing-dead-exports): exported but unused outside this file; un-export once the open packages/testing branches merge.
-export function assertWellFormedHarnessEvent(e: HarnessEvent): void {
+function assertWellFormedHarnessEvent(e: HarnessEvent): void {
   assert.ok(HARNESS_KINDS.has(e.kind), `unknown harness event kind ${String((e as { kind: unknown }).kind)}`);
   switch (e.kind) {
     case "message":

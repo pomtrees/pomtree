@@ -72,9 +72,8 @@ export interface BuildOpts {
 /** Default usage when a reply names none: small fixed numbers so settlement math stays exact. */
 export const DEFAULT_USAGE: StubUsage = { input: 10, output: 5 };
 
-// TODO(testing-dead-exports): exported but unused outside this file; un-export once the open packages/testing branches merge.
 /** OpenAI usage object. `prompt_tokens` includes cached tokens, as OpenAI reports it. */
-export function openAiUsage(u: StubUsage): Obj {
+function openAiUsage(u: StubUsage): Obj {
   const cacheRead = u.cacheRead ?? 0;
   const cacheWrite = u.cacheWrite ?? 0;
   const prompt = u.input + cacheRead + cacheWrite;

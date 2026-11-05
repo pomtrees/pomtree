@@ -198,8 +198,7 @@ const fingerprint = (...parts: unknown[]): string =>
     .digest("hex");
 
 // One scripted CaptureParser answer: let the pure function answer (null), reject with an error, or hang until released.
-// TODO(testing-dead-exports): exported but unused outside this file; un-export once the open packages/testing branches merge.
-export type FakeCaptureParserScript = null | { reject: Error } | { hang: true };
+type FakeCaptureParserScript = null | { reject: Error } | { hang: true };
 
 // CaptureParser that runs core's pure functions in-process (robotsVerdict, parseWaybackAvailability), so a test gets the real
 // verdicts without a child process. Every call is recorded in `calls` (method, decoded body and arguments). `script` is consumed in
