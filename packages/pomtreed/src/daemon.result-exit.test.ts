@@ -140,3 +140,44 @@ test("adopt path: a result recorded after adoption survives a second adoption fa
   assert.equal(r.exit, "succeeded");
   assert.equal(summaryOf(r), "found it");
 });
+
+// The attach-time branch: the container is gone by the time the restarted daemon re-attaches, so attach itself throws
+// SandboxUnavailable. The run is journalled as restarted-with-no-container and finishes failed.
+const errorMessages = async (t: ReturnType<typeof setup>, id: string) =>
+  (await t.journal.read({ agent: id })).flatMap((e) => (e.payload.kind === "error" ? [(e.payload as { message: string }).message] : []));
+
+test("adopt path: a container gone at attach time journals the restart and finishes the run failed", async () => {
+  const { t, a, sb } = await adopted();
+  t.fakes.hooks.raw.sandbox.exit(sb.id, 1);
+  await t.daemon.recover();
+  await until(async () => (await get(t, a.id)).state !== "running");
+  assert.equal((await get(t, a.id)).exit, "failed");
+  assert.ok((await errorMessages(t, a.id)).some((m) => /daemon restarted while running; container is gone/.test(m)));
+  assert.equal(
+    (await errorMessages(t, a.id)).some((m) => /adoption failed/.test(m)),
+    false,
+    "not the generic adoption-failure path",
+  );
+});
+
+test("negative, adopt path: a live container at attach time does not journal the container-gone error", async () => {
+  const { t, a, sb } = await adopted();
+  await t.daemon.recover();
+  await until(async () => t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "attach"));
+  t.fakes.hooks.raw.sandbox.exit(sb.id, 0);
+  await until(async () => (await get(t, a.id)).state !== "running");
+  assert.equal(
+    (await errorMessages(t, a.id)).some((m) => /container is gone/.test(m)),
+    false,
+  );
+});
+
+// Scripted through FakeSandbox.waitErrors instead of a stubbed attach: wait() rejects while the container is still attached.
+test("adopt path: a wait() that fails SandboxUnavailable with no result journals the stop and finishes the run failed", async () => {
+  const { t, a, sb } = await adopted();
+  t.fakes.hooks.raw.sandbox.waitErrors.set(sb.id, new SandboxUnavailableError());
+  await t.daemon.recover();
+  await until(async () => (await get(t, a.id)).state !== "running");
+  assert.equal((await get(t, a.id)).exit, "failed");
+  assert.ok((await errorMessages(t, a.id)).some((m) => m === "adopted container stopped unexpectedly"));
+});

@@ -1391,6 +1391,9 @@ export class FakeSandbox implements Sandbox {
   // Scripted start() failures, consumed in order (one per non-replayed start call); an entry of
   // null lets that call succeed. A failed start records nothing and does not consume an exit code.
   startErrors: (Error | null)[] = [];
+  // Scripted wait() failures by sandbox id: wait() on a handle from start() or attach() rejects with the entry instead of
+  // resolving at exit. Absent (the default) keeps the exit-resolving behavior.
+  waitErrors = new Map<SandboxId, Error>();
   // Terminals opened via openTerminal, per sandbox id, in open order. They end ("remote") when the sandbox exits.
   terminals = new Map<SandboxId, FakeTerminal[]>();
   private n = 0;
@@ -1432,7 +1435,7 @@ export class FakeSandbox implements Sandbox {
     const handle: SandboxHandle = {
       id,
       output: async function* () {},
-      wait: () => done,
+      wait: () => this.waitFor(id, done),
     };
     this.startKeys.set(idempotencyKey, handle);
     return handle;
@@ -1441,7 +1444,11 @@ export class FakeSandbox implements Sandbox {
   async attach(id: SandboxId, _agent: AgentId): Promise<SandboxHandle> {
     const s = this.running.get(id);
     if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
-    return { id, output: async function* () {}, wait: () => s.done };
+    return { id, output: async function* () {}, wait: () => this.waitFor(id, s.done) };
+  }
+  private waitFor(id: SandboxId, done: Promise<{ exitCode: number; oomKilled?: boolean }>) {
+    const err = this.waitErrors.get(id);
+    return err ? Promise.reject(err) : done;
   }
   async openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession> {
     const s = this.running.get(id);

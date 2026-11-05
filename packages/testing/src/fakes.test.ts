@@ -839,6 +839,23 @@ test("FakeSandbox.startErrors scripts typed start failures; ModelGateway.issueKe
   assert.equal((await f.gateway.spend("a")).spentMicros, 40);
 });
 
+test("FakeSandbox.waitErrors scripts a failing wait() on start and attach handles; other sandboxes still resolve at exit", async () => {
+  const f = createFakes();
+  const raw = f.hooks.raw.sandbox;
+  const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }] };
+  const h = await f.sandbox.start(spec, "k1");
+  const other = await f.sandbox.start(spec, "k2");
+  const attached = await f.sandbox.attach(h.id, "a");
+  raw.exit(h.id, 3);
+  raw.exit(other.id, 7);
+  raw.waitErrors.set(h.id, new SandboxUnavailableError());
+  await assert.rejects(h.wait(), SandboxUnavailableError);
+  await assert.rejects(attached.wait(), SandboxUnavailableError);
+  assert.deepEqual(await other.wait(), { exitCode: 7 });
+  raw.waitErrors.delete(h.id);
+  assert.deepEqual(await h.wait(), { exitCode: 3 });
+});
+
 test("FakeSandbox.resultWork records every call with its opts, maxBytes included, even when the sandbox is gone", async () => {
   const f = createFakes();
   const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }] };
