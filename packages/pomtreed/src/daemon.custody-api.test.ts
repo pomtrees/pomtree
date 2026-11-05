@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentRecord, Signal } from "@pomtree/core";
-import { fakeBundle } from "@pomtree/testing";
+import { fakeBundle, keyed } from "@pomtree/testing";
 import { handle } from "./api.ts";
-import { keyed, setup, spawnSpec } from "./test-setup.ts";
+import { setup, spawnSpec } from "./test-setup.ts";
 
 type T = ReturnType<typeof setup>;
 

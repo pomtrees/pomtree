@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mergeResumeKey } from "@pomtree/core";
 import type { AgentRecord, MergeReport, MergeResult } from "@pomtree/core";
-import { fakeBundle } from "@pomtree/testing";
+import { fakeBundle, keyed } from "@pomtree/testing";
 import { handle } from "./api.ts";
 import { unmergedRefusal } from "./daemon/merge.ts";
-import { keyed, op, setup, spawnSpec } from "./test-setup.ts";
+import { op, setup, spawnSpec } from "./test-setup.ts";
 
 type T = ReturnType<typeof setup>;
 

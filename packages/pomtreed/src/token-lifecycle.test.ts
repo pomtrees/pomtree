@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handle } from "./api.ts";
 import { issueToken } from "./auth.ts";
-import { keyed, SECRET, setup, spawnSpec } from "./test-setup.ts";
+import { keyed } from "@pomtree/testing";
+import { SECRET, setup, spawnSpec } from "./test-setup.ts";
 
 // A stale container (an earlier generation, fenced by kill_resume) must not be able to
 // submitResult/yield/reap with its old token; the token's generation is compared against the

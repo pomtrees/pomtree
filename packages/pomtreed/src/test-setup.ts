@@ -1,8 +1,7 @@
-import { FakeModelCatalog, TEST_MODEL, tmpDir } from "@pomtree/testing";
+import { FakeModelCatalog, TEST_MODEL, keyed, tmpDir } from "@pomtree/testing";
 import { createFakes } from "@pomtree/testing";
 import type { AgentRecord, JournalEntry, SpawnSpec } from "@pomtree/core";
 import type { OtlpExporterOptions } from "@pomtree/observe";
-import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,14 +35,6 @@ export const spawnSpec: SpawnSpec = {
   model: TEST_MODEL.id,
   systemPrompt: null,
   egress: { kind: "registry" },
-};
-
-// What a real client does (`pomtree` issues a key per invocation): a mutating call from a test helper carries a fresh idempotency key unless the
-// test names one. Tests of the key requirement itself call handle() directly.
-export const keyed = (method: string, body?: unknown): unknown => {
-  if (method === "GET" || (body !== undefined && (typeof body !== "object" || body === null || Array.isArray(body) || ArrayBuffer.isView(body)))) return body;
-  const b = (body ?? {}) as Record<string, unknown>;
-  return "idempotencyKey" in b ? body : { ...b, idempotencyKey: randomUUID() };
 };
 
 export type Ctx = ScriptCtx & { api: (method: string, url: string, body?: unknown) => Promise<ApiResponse> };

@@ -3,8 +3,8 @@ import { test } from "node:test";
 import type { Schedule, Signal, Template } from "@pomtree/core";
 import { handle } from "../api.ts";
 import { DEADLINE_KIND } from "../watchdog.ts";
-import { TEST_MODEL } from "@pomtree/testing";
-import { get, keyed, setup, until, userAbort } from "../test-setup.ts";
+import { TEST_MODEL, keyed } from "@pomtree/testing";
+import { get, setup, until, userAbort } from "../test-setup.ts";
 import { MAX_AGENT_SCHEDULES, MIN_AGENT_INTERVAL_MS } from "./cron.ts";
 
 // Targeted schedules (a periodic wakeup of one agent), the carried spawn parameters, and agent-scope authority.
