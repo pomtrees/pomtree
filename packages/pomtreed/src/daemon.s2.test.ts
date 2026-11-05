@@ -437,7 +437,6 @@ test("metering: a zero-cost usage event is priced from the rate table so the bud
 
 test("usage model: usage events are journaled with the run's model and the catalog price for zero-cost calls", async () => {
   const gateway = new FakeModelGateway();
-  gateway.lenientSpend = true;
   gateway.priceUsageResults.push(10_500_000, null); // first zero-cost call priced, second unknown
   const t = setup(
     async (c) => {

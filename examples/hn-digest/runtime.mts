@@ -203,8 +203,6 @@ export async function openRuntime(o: RuntimeOptions): Promise<Runtime> {
     const store = (o.openStore ?? openStore)(join(o.stateDir, "pomtreed.sqlite"));
     teardown.push({ label: "store close", run: async () => store.close(), store: true });
     const fakes = createFakes({ host: HOST_ID, ...(o.templates && { templates: o.templates }) });
-    // Ledger reads (`spend`) for agents with no key answer zero instead of throwing; they are not starts and are not counted.
-    fakes.hooks.raw.gateway.lenientSpend = true;
     const reviewed = new Set(o.reviewedOwners);
     const chatWorkflows = new Set(o.chatWorkflows ?? []);
     const sockPath = join(o.stateDir, `pomtreed-${randomBytes(4).toString("hex")}.sock`); // unique per open: a reused path hung after reopen

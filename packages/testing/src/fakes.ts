@@ -1716,10 +1716,6 @@ export class FakeModelGateway implements ModelGateway {
     this.registry = registry;
   }
   budgets = new Map<AgentId, { budget: number; spent: number }>();
-  // Accepted and ignored: `spend` of an agent that holds no credential now reads as the real gateway's answer (0 spent, the
-  // registered budget) rather than throwing, so leniency is the only behaviour. TODO(gw-lenient-spend): delete this field and
-  // its two assignments (packages/pomtreed/src/daemon.s2.test.ts, examples/hn-digest/runtime.mts), which this lane does not own.
-  lenientSpend = false;
   // Credentials are cached by AGENT plus idempotency key, as ProxyCredentialGateway does: one key replayed for two agents must
   // issue each its own credential. Caching by the key alone handed the second agent a credential scoped to the first.
   private issueKeys = new Map<string, { key: string; baseUrl: string }>();
