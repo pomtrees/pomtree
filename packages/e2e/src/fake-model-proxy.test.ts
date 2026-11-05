@@ -181,6 +181,8 @@ test("fake model through the real proxy: streamed text, tool call and 429 settle
   const settled = entries.filter((p) => p.kind === POMTREED_KINDS.modelSettlement);
   assert.equal(settled.length, 3, JSON.stringify(settled));
   assert.equal(r.debits.spentFor(r.agent.id), 2000 + 380 + 0);
+  // Committed is spend plus open reservations (the agent has no children), so equal to spend means the reserved total is 0.
+  assert.equal(r.debits.ledgerFor(r.agent.id).committedMicros, 2000 + 380 + 0);
 
   // The stub saw exactly the three calls, each matched to its rule, with the shapes the proxy forwarded.
   assert.deepEqual(r.stub.unmatched, []);
