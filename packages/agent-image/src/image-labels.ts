@@ -2,8 +2,7 @@
 // ran (the run manifest's `image` fields, docs/demo.md, 'Image identity'). The Pi version is read from the image, never assumed from the build
 // script: the Dockerfile stamps PI_VERSION_LABEL from the PI_VERSION build arg, whose one definition is the pin in scripts/build.ts.
 export const PI_VERSION_LABEL = "org.pomtree.pi.version";
-// The OCI revision label (short git sha) the Dockerfile stamps from AGENT_REVISION. pomtreed's revision.ts keeps its own IMAGE_REVISION_LABEL
-// constant with the same value; TODO(pi-label): pomtreed should import this one so the label name has one definition.
+// The OCI revision label (short git sha) the Dockerfile stamps from AGENT_REVISION.
 export const REVISION_LABEL = "org.opencontainers.image.revision";
 
 // The build targets of packages/agent-image/Dockerfile. `full` is the default (and last) stage; `demo` is the slim image (docs/demo.md,

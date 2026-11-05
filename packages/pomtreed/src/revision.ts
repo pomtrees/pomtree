@@ -8,9 +8,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { REVISION_LABEL } from "@pomtree/agent-image";
 import { type BuildIdentity, formatBuildIdentity, REVISION_FILE, resolveBuildIdentity } from "@pomtree/core";
-
-export const IMAGE_REVISION_LABEL = "org.opencontainers.image.revision";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const readOptional = (path: string): string | undefined => {
@@ -64,7 +63,7 @@ export function imageRevision(image: string): string | undefined {
     let out: string | undefined;
     try {
       out =
-        execFileSync("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${IMAGE_REVISION_LABEL}" }}`, image], {
+        execFileSync("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${REVISION_LABEL}" }}`, image], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 2000,

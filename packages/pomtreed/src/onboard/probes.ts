@@ -1,7 +1,7 @@
 // Gathers what `pomtreed preflight` evaluates: every host observation goes through an injected ProbeRunner (commands) or an injected
 // stat (files), so the gathering is testable with FakeProbeRunner and nothing here touches the real host. Evaluation is findings.ts.
+import { REVISION_LABEL } from "@pomtree/agent-image";
 import { type ExecFn, imageCheckVerdict, probeEgressProxy } from "../image-check.ts";
-import { IMAGE_REVISION_LABEL } from "../revision.ts";
 import { targetRepoRefusal } from "./repo.ts";
 import type { SetupFacts } from "./steps.ts";
 
@@ -118,7 +118,7 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
 
   const inspect = async (ref: string): Promise<ImageObs> => {
     if (!daemon) return { ref, state: "skipped", revision: undefined };
-    const r = await run("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${IMAGE_REVISION_LABEL}" }}`, ref]);
+    const r = await run("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${REVISION_LABEL}" }}`, ref]);
     const label = out(r);
     return r.code === 0
       ? { ref, state: "present", revision: label === null || label === "" || label === "<no value>" ? undefined : label }
