@@ -28,6 +28,7 @@ import {
   withStack,
 } from "./cli-operator-kit.ts";
 import type { AgentJson } from "./cli-scenarios-harness.ts";
+import { spawnKidCmd, waitReapCmd } from "./rly4-spawn.ts";
 
 // INS-6: doctor, /readyz and one agent on the stub stack.
 test("cli operator INS-6: doctor ok, /readyz 200 with no reasons, one agent succeeds and pomtree show prints its result", {
@@ -77,10 +78,8 @@ test("cli operator RLY-4: a third unreaped child is refused with exit 5 at maxCh
   timeout: TIMEOUT,
 }, async () => {
   const KID_BUDGET = 100_000;
-  const spawnKid = (n: number) =>
-    `pomtree spawn --task '[[scn:rly4kid]] finish at once ${n}' --name kid${n} --budget ${KID_BUDGET} --model ${MODEL_FLAG} > /tmp/kid${n} 2> /tmp/err${n}; echo SPAWN${n}=$?; echo ERR${n}=$(cat /tmp/err${n})`;
-  const waitReap = (n: number) =>
-    `for i in 1 2 3 4 5 6 7 8; do pomtree wait $(cat /tmp/kid${n}) --timeout 15000 && break; done; pomtree reap $(cat /tmp/kid${n}) > /dev/null; echo REAPED${n}=$?`;
+  const spawnKid = (n: number) => spawnKidCmd(n, { budget: KID_BUDGET, model: MODEL_FLAG });
+  const waitReap = (n: number) => waitReapCmd(n);
   const script: ModelScript = {
     name: "rly4",
     rules: [
