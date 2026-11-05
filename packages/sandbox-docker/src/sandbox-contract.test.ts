@@ -32,14 +32,13 @@ const sandbox = contract<SandboxContractWorld>("Sandbox", {
       startRetries: 0,
       startTimeoutMs: 60000,
     });
-    // The contract body's spec has no cmd, and the image's egress worker exits 1 without one (before the contract can kill it and
-    // read 137), so the real run supplies a long-lived command. TODO(sandbox-contract-cmd): SandboxContractWorld.cmd now carries it; this wrapper is redundant.
-    const start = docker.start.bind(docker);
-    docker.start = (spec, key) => start({ cmd: ["sleep", "300"], ...spec }, key);
     return {
       sandbox: docker,
       imageRef: IMAGE,
       workspaceId: "ws-contract",
+      // The image's egress worker exits 1 without a command, before the contract can kill it and read 137, so the world supplies a
+      // long-lived one.
+      cmd: ["sleep", "300"],
     };
   },
 });
