@@ -232,3 +232,14 @@ test("content or meta.json grown past its bound is refused; a normal file still 
   writeFileSync(join(root, "a", "deadbeef", "meta.json"), Buffer.alloc(1024 * 1024 + 1));
   assert.deepEqual(await store.list("a"), []);
 });
+
+test("meta.json with a missing, negative or non-integer sizeBytes is invalid, so the content read is never unbounded", async () => {
+  for (const bad of [undefined, -1, 1.5, "3", null]) {
+    const { store, root } = setup();
+    const r = await store.write(nr(), "k");
+    assert.ok(await store.read("a", "deadbeef"));
+    writeFileSync(join(root, "a", "deadbeef", "meta.json"), JSON.stringify({ ...r, sizeBytes: bad }));
+    assert.equal(await store.read("a", "deadbeef"), null, `sizeBytes ${String(bad)}`);
+    assert.deepEqual(await store.list("a"), []);
+  }
+});

@@ -44,6 +44,7 @@ async function parseMeta(meta: string, agent: AgentId, id: ReportId): Promise<Re
     if (!bytes) return null;
     const m = JSON.parse(Buffer.from(bytes).toString("utf8")) as Report;
     if (!m || typeof m !== "object" || m.agent !== agent || m.id !== id || typeof m.createdAt !== "number") return null;
+    if (!Number.isSafeInteger(m.sizeBytes) || m.sizeBytes < 0) return null; // bounds the content read
     return m;
   } catch {
     return null;
