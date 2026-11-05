@@ -60,6 +60,11 @@ export function planAgentListen(o: { listen: string | undefined; platform: strin
   };
 }
 
+// The plan every container-reachable listener uses (no explicit listen); `detect` runs only on Linux.
+export async function agentBindPlan(platform: string, detect: () => Promise<string | undefined>): Promise<AgentListenPlan> {
+  return planAgentListen({ listen: undefined, platform, gateway: platform === "linux" ? await detect() : undefined });
+}
+
 // Can a Linux container (host-gateway = bridge gateway) reach a listener bound to `host`? Wildcards yes, gateway yes, loopback no.
 export function containerReachable(o: { platform: string; boundHosts: string[]; gateway: string | undefined }): boolean {
   if (o.platform !== "linux") return true;

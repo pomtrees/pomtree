@@ -12,7 +12,7 @@ import { DirReportStore } from "@pomtree/report-dir";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
 import { GitWorkspace } from "@pomtree/workspace-git";
-import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
+import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { harnessArgv } from "../../pomtreed/src/harness-argv.ts";
 import { browseToolViolation, startModelStub } from "../../../examples/hn-digest/content-live-stub.mts";
 import { SECRET, gitRepo } from "./harness.ts";
@@ -135,11 +135,7 @@ test("smoke: a real Pi in a `browse` template's container declares exactly web_f
   });
   const server = await listen(daemon, socketPath);
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-  const plan = planAgentListen({
-    listen: undefined,
-    platform: process.platform,
-    gateway: process.platform === "linux" ? await detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })) : undefined,
-  });
+  const plan = await agentBindPlan(process.platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
   const agents = await listenAgents(daemon, plan.host, 0);
   apiUrl = `http://host.docker.internal:${agents.port}`;
   try {

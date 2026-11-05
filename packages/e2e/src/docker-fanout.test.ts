@@ -7,7 +7,7 @@ import type { Harness } from "@pomtree/core";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { Daemon, ProxyCredentialGateway, LocalOrchestrator, listen, listenAgents, wireLocalHost } from "@pomtree/pomtreed";
 import { buildChannelRegistry } from "../../pomtreed/src/channels.ts";
-import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
+import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { openStore } from "@pomtree/store-sqlite";
 import { FakeModelCatalog } from "@pomtree/testing";
 import { DirReportStore } from "@pomtree/report-dir";
@@ -167,11 +167,7 @@ test("real Docker, no model: scripted root spawns two children, waits, reaps, re
   });
   const server = await listen(daemon, socketPath);
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-  const plan = planAgentListen({
-    listen: undefined,
-    platform: process.platform,
-    gateway: process.platform === "linux" ? await detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })) : undefined,
-  });
+  const plan = await agentBindPlan(process.platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
   const agents = await listenAgents(daemon, plan.host, 0);
   apiUrl = `http://host.docker.internal:${agents.port}`;
   // Containers from other stacks (a live pomtreed on this Docker host) are not this test's to assert on.

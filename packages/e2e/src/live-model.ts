@@ -7,7 +7,7 @@ import { ModelProxy, ProxyCredentialGateway, createModelProxyServer, openPiCatal
 import type { PiCredentials } from "@pomtree/pomtreed";
 import { PI_AUTH_PATH } from "@pomtree/harness-pi";
 import type { Store } from "@pomtree/store-sqlite";
-import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
+import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { buildModelProxyOptions, startReservationReclaim } from "../../pomtreed/src/model-proxy-options.ts";
 import type { ProxySettlement } from "../../pomtreed/src/model-proxy/service.ts";
 
@@ -110,11 +110,7 @@ export async function startLiveModel(o: {
   const proxy = new ModelProxy(proxyOptions);
   const reclaim = startReservationReclaim(debits, upstreamTimeoutMs, (m) => console.error(m));
   const platform = o.platform ?? process.platform;
-  const plan = planAgentListen({
-    listen: undefined,
-    platform,
-    gateway: o.gateway ?? (platform === "linux" ? await detectBridgeGateway(dockerExec) : undefined),
-  });
+  const plan = await agentBindPlan(platform, async () => o.gateway ?? detectBridgeGateway(dockerExec));
   if (plan.warning) console.error(plan.warning);
   const server: Server = createModelProxyServer(proxy);
   await new Promise<void>((resolve, reject) => {

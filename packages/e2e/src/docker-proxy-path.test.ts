@@ -12,7 +12,7 @@ import { egressPolicy } from "@pomtree/pomtreed";
 import { DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
 import { CAPTURE_REPORT_NAMES } from "../../agent-image/src/browser-capture.ts";
 import { CLI_POMTREE_TIMEOUT_MS } from "../../agent-image/src/container-contract.gen.ts";
-import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
+import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
 import { pinnedImage } from "./live-model.ts";
 
@@ -150,11 +150,7 @@ test("browser worker pomtree paths reach a fake daemon through the real egress p
   });
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
   const platform = process.platform;
-  const plan = planAgentListen({
-    listen: undefined,
-    platform,
-    gateway: platform === "linux" ? await detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })) : undefined,
-  });
+  const plan = await agentBindPlan(platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, plan.mode === "off" ? "127.0.0.1" : plan.host, resolve);

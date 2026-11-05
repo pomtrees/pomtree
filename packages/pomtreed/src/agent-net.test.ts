@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentBindPlan,
   containerReachable,
   detectBridgeGateway,
   firewallHint,
@@ -52,6 +53,26 @@ test("planAgentListen: linux without a gateway falls back to loopback with a war
   const p = planAgentListen({ listen: undefined, platform: "linux", gateway: undefined });
   assert.equal(p.host, "127.0.0.1");
   assert.match(p.warning ?? "", /CANNOT reach/);
+});
+
+test("agentBindPlan: linux detects the gateway; other platforms never call detect and keep loopback; undetected gateway warns", async () => {
+  let calls = 0;
+  const detect = (gw: string | undefined) => async () => {
+    calls++;
+    return gw;
+  };
+  const p = await agentBindPlan("linux", detect("172.17.0.1"));
+  assert.deepEqual(p, planAgentListen({ listen: undefined, platform: "linux", gateway: "172.17.0.1" }));
+  assert.equal(calls, 1);
+  for (const platform of ["darwin", "win32"]) {
+    const q = await agentBindPlan(platform, detect("172.17.0.1"));
+    assert.equal(q.mode, "loopback");
+    assert.equal(q.host, "127.0.0.1");
+  }
+  assert.equal(calls, 1);
+  const w = await agentBindPlan("linux", detect(undefined));
+  assert.equal(w.mode, "loopback");
+  assert.match(w.warning ?? "", /could not determine the docker bridge gateway/);
 });
 
 test("planAgentListen: darwin/win32 keep loopback; explicit and off win", () => {

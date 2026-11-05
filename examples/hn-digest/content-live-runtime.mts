@@ -39,7 +39,7 @@ import { assertModelProxyReachable, type ModelRouteProbe, sandboxModelRouteProbe
 import { createPiHarness, fileTailSource, PI_SINK_FILE, PI_TTY_ENV } from "../../packages/harness-pi/src/index.ts";
 import { type Io, run } from "../../packages/pomtree/src/cli.ts";
 import { socketTransport } from "../../packages/pomtree/src/client.ts";
-import { detectBridgeGateway, planAgentListen } from "../../packages/pomtreed/src/agent-net.ts";
+import { agentBindPlan, detectBridgeGateway } from "../../packages/pomtreed/src/agent-net.ts";
 import { issueToken } from "../../packages/pomtreed/src/auth.ts";
 import { createReportsExtension } from "../../packages/pomtreed/src/builtin/reports.ts";
 import { wireCaptureBroker } from "../../packages/pomtreed/src/capture-wiring.ts";
@@ -757,11 +757,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
     await extensions.startAll();
 
     // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-    const plan = planAgentListen({
-      listen: undefined,
-      platform: process.platform,
-      gateway: bridge,
-    });
+    const plan = await agentBindPlan(process.platform, async () => bridge);
     const agents = await listenAgents(daemon, plan.host, 0);
     apiUrl = `http://host.docker.internal:${agents.port}`;
     teardown.push({ label: "agent server close", run: () => closeServer(agents.server) });
