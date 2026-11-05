@@ -286,14 +286,22 @@ test("a spool with rows beyond the journal cursor is not vacuumed until they are
     const collector = new EgressAuditCollector({ reader, journal: t.store.journal, root: async () => t.root, vacuumGraceMs: 0, now: () => DAY });
     await collector.ingest();
     assert.deepEqual(reader.vacuumed, ["box"], "ingested and acked in the same tick, then vacuumed");
-    // rows the collector has not ingested (journal cursor behind the spool): the candidate is ahead of the cursor
+    // More rows than one read returns (256), already acknowledged by the reader: the candidate (through 300) is ahead of the journal cursor (256) when vacuum runs.
     const behind = new ChainedEgressAuditReader();
-    behind.setRecords("box2", [{ ...row(1), sandbox: "box2", eventId: "box2:1" }]);
+    behind.setRecords(
+      "box2",
+      Array.from({ length: 300 }, (_, i) => ({ ...row(i + 1), sandbox: "box2", eventId: `box2:${i + 1}` })),
+    );
     behind.close("box2", 0);
-    const failingRead = new EgressAuditCollector({ reader: behind, journal: t.store.journal, root: async () => t.root, vacuumGraceMs: 0, now: () => DAY });
-    behind.failures.read.push(new Error("transient"));
-    await assert.rejects(failingRead.ingest());
-    assert.deepEqual(behind.vacuumed, []);
+    await behind.ack("box2", 300);
+    const lagging = new EgressAuditCollector({ reader: behind, journal: t.store.journal, root: async () => t.root, vacuumGraceMs: 0, now: () => DAY });
+    assert.equal(await lagging.ingest(), 256);
+    assert.deepEqual(behind.vacuumed, [], "the cursor lags the spool, so it is not vacuumed");
+    const kinds = (await t.journal()).map((p) => p.kind);
+    assert.equal(kinds.filter((k) => k === EGRESS_QUARANTINE_KIND).length, 0, "a lagging cursor is not tampering");
+    assert.equal(kinds.filter((k) => k === EGRESS_VACUUM_KIND).length, 1, "only the first spool has a vacuum intent");
+    assert.equal(await lagging.ingest(), 44, "the next tick takes the remaining rows");
+    assert.deepEqual(behind.vacuumed, ["box2"], "and vacuums once the cursor has caught up");
   } finally {
     t.clean();
   }
