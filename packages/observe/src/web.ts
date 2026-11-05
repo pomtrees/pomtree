@@ -97,6 +97,8 @@ export class LiveStream {
 // table bodies; pages wrap a pane in a minimal standalone document.
 
 // HTML-escape for attribute/text interpolation: untrusted ids and titles go through this.
+// TODO(ui-xss): harden the UI against agent-controlled text. Current behavior: ids and titles pass through this escape.
+// Client code sets text with textContent. Reopen if the UI is exposed beyond localhost.
 export const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 // JSON for embedding inside an inline <script>: `<` and the JS line separators are escaped.

@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// TODO(model-cutoff): add a training-cutoff field (unknown is ineligible). Current behavior: ModelEntry has no cutoff field.
+// Prerequisite of any forecast-scoring feature; an unknown cutoff should make a model's forecasts ineligible (fail closed).
 export interface ModelEntry {
   provider: string;
   id: string;

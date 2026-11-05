@@ -530,6 +530,8 @@ export class GitWorkspace implements Workspace {
     });
   }
 
+  // TODO(git-clone): finish the untrusted-agent gate and test fork on git 2.38 to 2.43. Current behavior: fork sanitizes the
+  // copied .git before running git, and runs git only in that copy. The gate spans other components, with no single code site.
   // Invariant: git runs only on a sanitised copy. The folder is agent-written, so the byte copy (symlinks copied as
   // links, never followed) is sanitised BEFORE any git touches it: `.git` must be a real directory holding no symlink
   // and no extension/reftable markers, every redirect or extension file is deleted, and `.git/config` is replaced with
@@ -561,6 +563,8 @@ export class GitWorkspace implements Workspace {
           );
         sanitizeGitDir(join(tmp, ".git"), child);
         this.writeInfoExclude(join(tmp, ".git"));
+        // TODO(fork-git-version): test the fork on git 2.40 to 2.43. Current behavior: GIT_NO_LAZY_FETCH, set by noLazyFetch, is
+        // only honoured by git 2.44 and later; before that, the config overwrite in sanitizeGitDir is the defence.
         // Lazy fetch is off for the copy's git calls only (the copy's config is controller-authored, see sanitizeGitDir).
         const copyOpts = { cwd: tmp, noLazyFetch: true };
         const g = (args: string[]) => this.text(["--git-dir", join(tmp, ".git"), "--work-tree", tmp, ...args], copyOpts);

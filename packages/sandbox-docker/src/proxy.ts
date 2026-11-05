@@ -387,6 +387,8 @@ export function attachProxy(server: ReturnType<typeof createServer>, allow: Set<
     const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
     const reservedName =
       bare === RELAY_HOSTNAME || bare === "localhost" || bare.endsWith(".localhost") || bare.endsWith(".local") || bare === "gateway.docker.internal";
+    // TODO(egress-residual): public ports and the writable audit log remain open. Current behavior: with auditedPublic set, any
+    // valid port 1..65535 to a public address is permitted; the audit-log half lives in audit.ts and the proxy mount.
     // TODO(egress): ports are not restricted to 80/443; SMTP/SSH-style tunnels to public IPs are allowed and audited
     // (the authority in every record carries the port). Current behavior: any valid port 1..65535 to a public address.
     const permitted = host && port > 0 && port <= 65535 && (relay || (!reservedName && (opts.auditedPublic || isAllowed(allow, host, port))));

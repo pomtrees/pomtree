@@ -155,6 +155,9 @@ export class Budget {
     await this.ctx.withLock(`budget-stall:${id}`, async () => {
       const entry = this.live.get(id);
       // No sandbox yet = an admission placeholder or the adopt reservation before its attach: nothing to park, and a yield would leave the container running.
+      // TODO(proxy-reserve-restart): escalate refusals seen before an adopted agent is live. Current behavior: they are dropped.
+      // A refusal with no live entry, no sandbox yet or while admitting returns here; only the next refused call reports
+      // it again, so an adopted agent that makes no further call stays unescalated.
       if (!entry || !entry.sandbox || entry.admitting || entry.session || entry.yielding || entry.cancelled || entry.timedOut || entry.result) return;
       if (await this.escalateBudget(id, entry, { remainingMicros, floorMicros })) return;
       // Fail closed visibly. The drive loop ends a run over_budget here; an adopted agent's container is not ours to tear down from a

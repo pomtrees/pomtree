@@ -95,6 +95,9 @@ const corpus: { name: string; row: unknown; ok: boolean; sequence?: number }[] =
   { name: "array row", row: [], ok: false },
 ];
 
+// TODO(vacuous-check-suspects): confirm these checks can fail. Current behavior: verdict() counts any throw as a rejection.
+// That includes a TypeError. Three more suspects: workspace-git workspace.test.ts,
+// e2e cli-scenarios-b.test.ts and e2e config-registry-drift.test.ts.
 function verdict(run: () => void): boolean {
   try {
     run();

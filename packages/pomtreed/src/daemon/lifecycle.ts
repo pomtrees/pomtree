@@ -318,6 +318,8 @@ export class Lifecycle {
     if (!p) throw new LifecycleError(404, `no such parent: ${requester}`);
     const rootId = await this.tree.rootAgentId();
     const isRoot = p.id === rootId;
+    // TODO(require-template): decide whether every spawn must name a template. Current behavior: req.template is optional.
+    // An untemplated spawn gets the daemon default spec (Tree.defaultSpec); a deterministic parent uses the code template.
     let template: Template | null = null;
     if (req.template !== undefined) {
       if (!d.templates && req.template !== CODE_TEMPLATE_ID) throw new LifecycleError(400, TEMPLATES_NOT_CONFIGURED);
@@ -1081,6 +1083,8 @@ export class Lifecycle {
     return (recorded.payload as { result?: unknown }).result;
   }
 
+  // TODO(cleanup-separate): make cleanup a daemon-retried finalization separate from the result. Current behavior: the result is
+  // refused with 409 while the sandbox workspace has uncommitted work, until it is pushed or an approved save succeeds.
   private async submitResultNow(
     r: AgentRecord,
     status: "succeeded" | "failed",
@@ -1250,6 +1254,8 @@ export class Lifecycle {
     if (this.dirty.delete(id) && !this.ctx.hub.store.draining()) void this.reconciler.reconcile().catch(() => {});
   }
 
+  // TODO(adopted-unmetered): meter adopted containers (and finish the other budget gaps). Current behavior: adoptContainer
+  // journals adopted stdout as assistant message events; unlike drive(), it parses no usage and runs no spend check.
   // Re-adopt a checkpoint-less running container after a daemon restart:
   // attach by sandbox id, stream its output into the journal, and finish from its exit — instead
   // of failing a still-live agent and cancelling its children. Fire-and-forget (like drive()): the
@@ -1593,6 +1599,8 @@ export class Lifecycle {
         throw new LifecycleError(422, `refusing to start ${id}: template ${containerSpec(rec).template ?? CODE_TEMPLATE_ID}: ${specProblem}`, {
           code: "template_error",
         });
+      // TODO(core-drift): pass the idempotency key to gateway.issueKey. Current behavior: the spawn path calls it with the agent
+      // id and budget only, though the port accepts an optional key.
       const model = await d.gateway.issueKey(id, prep.budgetMicros);
       const deadlineAt = this.budget.deadlines.get(id);
       const cred = d.credentials?.stage(id, model);
@@ -1674,6 +1682,8 @@ export class Lifecycle {
           ...(deadlineAt !== undefined && { POMTREE_AGENT_DEADLINE_AT: new Date(deadlineAt).toISOString() }),
         },
       };
+      // TODO(restart-start-retry): decide whether to retry a failed start. Current behavior: a failed start ends the run.
+      // The error is journaled as a drive-error row; e2e fault-gaps.test.ts (restart-rollback) pins the resume path.
       entry.sandbox = await d.sandbox.start(sandboxSpec, `${id}:${gen}:start`);
       await d.registry.setSandbox(id, gen, entry.sandbox.id, `${id}:${gen}:sandbox-set`);
       await this.journalSandbox(rec, gen, "started", entry.sandbox.id, {
@@ -1729,6 +1739,8 @@ export class Lifecycle {
             await this.ctx.record(rec, { kind: WAITING_KIND }, `${id}:${gen}:waiting:${i++}`);
             return;
           }
+          // TODO(proxy-error-cause): give repeated model-call errors their own run cause. Current behavior: a settle with
+          // no output counts as passive, is nudged, and at MAX_PASSIVE_SETTLES fails the run as passive_settle.
           const count = st.passive + 1;
           await this.ctx.record(rec, { kind: PASSIVE_SETTLE_KIND, count, max: MAX_PASSIVE_SETTLES } as never, `${id}:${gen}:passive-settle:${i++}`);
           if (count >= MAX_PASSIVE_SETTLES) {
@@ -1745,6 +1757,9 @@ export class Lifecycle {
           await this.deliver(id, { kind: "nudge", body, attempt: count, max: MAX_PASSIVE_SETTLES }, `${gen}:passive-nudge:${i - 1}`);
           return;
         }
+        // TODO(stdout-forge): add provenance to journal rows. Current behavior: events reaching here are journaled as received.
+        // Usage rows only gain model and costSource. Pi events are tailed from a sink file the agent can write,
+        // so a container process can forge them.
         await this.ctx.record(rec, ev.kind === "usage" ? await this.budget.meterUsage(rec, ev) : ev, `${id}:${gen}:ev:${i++}`);
         if (ev.kind === "error") harnessSettled = false; // the harness ended without settling (e.g. a nonzero exit)
         // The proxy refused a request for lack of budget (402): same escalation as reaching the cap.
@@ -1948,6 +1963,8 @@ export class Lifecycle {
     } finally {
       release(); // lets settleYield (the pump ended when the container stopped) release the gateway key and slot
     }
+    // TODO(yielded-row): fence or re-read the generation. Current behavior: the writes below use the pre-transition record.
+    // A wake can resume the agent the instant the yielded transition lands, so a bumped generation can make both writes fail.
     await this.ctx.record(r, { kind: "yielded" }, `${agent}:${r.generation}:yielded`);
     await this.ctx.hub.ops.mark(r, "yield", `${r.generation}:${o.idempotencyKey}`, { checkpoint: checkpoint.id });
     // Arm timer waits; signal waits are driven by orchestrator.wake.
@@ -2076,6 +2093,8 @@ export class Lifecycle {
     }
   }
 
+  // TODO(forced-resume-recovery): fence revoke and release on the generation. Current behavior: they are keyed by agent id only,
+  // so a forced resume landing before the yielded transition can overlap them with the resumed generation.
   // Crash recovery for a pause (see pausingMarker): the container is gone, the folder and session file are intact, so write the
   // checkpoint (same key as yield(), so a checkpoint that already landed is reused) and mark the agent yielded.
   // TODO(yield-deadline): the yield handshake has no deadline of its own (only the session wall-clock bounds it); a crash in between is completed idempotently here.
@@ -2207,6 +2226,8 @@ export class Lifecycle {
     return "resumed";
   }
 
+  // TODO(checkpoint-abi): refuse to resume a checkpoint written by a different Pi version or image. Current behavior: resume
+  // runs the checkpoint's recorded image digest (the configured image if empty) and compares no Pi version.
   private async resumeAgentNow(
     agent: AgentId,
     wake: string,
@@ -3371,6 +3392,8 @@ export class Lifecycle {
     await walk(kids);
   }
 
+  // TODO(orphan-policy): add a per-spawn onOrphan policy (cancel, adopt-suspend, adopt-continue). Current behavior: cancel.
+  // Every open child of a dead or exiting parent is cancelled through orchestrator.cancel with the grace period.
   // Cancel each still-live child of a dead/exiting parent: a grace period, then kill.
   async orphanChildren(parent: AgentRecord, open: AgentRecord[]) {
     const d = this.ctx.deps;

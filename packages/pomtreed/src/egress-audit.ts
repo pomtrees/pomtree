@@ -46,6 +46,8 @@ export const EGRESS_VACUUM_OUTCOME_KIND = "ext.egress.vacuum_outcome";
 // Consecutive read/ack failures before a spool is quarantined; a validation failure on a row is deterministic and quarantines at once.
 const QUARANTINE_AFTER = 3;
 
+// TODO(audit-identity): check the expected agent, host and generation on ingest. Current behavior: they are taken from the row
+// itself and only sanity-checked.
 // Per-row rules live in one place: sandbox-docker's validateRecord (the reader's own predicate), so pomtreed can never accept a row
 // the spool reader rejects. Only checks specific to ingestion stay here: pomtreed has no expected agent/host/generation (the spool
 // config owns them), so those are taken from the row and only sanity-checked.

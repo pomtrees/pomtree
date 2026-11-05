@@ -620,6 +620,8 @@ export function createExtGateway(opts: ExtGatewayOptions = {}): ExtensionGateway
         const refund = () => quota.give(QUOTA_SCOPES.webCalls, agent, window, 1);
         return account(agent, webFetchViaBroker(broker, agent, input, idempotencyKey, refund));
       }
+      // TODO(ext-idem): pass the idempotency key to the search provider. Current behavior: web_search drops the key.
+      // A retry with the same key queries the provider again; web_fetch already passes the key to the capture broker.
       if (extension === "web_search") {
         const denial = admit(agent);
         if (denial) return { ok: false, denied: true, reason: `web_search denied: ${denial}` };

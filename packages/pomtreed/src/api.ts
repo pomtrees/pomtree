@@ -280,6 +280,8 @@ async function route(daemon: Daemon, p: Principal, req: ApiRequest): Promise<Api
   const operator = () => {
     if (p.scope !== "operator") throw new ApiError(403, "operator scope required");
   };
+  // TODO(msg-authz-alias): decide whether to alias UI and CLI operator identities. Current behavior: they are separate.
+  // The operator token acts as cli:operator and the UI cookie as ui:operator; audit keys msg:<channel>:<key> differ.
   // The operator-rank identity of this request: a bearer operator token (the CLI/REST) is `cli:operator`, the UI session cookie
   // is `ui:operator`. Both are rank operator in the channel registry (always allowed, audited, exempt from limits).
   const operatorActor = (): MessagingSender => ({ channel: req.token ? CLI_CHANNEL : UI_CHANNEL, sender: "operator" });
@@ -445,6 +447,8 @@ async function route(daemon: Daemon, p: Principal, req: ApiRequest): Promise<Api
   // /v1/host/agents/:id/report. Host scope only, and ONLY these three shapes (see host-read.ts for the safe projection). The
   // caller must name the chat sender (`sender=<id>`), who goes through the same authorizeInbound hook as POST /v1/messages
   // (route "status") when it is installed, then a per-sender/global rate limit. Unknown, reaped and "self" ids are one 404.
+  // TODO(channels-reads): route reads through the action core with one rank-aware projection. Current behavior: host reads use
+  // their own sender check and HostReadLimiter and write no audit row.
   if (res === "host") {
     if (p.scope !== "host") throw new ApiError(403, "host scope required");
     if (!adapterChannel(p.channel)) throw new ApiError(403, `channel ${p.channel} is not a configured adapter`);
@@ -566,6 +570,8 @@ async function route(daemon: Daemon, p: Principal, req: ApiRequest): Promise<Api
     throw new ApiError(405, "method not allowed");
   }
 
+  // TODO(model-pricing-query): let agents query model prices before setting child budgets. Current behavior: operator-only route.
+  // It returns only the model list; rates live in the model proxy (model-proxy/rates.ts, pi-catalog.ts), not exposed here.
   // The models Pi can use (operator-only); the New agent form and `pomtree models` read this.
   if (res === "models") {
     operator();
@@ -1085,6 +1091,8 @@ async function route(daemon: Daemon, p: Principal, req: ApiRequest): Promise<Api
     if (r.state === "exited" || r.state === "reaped") throw new ApiError(409, `agent already ${r.state}`);
     const cb = obj(req.body ?? {});
     const key = idemKey(cb);
+    // TODO(channels-kill): route kill through the action core like cancel. Current behavior: after the operator-scope and agent-
+    // state checks, kill calls daemon.kill directly and writes no message_received row.
     if (action === "cancel") await act({ kind: "cancel", to: agent, graceMs: num(cb.graceMs, "graceMs") }, key);
     else await daemon.kill(agent, key);
     return ok({ accepted: true }, 202);

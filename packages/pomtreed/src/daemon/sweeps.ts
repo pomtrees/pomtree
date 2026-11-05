@@ -34,6 +34,8 @@ export class Sweeps {
   // with start = when the next sweep was due. Each still counts as WatchdogSnapshot.clockGapMs for an agent whose last
   // progress is before its end, so the gap inside now - lastProgressAt never reads as a stall. In memory like
   // lastWatchdogSweepAt: a restart forgets them (its own first sweep sets the baseline). Bounded to the newest few.
+  // TODO(watchdog-suspend): persist the clock-gap record. Current behavior: kept in memory, newest MAX_CLOCK_GAPS only.
+  // After a daemon restart the first sweep sets a new baseline.
   private clockGaps: { start: number; end: number }[] = [];
 
   constructor(ctx: DaemonCtx, tree: Tree, budget: Budget, live: ReadonlyMap<AgentId, Live>, resuming: ReadonlyMap<AgentId, unknown>) {

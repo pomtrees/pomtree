@@ -42,6 +42,8 @@ export const CLI_CHANNEL = "cli";
 /** Names an adapter may not claim, compared case-insensitively (`operator` is the rank name; a channel called that would be confusable with it in audit lines). */
 const RESERVED = new Set([CLI_CHANNEL, "operator"]);
 
+// TODO(channels-manage): add a manager surface to enable and disable channels and extensions at runtime. Current behavior: the
+// registry is built once at boot from the configured channel lists and has no enable or disable operation.
 export function buildChannelRegistry(messagingChannels: readonly string[], escalationChannels: readonly string[]): ChannelRegistry {
   for (const c of [...messagingChannels, ...escalationChannels]) {
     // The same charset the host tokens (`ht.<channel>.<hmac>`) and the token files use: a bad name must not reach issueToken.

@@ -66,6 +66,8 @@ export interface ResultDisposition {
   ttlMs?: number;
 }
 
+// TODO(injection-risk): add an untrusted-content marker to Template and a general accepted-risk statement. Current behavior:
+// Template has no such field, and SPEC.md states the prompt-injection risk only for the interactive browser profile.
 export interface Template {
   id: TemplateId;
   name?: string;

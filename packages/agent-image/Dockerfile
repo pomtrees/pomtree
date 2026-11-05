@@ -6,6 +6,8 @@
 # Base image index digest (linux/amd64 + linux/arm64), captured 2026-10-03.
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS system
 
+# TODO(image-repro): pin apt packages and record Pi and image digest per commit. Current behavior: the apt-get install lines
+# name packages without version pins.
 # git: agent workspaces; curl: shell probes and downloads; ripgrep + fd-find: tools pi would otherwise try to download at run time
 # (sandbox egress blocks that); Debian ships fd as `fdfind`, so symlink it to the name pi looks for.
 RUN apt-get update \
@@ -18,6 +20,8 @@ ARG PI_VERSION
 ARG PI_NPM_INTEGRITY
 # The pinned Pi version, read back by parseImageInspect (src/image-labels.ts PI_VERSION_LABEL) so a run states it from the image.
 LABEL org.pomtree.pi.version=$PI_VERSION
+# TODO(pi-shrinkwrap): check the Pi tarball for npm-shrinkwrap.json. Current behavior: the build never inspects it for one.
+# The tarball's sha512 is checked, then it is installed with npm install -g, so transitive dependencies may float.
 RUN test -n "$PI_VERSION" && test -n "$PI_NPM_INTEGRITY" \
  && cd /tmp && npm pack --silent "@earendil-works/pi-coding-agent@$PI_VERSION" \
  && node -e 'const c=require("crypto"),f=require("fs");const got="sha512-"+c.createHash("sha512").update(f.readFileSync(process.argv[1])).digest("base64");if(got!==process.argv[2])throw Error("Pi integrity mismatch")' \

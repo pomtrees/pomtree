@@ -118,6 +118,8 @@ export function workerFailureOf(w: WorkerEvidence): { cause: string | null; reas
   return { cause, reason: cause === "other" && typeof detail?.stderrTail === "string" && detail.stderrTail !== "" ? "runtime-error" : null };
 }
 
+// TODO(capture-fail-detail): add byte sizes, timeout values and a bounded stderr tail for other failure kinds. Current behavior:
+// it keeps exit, exitCause, failure, captureCause and captureReason.
 // The one line provenance.json keeps per article: the exit, its cause, the last failed tool's error, and the capture failure cause and reason.
 export function workerSummaryOf(w: WorkerEvidence): {
   exit: string | null;

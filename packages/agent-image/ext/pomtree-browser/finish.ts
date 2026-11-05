@@ -14,6 +14,8 @@ export const FINISH_STATUSES = ["succeeded", "failed"] as const;
 export type FinishStatus = (typeof FINISH_STATUSES)[number];
 export const FINISH_TIMEOUT_MS = 30_000;
 
+// TODO(browse-handoff-trust): frame the capture_finish summary as untrusted for the parent, or restrict egress. Current behavior:
+// the summary has control characters replaced by spaces and is capped at 8 KiB.
 // Strips C0/C1 control characters (newline and tab included) and caps at 8 KiB of UTF-8 without splitting a code point.
 export function sanitizeSummary(raw: string): string {
   const clean = raw.replace(/\p{Cc}/gu, " ");

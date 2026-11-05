@@ -331,6 +331,8 @@ export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOpti
   const res = spec.resources ?? {};
   // This is deliberately fail-closed. Post-exit accounting is not a quota, and Docker's
   // rootfs storage limit does not cover the writable bind mounts this adapter gives agents.
+  // TODO(quotas): enforce per-agent disk quotas. Current behavior: any set diskBytes throws, so the start fails (fail-closed).
+  // Docker's rootfs storage limit does not cover the writable bind mounts; a quota-backed mount provider is the open mechanism.
   if (res.diskBytes !== undefined) throw new Error(DISK_QUOTA_UNSUPPORTED);
   // TODO(accelerators): accelerators are not realized by the Docker adapter yet; a set value fails the start instead of being ignored.
   if (res.accelerators?.length) throw new Error("resources.accelerators is not supported by the docker sandbox");

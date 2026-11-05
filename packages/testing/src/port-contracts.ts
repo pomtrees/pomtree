@@ -50,6 +50,8 @@ const SPEC = { image: "img", envManifestHash: null, extensions: [], systemPrompt
 
 // ---- Registry root pool (setRootPool) and provider attempts -------------------------------------------------------
 
+// TODO(conformance-suites): package the port and merge contract bodies as documented conformance suites. Current behavior:
+// they are exported *ContractBody functions with no packaged suite wrapper (only messagingWireSuite is packaged).
 // The operator's root-pool movement: applied and journaled together, a withdrawal capped at the unheld remainder and refused
 // in full beyond it, an unchanged target a no-op. Runs over JournalAppendContractWorld (a registry and its journal).
 export async function registryRootPoolContractBody(w: JournalAppendContractWorld): Promise<void> {

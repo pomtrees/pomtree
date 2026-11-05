@@ -516,6 +516,8 @@ export async function validateStoryResult(raw: unknown, story: Story, b: Content
 export const EVIDENCE_BEGIN = "<<<HN_EVIDENCE_BEGIN>>>";
 export const EVIDENCE_END = "<<<HN_EVIDENCE_END>>>";
 
+// TODO(article-paging): record a digest limitation when the stored article text exceeds what is offered. Current behavior: the
+// analyst prompt names the unread tail; no limitation line is added.
 // The article-reading paragraph of the analysis task: where the stored text is, how to read it in pages, and what is not offered.
 // Empty when the story has no usable article. This is the whole of the analyst's article access: the `article_page` tool, which reads only its own pages.
 export function articleReadingLines(evidence: EvidenceBundle, plan: PagePlan | null): string[] {
