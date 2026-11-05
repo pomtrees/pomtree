@@ -168,13 +168,18 @@ export class ProxyCredentialGateway implements ModelGateway {
   }
 
   // overage-book: once a child is reaped, the ledger books its consumed (max(carve, consumed)) against the parent; a consumed
-  // past the carve is journaled on the parent as an explicit write-off, once per child (idempotency key by child id).
+  // past the carve is journaled on the parent as an explicit write-off, once per child. Two guards: the idempotency key by child id
+  // (concurrent and in-window replays) and a paginated scan of the parent's journal for this child's row, because the journal's
+  // idempotency rows are pruned and a later revoke of the same reaped child (boot replay) would otherwise book it again.
+  // budget_overage is not a prunable journal kind, so the scan is reliable. Cost: one paginated parent-journal read per revoke
+  // of a reaped child with overage > 0.
   private async bookOverage(agent: AgentId, l: AgentLedger): Promise<void> {
     if (l.overageMicros <= 0) return;
     const rec = await this.proxy.registry.get(agent);
     if (rec?.state !== "reaped" || rec.parent === null) return;
     const parent = await this.proxy.registry.get(rec.parent);
     if (!parent) return;
+    if (await this.overageBooked(parent.id, agent)) return;
     await this.proxy.journal.append({
       agent: parent.id,
       host: parent.host,
@@ -182,6 +187,19 @@ export class ProxyCredentialGateway implements ModelGateway {
       idempotencyKey: `budget-overage:${agent}`,
       payload: { kind: POMTREED_KINDS.budgetOverage, child: agent, carve: l.budgetMicros, consumed: l.committedMicros, overage: l.overageMicros },
     });
+  }
+
+  private async overageBooked(parent: AgentId, child: AgentId): Promise<boolean> {
+    const limit = 500;
+    for (let from = 0; ; ) {
+      const page = await this.proxy.journal.read({ agent: parent, from, limit });
+      for (const e of page) {
+        const p = e.payload as { kind?: unknown; child?: unknown };
+        if (p.kind === POMTREED_KINDS.budgetOverage && p.child === child) return true;
+      }
+      if (page.length < limit) return false;
+      from = (page.at(-1)?.seq ?? from) + 1;
+    }
   }
 }
 

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { POMTREED_KINDS } from "@pomtree/core";
 import { FakeJournal, FakeModelDebitStore, FakeRegistry } from "@pomtree/testing";
 import { openStore } from "@pomtree/store-sqlite";
 import { decodeGatewayCredential, encodeGatewayCredential, ProxyCredentialGateway, reclaimStaleReservations } from "./gateway.ts";
@@ -331,6 +332,31 @@ test("gateway.spend reads the proxy debit store (the single spend authority), ne
   debits.settle(r2.reservation, 95);
   assert.equal((await gateway.spend("a1")).spentMicros, 107);
   assert.deepEqual(await gateway.revoke("a1"), { unusedMicros: 0 });
+});
+
+test("a repeat revoke of a reaped child books its overage once even when the idempotency record is gone", async () => {
+  const now = () => Date.now();
+  const registry = new FakeRegistry(now);
+  const base = { name: "n", task: "t", host: "h", budgetMicros: 1000, spec: SPEC };
+  await registry.create({ ...base, id: "p1", parent: null, idempotencyKey: "p" });
+  await registry.create({ ...base, id: "c1", parent: "p1", idempotencyKey: "c" });
+  const child = registry.agents.get("c1");
+  assert.ok(child);
+  child.state = "reaped";
+  const journal = new FakeJournal(now, registry);
+  // Model a pruned idempotency record: every append gets a fresh key, so only the gateway's journal scan can dedupe.
+  const append = journal.append.bind(journal);
+  let n = 0;
+  journal.append = (e) => append({ ...e, idempotencyKey: `${e.idempotencyKey}#${n++}` });
+  const debits = new FakeModelDebitStore({ secret: "controller-secret" });
+  debits.ledgerFor = () => ({ budgetMicros: 1000, committedMicros: 1500, remainingMicros: 0, overageMicros: 500 });
+  const gateway = new ProxyCredentialGateway({ journal, registry, secret: "controller-secret", proxyBaseUrl: "http://relay", tokenTtlMs: 500, debits });
+  const rows = async () => (await journal.read({ agent: "p1" })).filter((e) => (e.payload as { kind?: string }).kind === POMTREED_KINDS.budgetOverage);
+  await gateway.revoke("c1");
+  assert.equal((await rows()).length, 1);
+  await gateway.revoke("c1");
+  assert.equal((await rows()).length, 1, "a second revoke books no second overage row");
+  assert.equal(n, 1, "the second revoke did not even attempt an append");
 });
 
 test("gateway.priceUsage catalog-prices a zero-cost usage event per model", async () => {
