@@ -124,8 +124,24 @@ export interface Stack {
   // The debit ledger row (no pomtree verb shows reserved micros); read-only, beside the live daemon.
   debit(agent: string): { budget: number; spent: number; reserved: number } | null;
   restart(): Promise<void>;
+  // Signals pomtreed and waits for it to exit, leaving the state dir in place so restart() boots on it.
+  kill(signal: NodeJS.Signals): Promise<void>;
   pomtreedLog(): string;
   close(): Promise<void>;
+}
+
+// Signals `p` and waits for it to exit, escalating to SIGKILL after `graceMs`. A child that already died, by exit code or by signal, returns
+// at once: its 'exit' event has fired and will not fire again, and a signal death leaves exitCode null.
+export async function stopChild(p: ChildProcess, signal: NodeJS.Signals, graceMs: number): Promise<void> {
+  if (p.exitCode !== null || p.signalCode !== null) return;
+  const exited = new Promise<void>((r) => p.once("exit", () => r()));
+  p.kill(signal);
+  const t = setTimeout(() => p.kill("SIGKILL"), graceMs);
+  try {
+    await exited;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 const freePort = () =>
@@ -251,13 +267,7 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
     }
   };
   const stop = async () => {
-    const p = child;
-    if (!p || p.exitCode !== null) return;
-    const exited = new Promise<void>((r) => p.once("exit", () => r()));
-    p.kill("SIGTERM");
-    const t = setTimeout(() => p.kill("SIGKILL"), 30_000);
-    await exited;
-    clearTimeout(t);
+    if (child) await stopChild(child, "SIGTERM", 30_000);
   };
 
   try {
@@ -318,11 +328,14 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
       await stop();
       await start();
     },
+    async kill(signal) {
+      if (child) await stopChild(child, signal, 30_000);
+    },
     pomtreedLog: () => log,
     async close() {
       try {
         // SIGTERM drains and leaves containers adoptable, so stop every live agent first: no container outlives the test.
-        if (child?.exitCode === null) {
+        if (child?.exitCode === null && child.signalCode === null) {
           const ps = await pomtree(["ps"], 20_000);
           const live = ps.code === 0 ? ps.json<AgentJson[]>().filter((a) => !["exited", "reaped"].includes(a.state) && a.parent !== null) : [];
           for (const a of live) await pomtree(["kill", a.id], 20_000);

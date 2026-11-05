@@ -1,7 +1,7 @@
 // Helpers for the S1 crash and credential scenarios (cli-recovery.test.ts, cli-credentials.test.ts) beside the CLI scenario harness
 // (cli-scenarios-harness.ts): a real SIGKILL of the stack's pomtreed, read-only views of the debit store, and `docker` queries by label.
 // Observation only; nothing here drives pomtreed except by killing it.
-import { ChildProcess, execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -46,24 +46,15 @@ const alive = (pid: number) => {
   }
 };
 
-// TODO(harness-sigkill): Stack should expose kill('SIGKILL'). Its restart() only SIGTERMs, and its stop() decides "already exited" from
-// ChildProcess.exitCode alone, which stays null for a signal death while the 'exit' event has already fired, so restart() after an
-// external SIGKILL would wait for that event forever. Until the harness changes: the pid comes from pomtreed.lock, the Stack's own
-// ChildProcess is found among the process's active handles (before the kill, while it is live), and its exitCode is set once the pid is gone
-// so that restart() skips the stop and boots pomtreed on the same state dir.
-export async function sigkillPomtreed(stack: Pick<Stack, "stateDir">): Promise<number> {
+// SIGKILLs the stack's pomtreed through the harness (Stack.kill), so a later restart() boots pomtreed on the same state dir.
+export async function sigkillPomtreed(stack: Pick<Stack, "stateDir" | "kill">): Promise<number> {
   const pid = pomtreedPid(stack);
-  const handles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles();
-  const child = handles.find((h): h is ChildProcess => h instanceof ChildProcess && h.pid === pid);
-  if (!child) throw new Error(`no live child process with pomtreed's pid ${pid} in this test process; was pomtreed started by this stack?`);
-  process.kill(pid, "SIGKILL");
+  await stack.kill("SIGKILL");
   const deadline = Date.now() + 15_000;
   while (alive(pid)) {
     if (Date.now() > deadline) throw new Error(`pomtreed pid ${pid} still alive 15s after SIGKILL; kill it by hand and check the state dir lock`);
     await sleep(50);
   }
-  await sleep(300); // let the 'exit' event land before exitCode is overwritten
-  (child as { exitCode: number | null }).exitCode = 137;
   return pid;
 }
 
