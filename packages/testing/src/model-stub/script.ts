@@ -60,6 +60,22 @@ export type Fault =
   | { type: "empty" }
   | { type: "refusal"; text?: string };
 
+/** Every `Fault["type"]`, for script validation; the check below fails to compile if it drifts from the union. */
+const FAULT_TYPES = [
+  "status",
+  "reset_before_headers",
+  "cut_mid_stream",
+  "in_stream_error",
+  "missing_usage",
+  "oversize",
+  "slow_stream",
+  "malformed_tool_json",
+  "empty",
+  "refusal",
+] as const satisfies readonly Fault["type"][];
+const _faultTypesExhaustive: Fault["type"] extends (typeof FAULT_TYPES)[number] ? true : never = true;
+void _faultTypesExhaustive;
+
 export interface ToolCallSpec {
   name: string;
   arguments: string | Record<string, unknown>;
@@ -228,6 +244,8 @@ function checkReply(reply: unknown, where: string, fail: (why: string) => never)
   } else if (kind === "fault") {
     const f = (r as Record<string, unknown>).fault as Record<string, unknown>;
     if (typeof f?.type !== "string") fail(`${where}: fault needs \`type\``);
+    if (!(FAULT_TYPES as readonly string[]).includes(f.type as string))
+      fail(`${where}: unknown fault type ${String(f.type)}; use one of ${FAULT_TYPES.join(", ")}`);
   } else {
     fail(`${where}: unknown reply kind ${String(kind)}`);
   }
