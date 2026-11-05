@@ -32,6 +32,24 @@ test("operator workflow configuration defaults deny and rejects malformed/wildca
   );
 });
 
+test("configuration errors name the registry key, not an environment variable", () => {
+  for (const [owners, grants, key] of [
+    ["Bad Name", "{}", "workflow.reviewedExtensions"],
+    ["a,a", "{}", "workflow.reviewedExtensions"],
+    ["-a", "{}", "workflow.reviewedExtensions"],
+    ["a", "bad", "workflow.templates"],
+    ["a", "[]", "workflow.templates"],
+    ["a", "null", "workflow.templates"],
+  ] as const) {
+    assert.throws(
+      () => new WorkflowRuntimePolicy(owners, grants),
+      (error: Error) => error.message.startsWith(`invalid ${key}:`) && !/POMTREED_/.test(error.message),
+    );
+  }
+  // The reviewedExtensions message states the NAME rule, including the first-character restriction "-a" breaks.
+  assert.throws(() => new WorkflowRuntimePolicy("-a"), /starts with a lowercase letter or digit, continues with lowercase letters, digits, - or _/);
+});
+
 // Same composition callbacks as main, but transports/gateway/workspaces are shared offline fakes.
 async function runtime(policy: WorkflowRuntimePolicy, pick = route, declare = true) {
   let t!: ReturnType<typeof setup>;

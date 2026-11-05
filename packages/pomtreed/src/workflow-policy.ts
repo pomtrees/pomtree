@@ -13,16 +13,21 @@ export class WorkflowRuntimePolicy {
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean);
-    if (owners.some((name) => !NAME.test(name)) || new Set(owners).size !== owners.length) throw new Error("invalid POMTREED_WORKFLOW_REVIEWED_EXTENSIONS");
+    if (owners.some((name) => !NAME.test(name)) || new Set(owners).size !== owners.length)
+      throw new Error(
+        "invalid workflow.reviewedExtensions: each entry must be an extension owner name that starts with a lowercase letter or digit, continues with lowercase letters, digits, - or _, and appears once; fix or remove the offending entry",
+      );
     this.owners = new Set(owners);
     let value: unknown;
     try {
       value = JSON.parse(templateJson);
     } catch {
-      throw new Error("invalid POMTREED_WORKFLOW_TEMPLATES JSON");
+      throw new Error('invalid workflow.templates: the value is not valid JSON; set it to a JSON object such as {"<ext>/<driver>": ["<template>"]}');
     }
     if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error("POMTREED_WORKFLOW_TEMPLATES must map qualified workflows to template arrays");
+      throw new Error(
+        'invalid workflow.templates: it must be a JSON object mapping each qualified workflow driver to an array of template ids, such as {"<ext>/<driver>": ["<template>"]}',
+      );
     this.grants = new Map();
     for (const [driver, templates] of Object.entries(value)) {
       if (!DRIVER.test(driver) || !this.owners.has(driver.split("/")[0]!))

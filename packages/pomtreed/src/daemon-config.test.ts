@@ -108,7 +108,7 @@ test("each rejection class surfaces with its exact message", () => {
     assert.match(f.errors({ env: { POMTREED_HOST_LISTEN: "nope" } })[0] as string, /^invalid POMTREED_HOST_LISTEN="nope"/);
     assert.match(f.errors({ env: { POMTREED_AGENT_LISTEN: "nope" } })[0] as string, /^invalid POMTREED_AGENT_LISTEN="nope"/);
     assert.match(f.errors({ env: { POMTREED_STATE_GRANTS: '{"x/y":[{"owner":"x","mode":"w"}]}' } })[0] as string, /POMTREED_STATE_GRANTS: mode for x\/y/);
-    assert.match(f.errors({ env: { POMTREED_WORKFLOW_REVIEWED_EXTENSIONS: "Bad Name" } })[0] as string, /invalid POMTREED_WORKFLOW_REVIEWED_EXTENSIONS/);
+    assert.match(f.errors({ env: { POMTREED_WORKFLOW_REVIEWED_EXTENSIONS: "Bad Name" } })[0] as string, /invalid workflow\.reviewedExtensions/);
     assert.deepEqual(f.errors({ env: { POMTREED_MODEL_BASE_URL: "" } }), [
       "model.baseUrl is required: the model proxy is the only model path (set POMTREED_MODEL_BASE_URL)",
     ]);
