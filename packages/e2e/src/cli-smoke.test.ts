@@ -91,7 +91,7 @@ async function usageKeys(): Promise<{ keys: string[]; flags: Set<string> }> {
   const flags = new Set<string>();
   for (const line of text.split("\n")) {
     if (line.startsWith("usage") || line.startsWith("global")) continue;
-    const m = /^ {2}([a-z]+)(?: ([a-z]+(?:\|[a-z]+)*))?(?= |$)/.exec(line);
+    const m = /^ {2}([a-z][a-z-]*)(?: ([a-z][a-z-]*(?:\|[a-z][a-z-]*)*))?(?= |$)/.exec(line);
     if (m) {
       const subs = m[2] ? m[2].split("|") : [undefined];
       for (const s of subs) keys.push(s ? `${m[1]} ${s}` : m[1]!);
@@ -535,6 +535,17 @@ const BLANK: Case[] = [
   { name: "whoami (root)", covers: ["whoami"], scope: "agent", as: "root", argv: () => ["whoami"], out: /^\S+ root running gen 0 host h1$/ },
   { name: "ext list (no extensions enabled)", covers: ["ext list"], scope: "agent", as: "root", argv: () => ["ext", "list"], out: /^no extensions$/ },
   { name: "ext list --json (no extensions)", scope: "agent", as: "root", argv: () => ["ext", "list", "--json"], json: { extensions: "array" } },
+  // No human message is unanswered in the blank world, so the daemon refuses the declaration with a clean conflict.
+  {
+    name: "await-user (no human message)",
+    covers: ["await-user"],
+    scope: "agent",
+    as: "root",
+    argv: () => ["await-user"],
+    exit: EXIT.conflict,
+    out: /Valid exits are: keep working, `pomtree result`, or `pomtree yield`/,
+    fail: true,
+  },
 ];
 
 // ---- usage handling (no daemon state needed) ----
