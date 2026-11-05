@@ -21,7 +21,11 @@ function stubClient(baseUrl: string, token: string, channel: string, broken: Mes
     });
     const got = res.headers.get("x-pomtree-messaging-api");
     if (broken !== "version-handshake" && (got === null ? res.ok : got !== String(MESSAGING_API_VERSION)))
-      throw new Error(`stub ${route}: messaging API ${JSON.stringify(got)} is not the ${MESSAGING_API_VERSION} this stub speaks`);
+      throw new Error(
+        got === null
+          ? `stub ${route}: response has no x-pomtree-messaging-api header; this stub needs messaging API ${MESSAGING_API_VERSION}`
+          : `stub ${route}: messaging API ${JSON.stringify(got)} is not the ${MESSAGING_API_VERSION} this stub speaks`,
+      );
     const text = await res.text();
     const parsed: unknown = text ? JSON.parse(text) : null;
     if (ok !== 0 && res.status !== ok && broken !== "host-token-scope") throw new Error(`stub ${route} HTTP ${res.status}: ${text}`);

@@ -89,10 +89,20 @@ export async function checkAdapterVersionHeader(adapter: MessagingWireAdapter): 
     const client = adapter.connect(`http://127.0.0.1:${origin.port}`, "t");
     answer({ [MESSAGING_API_HEADER]: String(MESSAGING_API_VERSION) });
     assert.deepEqual(await client.outbox(0), [], "a 200 carrying the pinned version must be accepted");
-    answer({ [MESSAGING_API_HEADER]: String(MESSAGING_API_VERSION + 1) });
-    await assert.rejects(client.outbox(0), "a 200 carrying another messaging API version must be refused");
+    const other = String(MESSAGING_API_VERSION + 1);
+    answer({ [MESSAGING_API_HEADER]: other });
+    // The message must name the version received, so a swapped missing-header text is not taken for a mismatch refusal.
+    const refusal = await client.outbox(0).then(
+      () => assert.fail("a 200 carrying another messaging API version must be refused"),
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    assert.ok(refusal.includes(other), `the version refusal must name the received version ${other}, got: ${refusal}`);
     answer({});
-    await assert.rejects(client.outbox(0), "a 2xx with no messaging API header must be refused");
+    const missing = await client.outbox(0).then(
+      () => assert.fail("a 2xx with no messaging API header must be refused"),
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    assert.ok(missing.includes(MESSAGING_API_HEADER), `the missing-header refusal must name ${MESSAGING_API_HEADER}, got: ${missing}`);
   } finally {
     await origin.close();
   }

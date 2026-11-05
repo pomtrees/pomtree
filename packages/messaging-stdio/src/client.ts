@@ -21,7 +21,7 @@ function assertMessagingApi(got: string | null, ok: boolean, route: string): voi
   );
 }
 
-// TODO(messaging-stdio-client-mutants): mutants here survive this package's own tests; the e2e messaging wire suite likely kills them, unconfirmed.
+// TODO(messaging-stdio-client-mutants): mutants that drop or misplace the POST content-type header survive because pomtreed's readBody parses JSON without checking it.
 export function stdioClient(baseUrl: string, token: string, channel: string): StdioClient {
   const call = async (route: string, method: "GET" | "POST", path: string, ok: number, body?: unknown): Promise<unknown> => {
     const res = await fetch(new URL(path, baseUrl), {
