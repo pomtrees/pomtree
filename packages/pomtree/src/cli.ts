@@ -1440,7 +1440,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       }
       case "doctor": {
         const d = await api("GET", "/v1/doctor");
-        print({ ...d, reasons: doctorReasons(d) }, renderDoctor(d));
+        print({ ...d, reasons: doctorReasons(d) }, renderDoctor(d, io.version));
         return d.ok ? EXIT.ok : EXIT.error;
       }
       // TODO(pomtree-publish-verb): no top-level `publish` verb here (only `report publish` below); the daemon publish route exists.

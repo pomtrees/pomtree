@@ -1453,10 +1453,24 @@ test("doctor prints ok, or FAIL with the reason and exits 1", async () => {
 test("doctor prints the daemon's build identity when the daemon reports one", async () => {
   const h = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0, version: "v0.1.0* (abc1234)" } }));
   assert.equal(await run(["doctor"], h.io), EXIT.ok);
-  assert.deepEqual(h.out[0]!.split("\n").slice(0, 3), ["ok", "  host:       h", "  pomtreed:      v0.1.0* (abc1234)"]);
+  assert.deepEqual(h.out[0]!.split("\n").slice(0, 4), ["ok", "  host:       h", "  pomtree:       0.0.0-test", "  pomtreed:      v0.1.0* (abc1234)"]);
   // A daemon that does not report one prints no version line.
   const old = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 } }));
   await run(["doctor"], old.io);
+  assert.doesNotMatch(old.out[0]!, /pomtreed:/);
+});
+
+test("doctor prints the client's build identity before the daemon's, whether or not the daemon reports one", async () => {
+  const both = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0, version: "v0.1.0* (abc1234)" } }));
+  both.io.version = "v0.1.0 (def5678)";
+  assert.equal(await run(["doctor"], both.io), EXIT.ok);
+  const lines = both.out[0]!.split("\n");
+  assert.equal(lines[2], "  pomtree:       v0.1.0 (def5678)");
+  assert.equal(lines[3], "  pomtreed:      v0.1.0* (abc1234)");
+  const old = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 } }));
+  old.io.version = "v0.1.0 (def5678)";
+  await run(["doctor"], old.io);
+  assert.equal(old.out[0]!.split("\n")[2], "  pomtree:       v0.1.0 (def5678)");
   assert.doesNotMatch(old.out[0]!, /pomtreed:/);
 });
 

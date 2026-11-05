@@ -142,6 +142,7 @@ export function transportHint(message: string, stateDir: string): string {
 
 export function renderDoctor(
   d: { ok: boolean; host: string; agents: Record<string, number>; sandboxes: number; live: number } & Record<string, unknown>,
+  clientVersion?: string,
 ): string {
   const reasons = doctorReasons(d);
   const ae = (d as { agentEndpoint?: { bind?: string[]; containerReachable?: boolean; hostProbe?: boolean } }).agentEndpoint;
@@ -160,6 +161,7 @@ export function renderDoctor(
     ...(warning ? [warning] : []),
     d.ok ? "ok" : `FAIL: ${reasons.length ? reasons.join("; ") : "daemon reports unhealthy"}`,
     `  host:       ${d.host}`,
+    ...(typeof clientVersion === "string" && clientVersion !== "" ? [`  pomtree:       ${clientVersion}`] : []),
     ...(typeof d.version === "string" ? [`  pomtreed:      ${d.version}`] : []),
     `  agents:     ${states}`,
     `  sandboxes:  ${d.sandboxes}`,
