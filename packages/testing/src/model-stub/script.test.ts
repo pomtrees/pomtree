@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   agentIdFrom,
   BUILTIN_SCRIPTS_DIR,
+  type Fault,
   loadModelScript,
   markersFrom,
   type ModelScript,
@@ -109,6 +110,30 @@ test("every built-in script loads and validates; bad scripts fail loudly", { tim
         ],
       }),
     /duplicate id/,
+  );
+});
+
+test("script validation rejects an unknown fault type and accepts every Fault member", { timeout: 5000 }, () => {
+  const faults: Record<Fault["type"], Fault> = {
+    status: { type: "status", status: 429 },
+    reset_before_headers: { type: "reset_before_headers" },
+    cut_mid_stream: { type: "cut_mid_stream", afterChunks: 1 },
+    in_stream_error: { type: "in_stream_error", message: "m" },
+    missing_usage: { type: "missing_usage" },
+    oversize: { type: "oversize", bytes: 1 },
+    slow_stream: { type: "slow_stream", chunkDelayMs: 1, chunks: 1 },
+    malformed_tool_json: { type: "malformed_tool_json", name: "bash" },
+    empty: { type: "empty" },
+    refusal: { type: "refusal" },
+  };
+  for (const fault of Object.values(faults)) validateModelScript({ name: "x", rules: [{ id: "a", when: {}, reply: { kind: "fault", fault } }] });
+  assert.throws(
+    () => validateModelScript({ name: "x", rules: [{ id: "a", when: {}, reply: { kind: "fault", fault: { type: "slow_steam" } } }] }),
+    /rule a: unknown fault type slow_steam; use one of status, .*refusal/,
+  );
+  assert.throws(
+    () => validateModelScript({ name: "x", rules: [], fallback: { kind: "fault", fault: { type: "bogus" } } }),
+    /fallback: unknown fault type bogus/,
   );
 });
 
