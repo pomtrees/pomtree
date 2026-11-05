@@ -380,8 +380,8 @@ Generated from the registry. Kinds `bytes`, `count`, `ms` and `micros` are plain
 | Key | Environment variable | Kind | Default | Limits | Scope | Description |
 | --- | --- | --- | --- | --- | --- | --- |
 | `webfetch.enabled` | `POMTREED_WEBFETCH_ENABLED` | bool | `true` |  | operator | Offer web_fetch (runs on the host network, bypassing container egress). |
-| `webfetch.maxCalls` | `POMTREED_WEBFETCH_MAX_CALLS` | count | `60` | min 1 | operator | web_fetch calls allowed per agent per window. |
-| `webfetch.windowMs` | `POMTREED_WEBFETCH_WINDOW_MS` | ms | `60000` | min 1 | operator | The web_fetch rate window. |
+| `webfetch.maxCalls` | `POMTREED_WEBFETCH_MAX_CALLS` | count | `60` | min 1 | operator | web_fetch and web_search calls allowed per agent per fixed window (one shared count). Windows are aligned to the Unix epoch, not sliding, so up to twice this many calls can pass in a short span across a window boundary. |
+| `webfetch.windowMs` | `POMTREED_WEBFETCH_WINDOW_MS` | ms | `60000` | min 1 | operator | Length of the web_fetch and web_search call-quota window. Fixed windows start at multiples of this since Unix time 0 (not sliding), so a burst can span a boundary (see webfetch.maxCalls). |
 | `webfetch.timeoutMs` | `POMTREED_WEBFETCH_TIMEOUT_MS` | ms | `30000` | min 1000; max 300000 | operator | Whole-call deadline of one agent web_fetch call, every redirect hop included; past it the call is aborted and fails as a timeout. |
 | `webfetch.maxTotalBytes` | `POMTREED_WEBFETCH_MAX_TOTAL_BYTES` | bytes | `33554432` | min 1048576 | operator | Total web_fetch bytes allowed per agent. |
 

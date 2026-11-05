@@ -865,13 +865,13 @@
           "default": true
         },
         "maxCalls": {
-          "description": "web_fetch calls allowed per agent per window. Unit: count. Env: POMTREED_WEBFETCH_MAX_CALLS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "description": "web_fetch and web_search calls allowed per agent per fixed window (one shared count). Windows are aligned to the Unix epoch, not sliding, so up to twice this many calls can pass in a short span across a window boundary. Unit: count. Env: POMTREED_WEBFETCH_MAX_CALLS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
           "type": "integer",
           "minimum": 1,
           "default": 60
         },
         "windowMs": {
-          "description": "The web_fetch rate window. Unit: milliseconds. Env: POMTREED_WEBFETCH_WINDOW_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "description": "Length of the web_fetch and web_search call-quota window. Fixed windows start at multiples of this since Unix time 0 (not sliding), so a burst can span a boundary (see webfetch.maxCalls). Unit: milliseconds. Env: POMTREED_WEBFETCH_WINDOW_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
           "type": "integer",
           "minimum": 1,
           "default": 60000
