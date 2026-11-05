@@ -15,6 +15,15 @@ import { checkTemplateFiles } from "./template-check.ts";
 
 const CHECKOUT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const DEFAULT_TIMEOUT_MS = 5000;
+// Maps execFile's callback to a ProbeResult. A numeric exit code is a real answer; a string code (ENOENT, EACCES), a signal (timeout kill)
+// or no code means it never answered, and a string code is kept as `spawnError` so findings can tell "not on PATH" from "cannot be run".
+export function execResult(err: Error | null, stdout: string, stderr: string): ProbeResult {
+  if (err === null) return { code: 0, stdout, stderr };
+  const c = (err as { code?: unknown }).code;
+  if (typeof c === "number") return { code: c, stdout, stderr };
+  return { code: null, stdout, stderr, ...(typeof c === "string" && { spawnError: c }) };
+}
+
 const realRunner: ProbeRunner = {
   run: (command, args, { timeoutMs = DEFAULT_TIMEOUT_MS, cwd, env } = {}) =>
     new Promise<ProbeResult>((resolve) => {
@@ -27,9 +36,7 @@ const realRunner: ProbeRunner = {
         ...(env !== undefined && { env: { ...process.env, ...env } }),
       };
       execFile(command, [...args], options, (err, stdout, stderr) => {
-        // A numeric exit code is a real answer; a string code (ENOENT), a signal (timeout kill) or no code means it never answered.
-        const code = err === null ? 0 : typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === "number" ? (err as { code: number }).code : null;
-        resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+        resolve(execResult(err, String(stdout ?? ""), String(stderr ?? "")));
       });
     }),
 };

@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { isGitRepo, realIo } from "./cli.ts";
+import { execResult, isGitRepo, realIo } from "./cli.ts";
 import { runInit } from "./init.ts";
 import { checkTemplateFiles } from "./template-check.ts";
 
@@ -120,4 +120,13 @@ test("isGitRepo: a git repository is one, a plain directory is not", async () =>
     execFileSync("git", ["init", "-q", join(dir, "repo")]);
     assert.equal(isGitRepo(join(dir, "repo")), true);
   });
+});
+
+test("execResult keeps a string spawn code as spawnError and nothing else", () => {
+  const e = (code: unknown) => Object.assign(new Error("x"), { code });
+  assert.deepEqual(execResult(null, "o", "e"), { code: 0, stdout: "o", stderr: "e" });
+  assert.deepEqual(execResult(e(2), "", ""), { code: 2, stdout: "", stderr: "" });
+  assert.deepEqual(execResult(e("EACCES"), "", ""), { code: null, stdout: "", stderr: "", spawnError: "EACCES" });
+  assert.deepEqual(execResult(e("ENOENT"), "", ""), { code: null, stdout: "", stderr: "", spawnError: "ENOENT" });
+  assert.deepEqual(execResult(e(undefined), "", ""), { code: null, stdout: "", stderr: "" }, "a timeout kill has no code and no spawnError");
 });

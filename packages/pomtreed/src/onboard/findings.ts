@@ -118,7 +118,14 @@ export function evaluateObservations(o: Observations, steps: readonly Onboarding
         "enable-pnpm",
       );
   } else add("pnpm.corepack", "ok", `corepack ${o.corepack}`);
-  if (o.pnpmUnresolved)
+  if (o.pnpmSpawnError !== null)
+    add(
+      "pnpm.version",
+      "error",
+      `pnpm exists but could not be run (spawn error ${o.pnpmSpawnError}), so it is not a missing install: check that the pnpm shim on PATH is executable and a valid executable for this platform, e.g. \`ls -l "$(command -v pnpm)"\`; the checkout pins pnpm ${facts.pnpmVersion}`,
+      "enable-pnpm",
+    );
+  else if (o.pnpmUnresolved)
     add(
       "pnpm.version",
       "warn",

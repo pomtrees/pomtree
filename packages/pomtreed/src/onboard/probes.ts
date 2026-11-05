@@ -9,6 +9,7 @@ export interface ProbeResult {
   code: number | null; // null = command not found, could not spawn, or timed out
   stdout: string;
   stderr: string;
+  spawnError?: string; // the errno code (ENOENT, EACCES, ENOEXEC) of a refused spawn, when the runner knows it; absent for a command that ran
 }
 
 // TODO(onboard-probe-port): ProbeRunner belongs in core ports.ts so the fake can implement it nominally; current: structural type in pomtreed, the fake in @pomtree/testing matches it structurally
@@ -71,6 +72,7 @@ export interface Observations {
   git: string | null; // `git --version` output, null = not on PATH
   corepack: string | null;
   pnpm: string | null;
+  pnpmSpawnError: string | null; // the errno code of a pnpm spawn refused for a reason other than ENOENT (EACCES, ENOEXEC): the binary exists but cannot be run
   pnpmUnresolved: boolean; // pnpm (or corepack's shim) is on PATH but gave no version offline: the pinned pnpm is not downloaded yet
   docker: { version: string | null; daemon: boolean; buildx: boolean };
   podman: string | null;
@@ -89,13 +91,14 @@ const out = (r: ProbeResult): string | null => (r.code === 0 ? r.stdout.trim() :
 
 // Node >= 26 throws a spawn refusal such as ENOEXEC synchronously (a shebang-less PATH shim that a shell would run via /bin/sh), so a
 // runner's `run` can throw or reject instead of resolving null; a diagnostic tool must never die on the machine it is diagnosing.
-// TODO(onboard-probe-enoexec): a refused spawn is reported as "not on PATH" by findings.ts; current: the probe survives and prints every other finding
+// The refusal's errno code is kept in `spawnError` so findings.ts can tell ENOENT (not on PATH) from EACCES/ENOEXEC (present but not runnable).
 function safeRun(runner: ProbeRunner): ProbeRunner["run"] {
   return async (command, args, opts) => {
     try {
       return await runner.run(command, args, opts);
     } catch (e) {
-      return { code: null, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
+      const spawnError = (e as { code?: unknown } | null)?.code;
+      return { code: null, stdout: "", stderr: e instanceof Error ? e.message : String(e), ...(typeof spawnError === "string" && { spawnError }) };
     }
   };
 }
@@ -196,6 +199,7 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
     git: out(git),
     corepack: out(corepack),
     pnpm: out(pnpm),
+    pnpmSpawnError: pnpm.spawnError !== undefined && pnpm.spawnError !== "ENOENT" ? pnpm.spawnError : null,
     pnpmUnresolved: pnpm.code !== null && pnpm.code !== 0,
     ...(repoRefusal !== null && { repoRefusal }),
     docker: { version: out(dockerVersion), daemon, buildx: buildx?.code === 0 },

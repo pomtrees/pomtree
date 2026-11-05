@@ -486,6 +486,35 @@ test("pnpm on PATH that gives no version offline is a warning that preflight did
   assert.equal(get((await findingsFor(s)).findings, "pnpm.version").severity, "error");
 });
 
+// A runner that refuses the pnpm spawn with an errno code (as Node >= 26 throws for ENOEXEC), delegating the rest to the fake.
+const refusingPnpm = (code: string): ProbeRunner => {
+  const inner = new FakeProbeRunner(healthy());
+  return {
+    run(command, args, opts) {
+      if (command !== "pnpm") return inner.run(command, args, opts);
+      return Promise.reject(Object.assign(new Error(`spawn pnpm ${code}`), { code }));
+    },
+  };
+};
+
+for (const code of ["EACCES", "ENOEXEC"]) {
+  test(`pnpm spawn refused with ${code} names the code and is not reported as not on PATH`, async () => {
+    const f = get(evaluateObservations(await gatherObservations(host(), refusingPnpm(code)), steps), "pnpm.version");
+    assert.equal(f.severity, "error");
+    assert.ok(f.message.includes(code));
+    assert.match(f.message, /exists but could not be run/);
+    assert.match(f.message, /ls -l/);
+    assert.doesNotMatch(f.message, /not on PATH/);
+    assert.equal(f.step, "enable-pnpm");
+  });
+}
+
+test("pnpm spawn refused with ENOENT is still reported as not on PATH (negative control)", async () => {
+  const f = get(evaluateObservations(await gatherObservations(host(), refusingPnpm("ENOENT")), steps), "pnpm.version");
+  assert.equal(f.severity, "error");
+  assert.match(f.message, /pnpm is not on PATH/);
+});
+
 test("repo: without --repo nothing is checked and no cwd default is used; the checkout, a dir inside it, or a repo holding it is refused", async () => {
   const unset = await findingsFor(healthy(), host({ repoDir: undefined }));
   const f = get(unset.findings, "repo.commit");
