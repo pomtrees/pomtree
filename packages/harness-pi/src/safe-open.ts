@@ -9,7 +9,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, type Stats } from
 import { lstat, open, unlink } from "node:fs/promises";
 
 export type FileKind = "file" | "directory" | "symlink" | "fifo" | "device" | "socket" | "other";
-export type SafeOpenRefusal = "symlink" | "fifo" | "device" | "socket" | "directory" | "not-regular" | "oversize";
+export type SafeOpenRefusal = "symlink" | "fifo" | "device" | "socket" | "directory" | "not-regular" | "oversize" | "hardlink";
 
 // A conversation that outgrows this is refused rather than read into memory whole (it is read on every yield).
 export const MAX_SESSION_BYTES = 64 * 1024 * 1024;
@@ -36,11 +36,13 @@ const ACTION =
   "the agent's session directory is agent-writable, so pomtreed refuses anything but a regular file there; remove the entry (or stop and re-spawn the agent) and retry";
 const refusalMessage = (path: string, detail: string) => `refusing to open ${path}: ${detail}; ${ACTION}`;
 
-// Pure policy: what an lstat/fstat result plus size means for an open of `path`. `maxBytes` undefined is no size bound.
-export function checkOpen(path: string, kind: FileKind, size: number, maxBytes?: number): { ok: true } | { ok: false; error: SafeOpenError } {
+// Pure policy: what an lstat/fstat result plus size means for an open of `path`. `maxBytes` undefined is no size bound. `nlink` is
+// passed only by writers: a regular file with other hard links is refused, since writing it would modify the other linked file too.
+export function checkOpen(path: string, kind: FileKind, size: number, maxBytes?: number, nlink?: number): { ok: true } | { ok: false; error: SafeOpenError } {
   const refuse = (refusal: SafeOpenRefusal, what: string) => ({ ok: false, error: new SafeOpenError(path, refusal, what) }) as const;
   switch (kind) {
     case "file":
+      if (nlink !== undefined && nlink > 1) return refuse("hardlink", `it has ${nlink} hard links (writing it would also modify the other linked files)`);
       if (maxBytes !== undefined && size > maxBytes) return refuse("oversize", `it is ${size} bytes, over the ${maxBytes}-byte bound`);
       return { ok: true };
     case "symlink":
@@ -147,6 +149,8 @@ export async function safeReadFile(path: string, maxBytes: number): Promise<Uint
 //   and mode exactly as writeFileSync did; the container user (uid 1000) can still append to the file it created;
 // - nothing there: created O_EXCL|O_NOFOLLOW with mode 0o666 less the umask, the mode writeFileSync gives a new file;
 // - a symlink, FIFO, device or socket: the entry itself is unlinked (never its target) and the file created fresh as above;
+// - a regular file with other hard links (nlink > 1): refused before truncating, since the write would also change the other linked
+//   file (unlink-and-recreate would avoid the refusal but changes the inode, owner and mode guarantee above);
 // - a directory: refused.
 export async function safeWriteFile(path: string, bytes: Uint8Array): Promise<void> {
   let kind: FileKind | null = null;
@@ -168,7 +172,7 @@ export async function safeWriteFile(path: string, bytes: Uint8Array): Promise<vo
     }
     try {
       const st = await fh.stat();
-      assertOk(checkOpen(path, kindOf(st), 0));
+      assertOk(checkOpen(path, kindOf(st), 0, undefined, st.nlink)); // before truncating, so a hard-linked file is never touched
       await fh.truncate(0);
     } catch (e) {
       await fh.close();

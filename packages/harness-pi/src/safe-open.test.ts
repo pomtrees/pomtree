@@ -1,7 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,6 +152,27 @@ test("safeWriteFile keeps an existing session file's inode, owner and mode (the 
     assert.equal(after.mode & 0o7777, 0o640);
     assert.equal(after.uid, before.uid);
     assert.equal(after.gid, before.gid);
+  }));
+
+test("checkOpen refuses a regular file with other hard links when nlink is given, and accepts nlink 1", () => {
+  assert.deepEqual(checkOpen("/s/a", "file", 0, undefined, 1), { ok: true });
+  const r = checkOpen("/s/a/session.jsonl", "file", 0, undefined, 2);
+  assert.ok(!r.ok && r.error.refusal === "hardlink");
+  assert.match(r.ok ? "" : r.error.message, /^refusing to open \/s\/a\/session\.jsonl: it has 2 hard links .*; .*remove the entry .* and retry$/);
+});
+
+test("safeWriteFile refuses a hard-linked target before truncating, leaving the other linked file unchanged", () =>
+  withDir(async (dir) => {
+    const other = join(dir, "other-agent-session.jsonl");
+    const p = join(dir, "session.jsonl");
+    writeFileSync(other, "sibling conversation\n");
+    linkSync(other, p);
+    await assert.rejects(
+      safeWriteFile(p, new TextEncoder().encode("new\n")),
+      (e) => e instanceof SafeOpenError && e.refusal === "hardlink" && /hard links/.test(e.message),
+    );
+    assert.equal(readFileSync(other, "utf8"), "sibling conversation\n", "not truncated or written through the link");
+    assert.equal(readFileSync(p, "utf8"), "sibling conversation\n");
   }));
 
 test("safeWriteFile creates a missing file with writeFileSync's mode (0o666 less the umask)", () =>
