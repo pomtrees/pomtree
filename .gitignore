@@ -1,0 +1,9 @@
+node_modules
+.pomtreed
+*.sqlite*
+*.tsbuildinfo
+.pi/
+.claude/*
+!.claude/skills/
+.pnpm-store/
+scripts/ci/__pycache__/

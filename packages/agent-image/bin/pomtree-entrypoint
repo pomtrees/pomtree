@@ -1,0 +1,17 @@
+#!/bin/sh
+# Container entrypoint: gives the agent's own git (it owns a private clone) a per-agent author
+# `<agent-id>@agents.pomtree`, derived from POMTREE_AGENT_ID. Env only: no config file, no secrets.
+# Values already set by the host win.
+# TODO(push-on-exit): this wrapper could run `pomtree push` when the harness exits; today the agent must run `pomtree push` itself.
+if [ -n "${POMTREE_AGENT_ID:-}" ]; then
+  case "$POMTREE_AGENT_ID" in
+    *[!A-Za-z0-9_.-]*) ;; # not a plain id: leave git's identity unset rather than inventing one
+    *)
+      export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-$POMTREE_AGENT_ID}" GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$POMTREE_AGENT_ID@agents.pomtree}"
+      export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-$POMTREE_AGENT_ID}" GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$POMTREE_AGENT_ID@agents.pomtree}"
+      ;;
+  esac
+fi
+# Every profile uses network-none plus this loopback -> Unix-socket byte bridge.
+# The bridge owns command/browser cleanup; it does not parse HTTP or grant destinations.
+exec /usr/local/bin/node /opt/pomtree/egress/worker.ts "$@"

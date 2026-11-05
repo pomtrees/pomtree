@@ -1,0 +1,1008 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pomtree configuration",
+  "description": "The JSON config file named by $POMTREED_CONFIG. Precedence: default < this file < env < --set. Every key is restart-only. Sensitive keys are not accepted here; supply each through its <ENV>_FILE path env.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxBytes": {
+          "description": "Cap on one agent report body (POST /v1/agents/self/reports). Unit: bytes. Env: POMTREED_REPORT_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, examples/hn-digest.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 8388608
+        },
+        "workflowMaxBytes": {
+          "description": "Ceiling on one workflow-capability report and fetch. Unit: bytes. Env: POMTREED_REPORT_WORKFLOW_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, examples/hn-digest. Must be <= report.maxBytes.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 262144
+        },
+        "dir": {
+          "description": "Where agent reports are stored. Unset: <state.dir>/reports. Env: POMTREED_REPORT_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "push": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxBytes": {
+          "description": "Cap on one agent push body (POST /v1/agents/:id/push) and on one result-save bundle. Unit: bytes. Env: POMTREED_PUSH_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, @pomtree/sandbox-docker.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 268435456
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rootMicros": {
+          "description": "The root budget pool that top-level agents are carved from. Unit: micro-dollars (1000000 = $1). Env: POMTREED_BUDGET_ROOT_MICROS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 10000000
+        },
+        "topLevelMicros": {
+          "description": "Budget carved for a top-level (operator) spawn that names none. Unit: micro-dollars (1000000 = $1). Env: POMTREED_BUDGET_TOP_LEVEL_MICROS. Scope: run. Restart-only. Consumers: @pomtree/pomtreed. Refused above the ceiling budget.rootMicros.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 5000000
+        },
+        "defaultMicros": {
+          "description": "Budget carved for an agent-spawned child that names none. Unit: micro-dollars (1000000 = $1). Env: POMTREED_BUDGET_DEFAULT_MICROS. Scope: run. Restart-only. Consumers: @pomtree/pomtreed. Must be <= budget.topLevelMicros.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000000
+        },
+        "raiseMs": {
+          "description": "Per-rung window of a human rung on a budget_raise approval. Unit: milliseconds. Env: POMTREED_BUDGET_RAISE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 86400000
+        },
+        "raisePct": {
+          "description": "Requested budget raise, as a percent of the agent's original budget. Unit: count. Env: POMTREED_BUDGET_RAISE_PCT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 50
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxBytesCeiling": {
+              "description": "Ceiling on the maxBytes a browser_capture call may request (raw body and rendered DOM). Unit: bytes. Env: POMTREED_BROWSER_CAPTURE_MAX_BYTES_CEILING. Scope: operator. Restart-only. Consumers: @pomtree/agent-image, examples/hn-digest. Must be <= browser.capture.rawAllocationMaxBytes. Must be <= report.maxBytes.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 1048576
+            },
+            "rawAllocationMaxBytes": {
+              "description": "Largest declared main response a capture buffers at all (Playwright reads the whole entity); beyond it nothing is read. Unit: bytes. Env: POMTREED_BROWSER_CAPTURE_RAW_ALLOCATION_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/agent-image. Must be <= capacity.containerMemoryBytes.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 8388608
+            },
+            "textMaxBytes": {
+              "description": "UTF-8 bytes of mechanical page text a capture stores whole as one retained report (the digest's analyst reads it in pages); text beyond it is clipped and marked truncated. Unit: bytes. Env: POMTREED_BROWSER_CAPTURE_TEXT_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/agent-image, examples/hn-digest. Must be <= report.maxBytes.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 1048576
+            },
+            "screenshotMaxBytes": {
+              "description": "Largest capture screenshot PNG; a larger one is retaken smaller, never truncated. Unit: bytes. Env: POMTREED_BROWSER_CAPTURE_SCREENSHOT_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/agent-image, examples/hn-digest. Must be <= report.maxBytes.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 1048576
+            },
+            "deadlineMinMs": {
+              "description": "Smallest deadline a browser_capture call may request. Unit: milliseconds. Env: POMTREED_BROWSER_CAPTURE_DEADLINE_MIN_MS. Scope: operator. Restart-only. Consumers: @pomtree/agent-image, examples/hn-digest. Must be < browser.capture.deadlineMaxMs.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 1000
+            },
+            "deadlineMaxMs": {
+              "description": "Largest deadline a browser_capture call may request. Unit: milliseconds. Env: POMTREED_BROWSER_CAPTURE_DEADLINE_MAX_MS. Scope: operator. Restart-only. Consumers: @pomtree/agent-image, examples/hn-digest.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 120000
+            }
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "The daemon's state directory (store, tokens, socket). Unset: ~/.pomtreed. The pomtree client reads it to find the socket and operator token. Env: POMTREED_STATE_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, @pomtree/pomtree, examples/hn-digest.",
+          "type": "string",
+          "default": ""
+        },
+        "grants": {
+          "description": "State-store grants: {\"<driver or template id>\": [{owner, prefix?, mode: \"r\"|\"rw\"}]}. Parsed by pomtreed parseStateGrants. Env: POMTREED_STATE_GRANTS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": ["object", "array"],
+          "default": {}
+        },
+        "limits": {
+          "description": "State-store quotas: {default?: Limits, owners?: {name: Limits}}; unset fields inherit STATE_LIMITS_DEFAULT. Parsed by core parseStateLimits. Env: POMTREED_STATE_LIMITS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, examples/hn-digest.",
+          "type": ["object", "array"],
+          "default": {}
+        }
+      }
+    },
+    "templates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "Agent template directory. Unset: <state.dir>/templates. Env: POMTREED_TEMPLATES_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "Root of the per-agent Pi session directories. Unset: <state.dir>/sessions. Env: POMTREED_SESSION_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "maxMs": {
+          "description": "Longest session a spawn may request. Unit: milliseconds. Env: POMTREED_SESSION_MAX_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed. Must be <= agent.tokenTtlMs.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 14400000
+        },
+        "defaultMs": {
+          "description": "Session length of a spawn that names none. Unit: milliseconds. Env: POMTREED_SESSION_DEFAULT_MS. Scope: run. Restart-only. Consumers: @pomtree/pomtreed. Refused above the ceiling session.maxMs.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 14400000
+        }
+      }
+    },
+    "envCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "Environment layer cache (<dir>/<manifestHash>). Unset: <state.dir>/env-cache. Env: POMTREED_ENV_CACHE_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "Extension host directory (realpathed at start). Unset: <state.dir>/extensions. Env: POMTREED_EXTENSIONS_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "approval": {
+          "description": "Extensions whose gated actions need an approval: none, all, or a comma list of extension names. Required: pomtreed refuses to start while it is unset. Env: POMTREED_EXTENSIONS_APPROVAL. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "socket": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "The daemon's operator unix socket. Unset: <state.dir>/pomtreed.sock (shortened when over the OS path limit). Clients use POMTREE_SOCKET. Env: POMTREED_SOCKET_PATH. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "socket": {
+          "description": "The daemon socket's path inside an agent container. Env: POMTREED_SANDBOX_SOCKET. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": "/run/pomtreed.sock"
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "description": "Agent endpoint listener, host:port ([::1]:0 for IPv6; port 0 = ephemeral) or off. Unset: Linux binds the docker bridge gateway plus loopback, elsewhere 127.0.0.1:0. An explicit host other than loopback or the detected docker bridge gateway needs listen.allowNonloopback. Parsed by pomtreed parseListen. Env: POMTREED_AGENT_LISTEN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "probe": {
+          "description": "On Linux with the gateway plan, prove agent-endpoint reachability from a real container at start. Env: POMTREED_AGENT_PROBE. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": true
+        },
+        "image": {
+          "description": "The agent container image. Env: POMTREED_AGENT_IMAGE. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": "pomtree/agent:dev"
+        },
+        "egressProxyImage": {
+          "description": "The digest-pinned image the per-agent egress-proxy sidecar runs for every container spawn (name[:tag]@sha256:<64 hex>, or a local image id sha256:<64 hex>, e.g. the agent image's id from docker image inspect --format '{{.Id}}'), checked with docker image inspect before each sidecar starts. Required: pomtreed refuses to start while it is unset. Env: POMTREED_AGENT_EGRESS_PROXY_IMAGE. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "untemplatedEgress": {
+          "description": "Egress of a spawn that names no template (the built-in code template): registry (the model proxy and the package registries only; use this for a first run) or none (no network at all: an untemplated agent cannot reach the model proxy, so its model calls fail; pomtreed warns at start). Required: pomtreed refuses to start while it is unset. Env: POMTREED_AGENT_UNTEMPLATED_EGRESS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "tokenTtlMs": {
+          "description": "Lifetime of the agent API token issued when a container starts. Unit: milliseconds. Env: POMTREED_AGENT_TOKEN_TTL_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 86400000
+        },
+        "maxDepth": {
+          "description": "Deepest spawn depth allowed. The root supervisor is depth 0 and operator-spawned agents are depth 1; a spawn is refused when its depth exceeds this value, so 0 refuses all spawns and 1 permits only operator-spawned agents. Unit: count. Env: POMTREED_AGENT_MAX_DEPTH. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 4
+        },
+        "maxChildren": {
+          "description": "Unreaped children one non-root parent may hold. Unit: count. Env: POMTREED_AGENT_MAX_CHILDREN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 8
+        },
+        "zombieMs": {
+          "description": "How long an exited agent may stay unreaped before the zombie sweep raises an alert; the sweep never reaps it. Unit: milliseconds. Env: POMTREED_AGENT_ZOMBIE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 600000
+        },
+        "zombieSweepMs": {
+          "description": "Interval of the zombie sweep, which also applies `--ttl` expiry on held children. Lower it only to make tests deterministic. Unit: milliseconds. Env: POMTREED_AGENT_ZOMBIE_SWEEP_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 30000
+        },
+        "reconcileSweepMs": {
+          "description": "Interval between reconcile passes (container and record drift, operator-token expiry). Lower it only to make tests deterministic. Unit: milliseconds. Env: POMTREED_AGENT_RECONCILE_SWEEP_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 30000
+        },
+        "rootCustodyMax": {
+          "description": "Exited results held for the operator because their parent chain is dead up to the root; past this many, each further delivery is also raised as an alert. Results are never dropped. Unit: count. Env: POMTREED_AGENT_ROOT_CUSTODY_MAX. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 32
+        },
+        "interruptGraceMs": {
+          "description": "After an interrupt, how long Pi may take to exit before the container is killed. Unit: milliseconds. Env: POMTREED_AGENT_INTERRUPT_GRACE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000
+        },
+        "adoptOrphans": {
+          "description": "On start, adopt running agent containers this daemon has no record of. Env: POMTREED_AGENT_ADOPT_ORPHANS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "description": "Operator UI listener, host:port or off. Loopback only unless listen.allowNonloopback. Parsed by pomtreed parseListen. Env: POMTREED_UI_LISTEN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": "off"
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "description": "Host-read (adapter) listener, host:port or off. Loopback only unless listen.allowNonloopback. Parsed by pomtreed parseListen. Env: POMTREED_HOST_LISTEN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": "off"
+        },
+        "id": {
+          "description": "This daemon's host id, stamped on every record. Unset: os.hostname(). Env: POMTREED_HOST_ID. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "listen": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowNonloopback": {
+          "description": "Accept a non-loopback bind for the plain-HTTP UI and host listeners, and an agent listener on a host other than loopback or the docker bridge gateway (put TLS and auth in front). Env: POMTREED_LISTEN_ALLOW_NONLOOPBACK. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "readyz": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowSandboxDown": {
+          "description": "Report ready while the sandbox (Docker) is down. Env: POMTREED_READYZ_ALLOW_SANDBOX_DOWN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "accessLog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "Access log on stdout, one line per request, for the daemon and the model proxy. auto: all on a TTY, else errors. Env: POMTREED_ACCESS_LOG_MODE. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "enum": ["auto", "off", "errors", "all"],
+          "default": "auto"
+        }
+      }
+    },
+    "drain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutMs": {
+          "description": "How long shutdown waits for in-flight work to drain. Keep below the service manager's stop timeout. Unit: milliseconds. Env: POMTREED_DRAIN_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 10000
+        }
+      }
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retentionMs": {
+          "description": "How long idempotency records are kept. Unit: milliseconds. Env: POMTREED_IDEMPOTENCY_RETENTION_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 2592000000
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spoolVacuumGraceMs": {
+          "description": "How long after its sandbox closed an egress audit spool is kept before it is deleted, once every row is acknowledged and journaled (the journal is the record; the spool is the raw copy). 0 = delete as soon as eligible. Each spool counts against the spool retention cap (AUDIT_MAX_SPOOLS) until then. Unit: milliseconds. Env: POMTREED_AUDIT_SPOOL_VACUUM_GRACE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2592000000,
+          "default": 86400000
+        }
+      }
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retentionMs": {
+          "description": "Journal pruning age; 0 = no pruning. Unit: milliseconds. Env: POMTREED_JOURNAL_RETENTION_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "keepPerAgent": {
+          "description": "Newest journal entries kept per agent when pruning (journal.retentionMs > 0). Unit: count. Env: POMTREED_JOURNAL_KEEP_PER_AGENT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        }
+      }
+    },
+    "folder": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retentionMs": {
+          "description": "Paused agents idle past this lose their folder; 0 = never. Unit: milliseconds. Env: POMTREED_FOLDER_RETENTION_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 604800000
+        },
+        "reapedGraceMs": {
+          "description": "How long a reaped agent's folder is kept. Unit: milliseconds. Env: POMTREED_FOLDER_REAPED_GRACE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "minFreeBytes": {
+          "description": "Below this much free disk the cleanup sweep removes eligible folders early; 0 = off. Unit: bytes. Env: POMTREED_FOLDER_MIN_FREE_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "The operator's repository agents clone from and merge into. Unset: the daemon's working directory. Env: POMTREED_REPO_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "defaultBranch": {
+          "description": "The branch agents start from and merge into. Unset: the repository's HEAD branch, else main. Env: POMTREED_REPO_DEFAULT_BRANCH. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deny": {
+          "description": "Repo-relative path prefixes a merge may not touch. Empty = no denylist. Env: POMTREED_MERGE_DENY. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [".github/workflows/", ".github/actions/", ".gitmodules"]
+        },
+        "check": {
+          "description": "Whitespace-separated command a merge must pass; empty = merges run with no check. No check runner is wired in this build, so pomtreed refuses to start while it is set. Env: POMTREED_MERGE_CHECK. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "description": "remote/branch targets the daemon may publish to (only the daemon pushes). Env: POMTREED_PUBLISH_TARGETS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "deny": {
+          "description": "Repo-relative path prefixes a publish may not touch. Empty = no denylist. Env: POMTREED_PUBLISH_DENY. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [".github/workflows/", ".github/actions/", ".gitmodules"]
+        },
+        "scan": {
+          "description": "Scan a publish for credentials, commit messages and CI-file additions before pushing. Env: POMTREED_PUBLISH_SCAN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "steerExt": {
+          "description": "Load the Pi mailbox (steer) extension, through which a waiting agent sees messages. Env: POMTREED_HARNESS_STEER_EXT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, @pomtree/harness-pi.",
+          "type": "boolean",
+          "default": true
+        },
+        "jobsExt": {
+          "description": "Load the opt-in, unverified Pi background-jobs extension. Env: POMTREED_HARNESS_JOBS_EXT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, @pomtree/harness-pi.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "yieldMs": {
+          "description": "A pomtree wait/inbox/ask wait longer than this yields the agent's container instead of long-polling. pomtreed delivers it to agent containers, so the in-container pomtree long-polls exactly as long as the daemon allows. Unit: milliseconds. Env: POMTREED_WAIT_YIELD_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, @pomtree/pomtree.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 20000
+        }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxSessions": {
+          "description": "Concurrent session cap: auto (min(memoryFraction*RAM/containerMemoryBytes, cpus/2*3, maxContainers, 16), at least 2) or a positive integer, which bypasses the 16 cap. Env: POMTREED_CAPACITY_MAX_SESSIONS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": "auto"
+        },
+        "maxContainers": {
+          "description": "Container limit enforced by the resource gate; also bounds the auto session cap. Unit: count. Env: POMTREED_CAPACITY_MAX_CONTAINERS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 32
+        },
+        "containerMemoryBytes": {
+          "description": "Memory limit of a container whose spec names none, and the per-running-container reservation the memory gate and the auto session cap plan for. Unit: bytes. Env: POMTREED_CAPACITY_CONTAINER_MEMORY_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 2147483648
+        },
+        "memoryFraction": {
+          "description": "Fraction of host RAM the memory gate and the auto session cap may plan for. Env: POMTREED_CAPACITY_MEMORY_FRACTION. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 1,
+          "default": 0.9
+        },
+        "minDiskFreeBytes": {
+          "description": "Free disk below which the resource gate refuses new sessions. Unit: bytes. Env: POMTREED_CAPACITY_MIN_DISK_FREE_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 1073741824
+        }
+      }
+    },
+    "watchdog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sweepMs": {
+          "description": "Watchdog sweep interval. Unit: milliseconds. Env: POMTREED_WATCHDOG_SWEEP_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 30000
+        },
+        "stallMs": {
+          "description": "Silence after which the watchdog judges an agent stalled. Unit: milliseconds. Env: POMTREED_WATCHDOG_STALL_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 600000
+        },
+        "blockedMs": {
+          "description": "Time blocked after which the watchdog acts. Unit: milliseconds. Env: POMTREED_WATCHDOG_BLOCKED_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 1800000
+        },
+        "intensityWindowMs": {
+          "description": "Window over which watchdog restart intensity is counted. Unit: milliseconds. Env: POMTREED_WATCHDOG_INTENSITY_WINDOW_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 3600000
+        },
+        "stableMs": {
+          "description": "Run time after which a restarted agent counts as stable again. Unit: milliseconds. Env: POMTREED_WATCHDOG_STABLE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 1800000
+        }
+      }
+    },
+    "cron": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tickMs": {
+          "description": "Cron scheduler tick interval. Unit: milliseconds. Env: POMTREED_CRON_TICK_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 60000
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sweepMs": {
+          "description": "Folder cleanup sweep interval. Unit: milliseconds. Env: POMTREED_CLEANUP_SWEEP_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 60000
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutMs": {
+          "description": "Per-rung fail-closed window of a human approval rung (also the web_fetch approval window). Unit: milliseconds. Env: POMTREED_APPROVAL_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 300000
+        }
+      }
+    },
+    "ask": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutMs": {
+          "description": "How long an ask stays open. Unit: milliseconds. Env: POMTREED_ASK_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 86400000
+        }
+      }
+    },
+    "escalation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentRungMs": {
+          "description": "Per-hop window of an agent rung on a bubbled ask or approval. Unit: milliseconds. Env: POMTREED_ESCALATION_AGENT_RUNG_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 600000
+        },
+        "channels": {
+          "description": "Ordered channels asks and alerts go out on; the root broadcasts to every one. Env: POMTREED_ESCALATION_CHANNELS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": ["ui"]
+        }
+      }
+    },
+    "messaging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "description": "Chat-rank messaging channels to enable (each needs the sender allowlist POMTREED_MESSAGING_SENDERS). Env: POMTREED_MESSAGING_CHANNELS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "allowSpawn": {
+          "description": "Allow chat-rank senders to spawn agents. Env: POMTREED_MESSAGING_ALLOW_SPAWN. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "chat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "description": "Chat-initiated routes (spawn, cancel) that wait for a human approval. Env: POMTREED_CHAT_APPROVAL. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reviewedExtensions": {
+          "description": "Extensions whose workflow drivers are reviewed. Validated by pomtreed WorkflowRuntimePolicy. Env: POMTREED_WORKFLOW_REVIEWED_EXTENSIONS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "templates": {
+          "description": "Templates each reviewed workflow driver may spawn: {\"<ext>/<driver>\": [\"<template>\", ...]}. Parsed by pomtreed WorkflowRuntimePolicy. Env: POMTREED_WORKFLOW_TEMPLATES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": ["object", "array"],
+          "default": {}
+        },
+        "fetch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "userAgent": {
+              "description": "The one operator identity for every fetch path: sent on every request and redirect hop of agent web_fetch, the workflow fetch capability and every capture broker rung, and appended to Chromium's own User-Agent in browser captures (never a desktop-browser impersonation). Free-form, but it must start with a product token (an app name, optionally /version). A contact (an email address or an http(s) URL) is optional but recommended, e.g. \"pomtree (+https://example.org/contact)\"; some sites, such as SEC EDGAR, ask for one. Its product token is also the robots.txt token evaluated beside Claude-User. Blank or unset: the default \"pomtree\". pomtreed logs the effective identity at startup. Env: POMTREED_WORKFLOW_FETCH_USER_AGENT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "string",
+              "default": "pomtree"
+            },
+            "minIntervalMs": {
+              "description": "Minimum time between two requests the workflow fetch capability sends to the same host, across every workflow on this daemon; each redirect hop is a request. E.g. 100 keeps SEC EDGAR (sec.gov) under its 10 requests per second. 0: unpaced. Unit: milliseconds. Env: POMTREED_WORKFLOW_FETCH_MIN_INTERVAL_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000,
+              "default": 0
+            }
+          }
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "Test mode: the only switch that admits the test-only seams below. pomtreed prints a WARNING at start while it is on. Never set it in production. Env: POMTREED_TEST_MODE. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        },
+        "fetchHosts": {
+          "description": "Test only, refused unless test.mode: route the workflow fetch capability for these hosts to a loopback fixture, {\"data.sec.gov\": 8443} -> http://127.0.0.1:8443 with the original Host header. The capability's allowlist, budget and caps still apply; other hosts use the network. Empty: off. Env: POMTREED_TEST_FETCH_HOSTS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": ["object", "array"],
+          "default": {}
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "description": "The model provider's upstream base URL. Required: pomtreed refuses to start without it. Env: POMTREED_MODEL_BASE_URL. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "upstreamTimeoutMs": {
+          "description": "Upstream request timeout of the model proxy; also the stale-reservation reclaim age. Unit: milliseconds. Env: POMTREED_MODEL_UPSTREAM_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 120000
+        },
+        "proxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "description": "Model proxy TCP port. Unit: count. Env: POMTREED_MODEL_PROXY_PORT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 18080
+            },
+            "ttlMs": {
+              "description": "Lifetime of the scoped model-proxy key issued when a container starts. Unit: milliseconds. Env: POMTREED_MODEL_PROXY_TTL_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 3600000
+            },
+            "maxRequestMicros": {
+              "description": "Reserved (and charged when cost cannot be read) per request to a model missing from the catalog. Not a per-request ceiling. Unit: micro-dollars (1000000 = $1). Env: POMTREED_MODEL_PROXY_MAX_REQUEST_MICROS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed, examples/hn-digest.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 50000
+            },
+            "extraPaths": {
+              "description": "Upstream paths the proxy allows beyond its default allowlist. Env: POMTREED_MODEL_PROXY_EXTRA_PATHS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": []
+            }
+          }
+        }
+      }
+    },
+    "pi": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "description": "The provider the scoped proxy credential is written for (required; e.g. openrouter). Env: POMTREED_PI_PROVIDER. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        },
+        "catalogDir": {
+          "description": "Pi model catalog directory (pricing). Unset: found from the pi binary on PATH. Env: POMTREED_PI_CATALOG_DIR. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "description": "web_search provider; empty = none. Env: POMTREED_SEARCH_PROVIDER. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "webfetch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Offer web_fetch (runs on the host network, bypassing container egress). Env: POMTREED_WEBFETCH_ENABLED. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": true
+        },
+        "maxCalls": {
+          "description": "web_fetch calls allowed per agent per window. Unit: count. Env: POMTREED_WEBFETCH_MAX_CALLS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 60
+        },
+        "windowMs": {
+          "description": "The web_fetch rate window. Unit: milliseconds. Env: POMTREED_WEBFETCH_WINDOW_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 60000
+        },
+        "timeoutMs": {
+          "description": "Whole-call deadline of one agent web_fetch call, every redirect hop included; past it the call is aborted and fails as a timeout. Unit: milliseconds. Env: POMTREED_WEBFETCH_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000,
+          "default": 30000
+        },
+        "maxTotalBytes": {
+          "description": "Total web_fetch bytes allowed per agent. Unit: bytes. Env: POMTREED_WEBFETCH_MAX_TOTAL_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1048576,
+          "default": 33554432
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "waitMs": {
+          "description": "How long a capture request blocks before it returns pending (the requireApproval precedent); retrying with the same idempotency key, or waiting on the job, converges on the same job. Unit: milliseconds. Env: POMTREED_CAPTURE_WAIT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120000,
+          "default": 20000
+        },
+        "timeoutMs": {
+          "description": "Whole-acquisition deadline of one capture rung (connect, first byte and body, every redirect hop included); past it the rung fails as a timeout. Unit: milliseconds. Env: POMTREED_CAPTURE_TIMEOUT_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 600000,
+          "default": 30000
+        },
+        "maxBytes": {
+          "description": "Per-capture body cap; a larger body fails too_large. At most 16 MiB, the egress proxy's per-connection relay cap. Unit: bytes. Env: POMTREED_CAPTURE_MAX_BYTES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 16777216,
+          "default": 8388608
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stableMs": {
+              "description": "Maximum age of a cached capture of a stable page (DOI landing pages, documentation, reference pages). Unit: milliseconds. Env: POMTREED_CAPTURE_FRESHNESS_STABLE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 604800000
+            },
+            "dailyMs": {
+              "description": "Maximum age of a cached capture of a daily page (articles, filing indexes, blog posts); the default class. Unit: milliseconds. Env: POMTREED_CAPTURE_FRESHNESS_DAILY_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed. Must be <= capture.freshness.stableMs.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 86400000
+            },
+            "liveMs": {
+              "description": "Maximum age of a cached capture of a live page (feeds, front pages, prices). Unit: milliseconds. Env: POMTREED_CAPTURE_FRESHNESS_LIVE_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed. Must be <= capture.freshness.dailyMs.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 600000
+            },
+            "rules": {
+              "description": "Operator freshness rules, first match wins: [{\"host\": \"www.sec.gov\", \"pathPrefix\": \"/Archives/\", \"class\": \"immutable\"}, ...]; class is immutable, stable, daily or live. A URL no acquirer classes and no rule matches is daily. Parsed by core parseFreshnessRules. Env: POMTREED_CAPTURE_FRESHNESS_RULES. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": ["object", "array"],
+              "default": []
+            }
+          }
+        },
+        "denylist": {
+          "description": "Hosts the broker never captures (blocked/policy): each entry matches the host and its subdomains (core denylistMatch). Env: POMTREED_CAPTURE_DENYLIST. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "quota": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "description": "Capture requests one agent may make per capture.quota.windowMs (cache hits included: the quota bounds the requester, not the origin). Unit: count. Env: POMTREED_CAPTURE_QUOTA_REQUESTS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 120
+            },
+            "windowMs": {
+              "description": "The capture request quota window. Unit: milliseconds. Env: POMTREED_CAPTURE_QUOTA_WINDOW_MS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+              "type": "integer",
+              "minimum": 1000,
+              "default": 3600000
+            }
+          }
+        }
+      }
+    },
+    "otlp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "description": "OTLP exporter endpoint; empty = no export. Env: POMTREED_OTLP_ENDPOINT. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "debug": {
+          "description": "Rethrow unexpected CLI failures with their stack instead of one line. Env: POMTREE_CLIENT_DEBUG. Scope: operator. Restart-only. Consumers: @pomtree/pomtree.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "ext": {
+      "type": "object",
+      "description": "Extension-contributed keys, ext.<segment>.<key>, where <segment> is the camelCase of the extension's name. Declared by each extension's manifest and validated at startup against the loaded extensions; unknown or unloaded keys are refused.",
+      "additionalProperties": {
+        "type": "object",
+        "description": "One extension's keys."
+      }
+    }
+  }
+}

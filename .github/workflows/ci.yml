@@ -1,0 +1,313 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One live run per PR or ref; a newer push cancels the older run so hung or superseded builds stop spending minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Every job pins `runs-on: ubuntu-26.04` rather than `ubuntu-latest`, which GitHub is migrating from 24.04 to 26.04 through
+# 2026-11-19, so an unpinned run would land on either image (decision and reopen trigger: TODO(ci-image-gate)).
+jobs:
+  format:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - run: pnpm format:check
+        timeout-minutes: 8
+
+  lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - run: pnpm lint
+        timeout-minutes: 8
+
+  typecheck:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - run: pnpm typecheck
+        timeout-minutes: 8
+
+  test-lite:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      # Real-git tests skip silently below the floor (harness.ts gitSkip), so fail here instead. The floor is read from
+      # MIN_SAFE_GIT in packages/workspace-git/src/git-env.ts, the single source.
+      - name: Require git at the workspace floor
+        timeout-minutes: 2
+        run: |
+          git --version
+          python3 - <<'PY'
+          import re, subprocess, sys
+          floor = tuple(int(x) for x in re.search(r"MIN_SAFE_GIT = \[(\d+), (\d+)", open("packages/workspace-git/src/git-env.ts").read()).groups())
+          have = tuple(int(x) for x in re.search(r"(\d+)\.(\d+)", subprocess.check_output(["git", "--version"], text=True)).groups())
+          if have < floor:
+              sys.exit(f"git {have} is below the floor {floor}: real-git tests would skip")
+          PY
+      # The hosted runner has 2 vCPUs, so packages run 2 at a time (package.json defaults to 6 for local runs).
+      - run: pnpm test:lite
+        timeout-minutes: 15
+        env:
+          WORKSPACE_TEST_CONCURRENCY: "2"
+
+  # Builds the agent image once per run and hands it to the docker matrix through actions/cache (a Chromium image is likely
+  # larger than the free artifact quota; cache has its own per-repo limit). This job passes even when tests fail, so the buildx
+  # layer cache below is saved on every run that builds.
+  image:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      # The agent image's layer cache (apt, chromium, Pi) survives between runs: buildx (docker-container driver, needed for cache export)
+      # exports it to a local directory that actions/cache keeps; build.ts reads it via AGENT_IMAGE_CACHE_DIR. The Dockerfile orders slow
+      # layers before per-commit copies, so a source change reuses them. A miss (new Dockerfile or evicted cache) is just a cold build.
+      # build.ts, not docker/build-push-action, builds the image: it compiles the `bundle` build context and stamps the revision labels.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/agent-image-cache
+          key: agent-image-buildx-${{ hashFiles('packages/agent-image/Dockerfile', 'packages/agent-image/scripts/build.ts') }}-${{ github.sha }}
+          restore-keys: |
+            agent-image-buildx-${{ hashFiles('packages/agent-image/Dockerfile', 'packages/agent-image/scripts/build.ts') }}-
+      # Build the agent image (pinned Pi + checksum live in packages/agent-image/scripts/build.ts).
+      # Without it the image-gated Docker tests skip with exit 0 and CI stays green.
+      - name: Build agent image
+        run: pnpm --filter @pomtree/agent-image build:image
+        timeout-minutes: 20
+        env:
+          AGENT_IMAGE_TAG: pomtree/agent:dev
+          AGENT_IMAGE_CACHE_DIR: ${{ runner.temp }}/agent-image-cache
+      # docker save keeps the pomtree/agent:dev tag and the revision label the Docker gates compare with PTREE_AGENT_TEST_REVISION.
+      - name: Save the agent image
+        shell: bash
+        timeout-minutes: 5
+        run: docker save pomtree/agent:dev | zstd -T0 -q -o "$RUNNER_TEMP/agent-image.tar.zst"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/agent-image.tar.zst
+          key: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
+
+  # The Docker-gated suites, one entry per group in scripts/ci/docker-groups.json (ci-guard.test.ts keeps the two lists equal).
+  # Each entry has its own VM and Docker daemon, so the groups do not contend; test-lite already runs every other test.
+  docker:
+    # The only `needs` in this workflow: the groups test the image the image job built.
+    needs: [image]
+    runs-on: ubuntu-26.04
+    timeout-minutes: ${{ matrix.job_minutes || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [sandbox, e2e-scenarios, e2e-custody, e2e-lifecycle]
+        # First-run values: no hosted run has timed these groups yet. The sandbox group's test step gets 15 minutes in a 30-minute
+        # job; each e2e group gets 25 in 35, since at 2 files at a time e2e-custody alone is estimated at 20+ minutes while its tests
+        # still fail (SUSPECTED, from a hosted run timing out in e2e). Reopen: per-group timings from a hosted run; then
+        # set each limit from them.
+        include:
+          - group: e2e-scenarios
+            test_minutes: 25
+            job_minutes: 35
+          - group: e2e-custody
+            test_minutes: 25
+            job_minutes: 35
+          - group: e2e-lifecycle
+            test_minutes: 25
+            job_minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      # Real-git tests skip silently below the floor (harness.ts gitSkip), so fail here instead. The floor is read from
+      # MIN_SAFE_GIT in packages/workspace-git/src/git-env.ts, the single source.
+      - name: Require git at the workspace floor
+        timeout-minutes: 2
+        run: |
+          git --version
+          python3 - <<'PY'
+          import re, subprocess, sys
+          floor = tuple(int(x) for x in re.search(r"MIN_SAFE_GIT = \[(\d+), (\d+)", open("packages/workspace-git/src/git-env.ts").read()).groups())
+          have = tuple(int(x) for x in re.search(r"(\d+)\.(\d+)", subprocess.check_output(["git", "--version"], text=True)).groups())
+          if have < floor:
+              sys.exit(f"git {have} is below the floor {floor}: real-git tests would skip")
+          PY
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/agent-image.tar.zst
+          key: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
+          fail-on-cache-miss: true
+      - name: Load the agent image
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          zstd -dc "$RUNNER_TEMP/agent-image.tar.zst" | docker load
+          docker image inspect pomtree/agent:dev --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+      # pomtreed must run as uid 1000 (deploy/INSTALL.md; TODO(auth-perms)): the agent container runs as 1000:1000 and writes into bind
+      # mounts pomtreed creates (the session dir, workspace clones), which a host uid other than 1000 owns. The hosted runner user is
+      # uid 1001, so the tests run as a uid-1000 account in the docker group, as an install would. It also joins the runner's primary
+      # group so it can traverse the runner's home (checkout, pnpm); no directory is opened to everyone. The checkout is handed to
+      # it here and handed back after the tests. sudo sets the target's groups from the group database at each call, so the new
+      # docker membership applies at once; the last line proves it (docker, node, pnpm and a writable checkout) before the suites run.
+      - name: Prepare the uid-1000 test user
+        timeout-minutes: 5
+        run: |
+          name=$(getent passwd 1000 | cut -d: -f1 || true)
+          groups=docker
+          [ "$(id -gn)" = docker ] || groups="docker,$(id -gn)"
+          if [ -z "$name" ]; then
+            name=pomtreetest
+            sudo useradd -m -u 1000 -G "$groups" "$name"
+          else
+            echo "uid 1000 already exists as $name; reusing it"
+            sudo usermod -aG "$groups" "$name"
+          fi
+          home=$(getent passwd 1000 | cut -d: -f6)
+          { echo "E2E_USER=$name"; echo "E2E_HOME=$home"; } >> "$GITHUB_ENV"
+          sudo chown -R 1000 "$GITHUB_WORKSPACE"
+          # The e2e TAP file (E2E_TAP below) lives outside the checkout in a directory of its own that uid 1000 owns; RUNNER_TEMP
+          # itself stays the runner user's.
+          sudo install -d -o 1000 "$RUNNER_TEMP/e2e-tap"
+          sudo -u "$name" test -w "$RUNNER_TEMP/e2e-tap" || { echo "$RUNNER_TEMP/e2e-tap is not writable as uid 1000" >&2; exit 1; }
+          sudo -u "$name" env HOME="$home" PATH="$PATH" bash -c 'set -e; id; node --version; pnpm --version; docker version --format "docker server {{.Server.Version}}"; test -w . || { echo "the checkout is not writable as uid 1000" >&2; exit 1; }'
+      - name: Test (Docker group ${{ matrix.group }})
+        shell: bash
+        # Every variable in env below is passed through sudo explicitly (sudo resets the environment); ci-guard.test.ts checks it.
+        run: |
+          sudo -u "$E2E_USER" env HOME="$E2E_HOME" PATH="$PATH" PNPM_HOME="${PNPM_HOME:-}" CI="${CI:-}" DOCKER_GROUP="$DOCKER_GROUP" E2E_TAP="$E2E_TAP" \
+            E2E_TEST_CONCURRENCY="$E2E_TEST_CONCURRENCY" WORKSPACE_TEST_CONCURRENCY="$WORKSPACE_TEST_CONCURRENCY" PTREE_E2E_IMAGE="$PTREE_E2E_IMAGE" \
+            PTREE_AGENT_TEST_REVISION="$PTREE_AGENT_TEST_REVISION" \
+            bash -c 'set -o pipefail; pnpm test:docker:"$DOCKER_GROUP" 2>&1 | tee test-docker.log'
+        # The hosted runner has 2 vCPUs (a hosted run: docker info CPUs 2, 7.7 GiB); at 6 concurrent e2e files pomtreed starts timed
+        # out, so e2e runs 2 files at a time (the default is 6 for local runs). The group scripts run no `pnpm -r`, so
+        # WORKSPACE_TEST_CONCURRENCY only keeps the convention for anything that does. The limit is per group (matrix above).
+        timeout-minutes: ${{ matrix.test_minutes || 15 }}
+        env:
+          DOCKER_GROUP: ${{ matrix.group }}
+          E2E_TEST_CONCURRENCY: "2"
+          WORKSPACE_TEST_CONCURRENCY: "2"
+          PTREE_E2E_IMAGE: pomtree/agent:dev
+          # The group scripts also write a TAP stream here, or beside it per process (spec still goes to the log). It must stay outside the checkout:
+          # see PTREE_AGENT_TEST_REVISION below for why a file under it turns the image suites into skips.
+          E2E_TAP: ${{ runner.temp }}/e2e-tap/e2e.tap
+          # packages/sandbox-docker/src/docker-gate.ts skips every image suite without an explicit committed revision. The
+          # image job labels the image with `git rev-parse --short HEAD` of its checkout (GITHUB_SHA, the same commit), and the
+          # gate compares that label with this value. The gates also skip when packages/agent-image or packages/sandbox-docker
+          # have tracked changes or untracked files, so test-docker.log is written at the repo root, outside those paths: writing
+          # it (or any other artifact) under them would turn every image suite into a skip, which the guard below then fails.
+          PTREE_AGENT_TEST_REVISION: ${{ github.sha }}
+      # Hand the checkout back to the runner user for the steps below and the post-job steps (checkout cleanup, pnpm and image cache saves).
+      - name: Return the checkout to the runner user
+        if: always()
+        timeout-minutes: 5
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+      # The TAP stream records each test as it reports, so a run cut off by the step timeout still shows which tests passed,
+      # failed or never reported (node:test prints the spec failure details only at the end). The e2e groups write E2E_TAP; the
+      # sandbox group runs three node processes and writes one file per process beside it (e2e-<package>.tap).
+      - name: Upload the TAP logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-tap-${{ matrix.group }}
+          path: ${{ runner.temp }}/e2e-tap/
+          if-no-files-found: ignore
+          retention-days: 14
+      # Runs when the test step failed, timed out or was cancelled, so a hung Docker suite leaves evidence.
+      - name: Diagnostics on failure
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        run: |
+          docker ps -a --format '{{.Names}} {{.Status}}' || true
+          docker network ls || true
+          # shellcheck disable=SC2009
+          ps -eo pid,ppid,etime,args --sort=etime | grep -E 'node|docker|chrom' | grep -v grep | head -40 || true
+          tail -n 60 test-docker.log || true
+      # Skip guard: every test this group requires (scripts/ci/docker-groups.json, `required`) MUST run and pass; a skip (or a
+      # missing line) fails the job. What it matches and what is deliberately not required: scripts/ci/skip-guard.py.
+      - name: Guard against skipped Docker/image tests
+        # Also after a failed test step, so the log says which required tests did not pass; not after a cancel.
+        if: ${{ !cancelled() }}
+        timeout-minutes: 2
+        run: python3 scripts/ci/skip-guard.py --group "$DOCKER_GROUP" test-docker.log
+        env:
+          DOCKER_GROUP: ${{ matrix.group }}
+
+  # The image tarball is needed only within this run, and at 1 GB or more per run it would push the buildx and pnpm caches out
+  # of the repository's 10 GB cache limit, so it is deleted once every docker group is done, whatever their outcome. The only
+  # job with write access to the Actions API, and only to it (GitHub's own gh CLI and GITHUB_TOKEN, nothing new pinned).
+  # Skipped on a pull request from a fork: there GITHUB_TOKEN is read-only whatever this job's `permissions` ask for, while the
+  # image job's cache save still succeeds (a fork's cache is scoped to the merge ref), so the entry exists, `gh cache list`
+  # finds it and `gh cache delete` fails the job. Nothing durable leaks: a merge-ref cache expires on its own. Not
+  # `pull_request_target`, which would run this workflow with a writable token against unreviewed code.
+  cleanup:
+    needs: [docker]
+    if: always() && github.event.pull_request.head.repo.fork != true
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this run's image tarball cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEY: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
+        # Absent is fine (the image job failed before saving it, or a rerun already deleted it); any other failure is an error.
+        run: |
+          keys=$(gh cache list --key "$KEY" --json key --jq '.[].key')
+          if printf '%s\n' "$keys" | grep -Fxq -- "$KEY"; then
+            gh cache delete "$KEY"
+          else
+            echo "no cache entry $KEY; nothing to delete"
+          fi

@@ -1,0 +1,7 @@
+{
+  "label": "positive",
+  "target": "captured comments on story 100",
+  "summary": "Cites the same comment twice.",
+  "citations": [201, 201],
+  "_fixture_note": "synthetic offline fixture; not captured from HN"
+}

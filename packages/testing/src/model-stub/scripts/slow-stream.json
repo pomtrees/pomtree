@@ -1,0 +1,4 @@
+{
+  "name": "slow-stream",
+  "rules": [{ "id": "slow", "when": {}, "reply": { "kind": "fault", "fault": { "type": "slow_stream", "chunkDelayMs": 500, "chunks": 60 } } }]
+}

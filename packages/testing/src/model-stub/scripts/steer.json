@@ -1,0 +1,16 @@
+{
+  "name": "steer",
+  "rules": [
+    { "id": "steered", "when": { "lastUserIncludes": "STEER" }, "reply": { "kind": "text", "text": "STUB-SAW-STEER", "usage": { "input": 120, "output": 6 } } },
+    {
+      "id": "wait",
+      "when": { "toolResults": 0, "offersTool": "bash" },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [{ "name": "bash", "arguments": { "command": "sleep 5; echo waited" } }],
+        "usage": { "input": 100, "output": 20 }
+      }
+    },
+    { "id": "unsteered", "when": {}, "reply": { "kind": "text", "text": "STUB-NO-STEER", "usage": { "input": 110, "output": 6 } } }
+  ]
+}

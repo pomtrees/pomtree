@@ -1,0 +1,67 @@
+{
+  "$comment": "The Docker-gated test groups: one docker matrix entry in .github/workflows/ci.yml and one root `test:docker:<group>` script each. `runs` lists, per working directory, the test files (a `*` matches within one path segment) that the group's script runs there; `required` lists full test titles that must pass in that group (scripts/ci/skip-guard.py). `exempt` names the Docker-gated test files that never pass in CI by design (a live key or the public web), with the reason; they need no group but may sit in one. `maxSkips` bounds the skipped tests in a group's log to the by-design skips that `maxSkipsWhy` names, so a test that newly skips fails the guard. packages/e2e/src/ci-guard.test.ts checks that every Docker-gated test file is in exactly one group, that the scripts run exactly these files, and that each required title is defined in one of its group's files.",
+  "exempt": {
+    "packages/harness-pi/src/pi-ext-live.test.ts": "needs the agent image (PTREE_E2E_IMAGE) and POMTREED_PI_PROVIDER set to a provider name; it writes a throwaway placeholder credential and makes no model call, so it needs no live key. Exempt only because no CI group sets POMTREED_PI_PROVIDER yet; running it in a group is a ledgered follow-up",
+    "packages/e2e/src/docker-pi.test.ts": "needs a live model key; runs in e2e-lifecycle, where it skips (counted in maxSkips)",
+    "packages/sandbox-docker/src/browser-real-article.test.ts": "its one test needs the public web (PTREE_NET_TESTS); runs in sandbox, where it skips (counted in maxSkips)"
+  },
+  "groups": {
+    "sandbox": {
+      "maxSkips": 6,
+      "maxSkipsWhy": "gVisor (no runsc on the runner), the NET-gated real-article capture, the agent-net Docker Desktop test (non-Linux only), and the three NET-gated browser smoke tests",
+      "runs": [
+        {
+          "cwd": "packages/sandbox-docker",
+          "files": [
+            "src/args-runtime.test.ts",
+            "src/browser-real-article.test.ts",
+            "src/capture-worker-wacz.test.ts",
+            "src/docker.test.ts",
+            "src/network-docker.test.ts",
+            "src/result-work.test.ts",
+            "src/sandbox-contract.test.ts"
+          ]
+        },
+        { "cwd": "packages/pomtreed", "files": ["src/agent-net.docker.test.ts"] },
+        { "cwd": ".", "files": ["examples/hn-digest/content-live-smoke.test.mts", "examples/hn-digest/content-live-browser-smoke.test.mts"] }
+      ],
+      "required": [
+        "Docker network-none worker lifecycle uses the packaged bridge and nonroot identity",
+        "Docker wait captures OOM state before cleanup",
+        "real Docker confines TCP/IPv6/DNS/UDP and socket mutation; scoped relay and Node proxy env still work",
+        "audited-public Docker: public HTTP/HTTPS fetch is allowed and audited; metadata, private and host aliases are denied and audited; no direct route",
+        "browser worker: page script is denied and audited at a relay authority that Pi's own call still reaches",
+        "Docker result collection uses the actual workspace and base environment",
+        "container reaches a gateway-bound listener (fails on a host firewall that blocks docker0) but never a loopback-bound one"
+      ]
+    },
+    "e2e-scenarios": {
+      "maxSkips": 0,
+      "maxSkipsWhy": "none skip by design",
+      "runs": [{ "cwd": "packages/e2e", "files": ["src/cli-scenarios*.test.ts", "src/cli-credentials.test.ts", "src/cli-observe.test.ts"] }],
+      "required": ["cli scenario 1: happy path spawn, tool, result, wait, reap; spend is the sum of settlements"]
+    },
+    "e2e-custody": {
+      "maxSkips": 0,
+      "maxSkipsWhy": "none skip by design",
+      "runs": [{ "cwd": "packages/e2e", "files": ["src/cli-custody*.test.ts", "src/cli-operator*.test.ts", "src/cli-relay*.test.ts"] }],
+      "required": [
+        "cli operator CUS-7: pomtree kill of a parent cancels its sleeping child within grace plus kill, the container is gone, no orphan-cancel-error"
+      ]
+    },
+    "e2e-lifecycle": {
+      "maxSkips": 3,
+      "maxSkipsWhy": "the two NET-gated browser-live harness tests and docker-pi (needs a live model key)",
+      "runs": [
+        {
+          "cwd": "packages/e2e",
+          "files": ["src/cli-lifecycle*.test.ts", "src/cli-recovery*.test.ts", "src/docker-*.test.ts", "src/live-model.test.ts", "src/browser-live-run.test.ts"]
+        }
+      ],
+      "required": [
+        "real Docker, no model: scripted root spawns two children, waits, reaps, reports",
+        "cli lifecycle REC-8: drain refuses the next spawn, the busy agent's container survives the SIGTERM restart, is adopted and finishes once"
+      ]
+    }
+  }
+}

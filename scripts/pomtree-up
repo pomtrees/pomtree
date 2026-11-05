@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# pomtree-up: bring up a fresh pomtreed stack for a git repo. Usage: scripts/pomtree-up [PATH] [options]
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/pomtree-up [PATH] [--state DIR] [--port N] [--keep|--fresh [--yes]] [--init] [--no-build|--rebuild] [--show-token] [--open] [--print-env]
+                       [--model-base-url URL] [--model-key-file FILE] [--provider NAME]
+  PATH         git repo to work on (default .)
+  --model-base-url URL  the model provider's upstream base URL (default: $POMTREED_MODEL_BASE_URL; required)
+  --model-key-file FILE file holding the upstream API key, mode 0600 and owned by you (default:
+               $POMTREED_MODEL_UPSTREAM_KEY_FILE; required). Its contents are never read or printed here.
+  --provider NAME  the Pi provider the model proxy serves, e.g. openrouter (default: $POMTREED_PI_PROVIDER; required)
+  --state DIR  state dir (default ${XDG_STATE_HOME:-~/.local/state}/pomtree/<hash of realpath>/state, outside the
+               repo and under $HOME so Docker Desktop can mount it; --state always wins)
+  --port N     UI port (default 8787; next free port if busy)
+  --keep       reuse existing state (the default; accepted for explicitness)
+  --fresh      wipe state first => blank, no agents. Only an empty dir or a pomtreed state dir is wiped; /, $HOME,
+               a dir holding .git or the repo, and a non-empty dir without pomtreed files are always refused
+  --yes        confirm --fresh over an existing pomtreed state dir (destroys all agents, data and secrets)
+  --init       create an empty initial commit if the repo has no commits
+  --no-build   never build the agent image (dies if missing; a stale image is warned about, not rebuilt)
+  --rebuild    force a rebuild even when the image exists (mutually exclusive with --no-build)
+  --show-token print a login link containing the operator token (sensitive; default prints the token file path only)
+  --no-operator-token  accepted for compatibility (now the default)
+  --open       try to open the login link in the default browser (best effort)
+  --print-env  only print the exports for this repo/state and exit
+USAGE
+}
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+path="." state="" port=8787 fresh=0 yes=0 init=0 no_build=0 rebuild=0 print_env=0 show_token=0 open_link=0
+model_base_url="${POMTREED_MODEL_BASE_URL:-}" model_key_file="${POMTREED_MODEL_UPSTREAM_KEY_FILE:-}" provider="${POMTREED_PI_PROVIDER:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --state) state="${2:?--state needs a DIR}"; shift 2 ;;
+    --port) port="${2:?--port needs N}"; shift 2 ;;
+    --fresh) fresh=1; shift ;;
+    --keep) fresh=0; shift ;;
+    --init) init=1; shift ;;
+    --no-build) no_build=1; shift ;;
+    --rebuild) rebuild=1; shift ;;
+    --yes) yes=1; shift ;;
+    --show-token) show_token=1; shift ;;
+    --no-operator-token) show_token=0; shift ;;
+    --open) open_link=1; shift ;;
+    --print-env) print_env=1; shift ;;
+    --model-base-url) model_base_url="${2:?--model-base-url needs a URL}"; shift 2 ;;
+    --model-key-file) model_key_file="${2:?--model-key-file needs a FILE}"; shift 2 ;;
+    --provider) provider="${2:?--provider needs a NAME}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "pomtree-up: unknown option $1" >&2; usage >&2; exit 2 ;;
+    *) path="$1"; shift ;;
+  esac
+done
+case "$port" in ''|*[!0-9]*) echo "pomtree-up: bad --port $port" >&2; exit 2 ;; esac
+if [ "$no_build" -eq 1 ] && [ "$rebuild" -eq 1 ]; then echo "pomtree-up: --no-build and --rebuild are mutually exclusive" >&2; exit 2; fi
+
+die() { echo "pomtree-up: $*" >&2; exit 1; }
+
+repo="$(realpath "$path" 2>/dev/null)" || die "no such path: $path"
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "$repo is not a git repository"
+top="$(git -C "$repo" rev-parse --show-toplevel)"
+[ "$(realpath "$top")" = "$repo" ] || die "$repo is inside a repo rooted at $top; pass the repo root"
+
+if command -v sha256sum >/dev/null 2>&1; then sha() { sha256sum; }; else sha() { shasum -a 256; }; fi
+hash="$(printf '%s' "$repo" | sha | cut -c1-10)"
+if [ -z "$state" ]; then
+  # Under $HOME (shared by Docker Desktop), no spaces, durable (macOS purges stale files under $TMPDIR).
+  state="${XDG_STATE_HOME:-$HOME/.local/state}/pomtree/$hash/state"
+fi
+mkdir -m 700 -p "$state"; state="$(realpath "$state")"
+case "$state/" in "$repo"/*) die "state dir $state is inside the target repo; choose another --state" ;; esac
+
+# Unix socket paths are limited (~100 bytes); pomtreed falls back to a short tmp path and pomtree needs to know.
+sock="$state/pomtreed.sock"
+if [ "${#sock}" -gt 100 ]; then sock="/tmp/pomtreed-$hash/pomtreed.sock"; fi
+
+print_exports() {
+  echo "export POMTREED_STATE_DIR='$state'"
+  if [ "$sock" != "$state/pomtreed.sock" ]; then echo "export POMTREE_SOCKET='$sock'"; fi
+  echo "alias pomtree='node $root/packages/pomtree/src/main.ts'"
+}
+if [ "$print_env" = 1 ]; then print_exports; exit 0; fi
+
+# Provider the model proxy serves (pomtreed refuses to start without it).
+[ -n "$provider" ] || die "the model provider is required: pass --provider NAME or set POMTREED_PI_PROVIDER (e.g. openrouter)"
+
+# Model proxy upstream (pomtreed refuses to start without both). Checks only: the URL and the key are never printed,
+# and the key file's contents are never read here (pomtreed reads it in-process).
+[ -n "$model_base_url" ] || die "the model upstream base URL is required: pass --model-base-url URL or set POMTREED_MODEL_BASE_URL"
+[ -n "$model_key_file" ] || die "the upstream key file is required: pass --model-key-file FILE or set POMTREED_MODEL_UPSTREAM_KEY_FILE (a 0600 file holding the key)"
+[ -e "$model_key_file" ] && model_key_file="$(realpath "$model_key_file" 2>/dev/null)" || die "upstream key file $model_key_file not found; create it (mode 0600, holding only the key) or pass --model-key-file FILE"
+[ -f "$model_key_file" ] && [ -s "$model_key_file" ] || die "upstream key file $model_key_file is missing or empty"
+[ -O "$model_key_file" ] || die "upstream key file $model_key_file is not owned by you"
+case "$(stat -c %a "$model_key_file" 2>/dev/null || stat -f %Lp "$model_key_file" 2>/dev/null)" in
+  600|400) ;;
+  *) die "upstream key file $model_key_file must be mode 0600 (chmod 600 it); group or other access is refused" ;;
+esac
+
+# Need at least one commit.
+if ! git -C "$repo" rev-parse --verify -q HEAD >/dev/null; then
+  [ "$init" = 1 ] || die "$repo has no commits; re-run with --init to create an empty initial commit"
+  git -C "$repo" -c user.name=pomtree -c user.email=pomtree@localhost commit --allow-empty -q -m "Initial commit"
+fi
+
+# Agent image. Smart build decision: rebuild when missing, when --rebuild forces it, or (by default)
+# when the image carries a known revision label that differs from this checkout's HEAD. An unlabelled
+# image has unknown provenance and is never rebuilt automatically (warn only).
+image="${POMTREED_AGENT_IMAGE:-pomtree/agent:dev}"
+command -v docker >/dev/null || die "docker CLI not found; install Docker (Docker Desktop or Engine) and put docker on PATH"
+docker_perm_hint="if docker says permission denied, add your user to the docker group (sudo usermod -aG docker \$USER), then log out and back in"
+docker info >/dev/null 2>&1 || die "docker daemon not reachable (the CLI is installed); start Docker Desktop (or the docker service) and check DOCKER_HOST; $docker_perm_hint"
+src_sha="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
+need_build=0
+built=0
+build_reason=""
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  [ "$no_build" -eq 1 ] && die "image $image missing and --no-build given"
+  need_build=1; build_reason="missing"
+else
+  img_rev="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
+  if [ "$rebuild" -eq 1 ]; then
+    need_build=1; build_reason="forced (--rebuild)"
+  elif [ "$no_build" -eq 0 ] && [ -n "$img_rev" ] && [ "$img_rev" != "$src_sha" ]; then
+    need_build=1; build_reason="stale (image $img_rev vs source $src_sha)"
+  elif [ -z "$img_rev" ]; then
+    echo "pomtree-up: warning: image $image has no org.opencontainers.image.revision label; cannot verify it matches source $src_sha (build with --rebuild to force)" >&2
+  elif [ "$img_rev" != "$src_sha" ]; then
+    echo "pomtree-up: warning: image $image revision $img_rev differs from source $src_sha (client/server mismatch likely; rebuild with: scripts/pomtree-up \"$repo\" --rebuild)" >&2
+  fi
+fi
+if [ "$need_build" -eq 1 ]; then
+  echo "pomtree-up: building image $image ($build_reason) ..." >&2
+  (cd "$root" && AGENT_IMAGE_TAG="$image" pnpm --filter @pomtree/agent-image build:image) || die "image build failed; check the build output above, run 'docker buildx version' to confirm buildx is installed, and $docker_perm_hint"
+  built=1
+fi
+# The sidecar runs this image's egress proxy; an image without it fails every agent spawn at sidecar start, so refuse it here.
+docker run --rm --network none --entrypoint node "$image" -e "process.exit(require('node:fs').existsSync('/opt/pomtree/egress/proxy.ts')?0:3)" >/dev/null 2>&1 && rc_probe=0 || rc_probe=$?
+[ "$rc_probe" -ne 3 ] || die "agent image $image has no egress proxy (/opt/pomtree/egress/proxy.ts); every agent spawn would fail at sidecar start. Rebuild it: scripts/pomtree-up --rebuild"
+
+# Free UI port.
+want_port="$port"
+port="$(node -e '
+const net = require("node:net");
+let p = Number(process.argv[1]);
+const try1 = () => { const s = net.createServer(); s.once("error", () => { p++; try1(); });
+  s.listen(p, "127.0.0.1", () => s.close(() => console.log(p))); };
+try1();' "$port")"
+if [ "$port" != "$want_port" ]; then echo "pomtree-up: port $want_port is busy; using $port instead" >&2; fi
+
+if [ "$fresh" = 1 ]; then
+  # Wipe safety: --fresh only ever empties a directory that is empty or is recognisably a pomtreed state dir.
+  # --yes confirms destroying a real pomtreed state dir; it never bypasses these checks.
+  home_real="$(realpath "${HOME:-/}" 2>/dev/null || echo "${HOME:-/}")"
+  case "$state" in /|"$home_real") die "refusing --fresh on $state: it is / or your home directory; pass a dedicated --state DIR" ;; esac
+  [ ! -e "$state/.git" ] || die "refusing --fresh on $state: it contains .git (a repository, not pomtreed state); pass a dedicated --state DIR"
+  case "$repo/" in "$state"/*) die "refusing --fresh on $state: it contains the target repo $repo; pass a dedicated --state DIR" ;; esac
+  if [ -n "$(find "$state" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+    # pomtreed.sqlite, the database pomtreed (main.ts) opens at every start, is what marks a pomtreed state dir. A lone generic name such as
+    # `secret` or `pomtreed.log` could be anyone's file, so it never qualifies a directory for wiping on its own.
+    [ -f "$state/pomtreed.sqlite" ] || die "refusing --fresh on $state: it is not empty and holds no pomtreed state (no pomtreed.sqlite database), so wiping it could destroy unrelated files; --yes does not override this. Pass an empty or pomtreed --state DIR (a state dir left by a pomtreed that died before creating pomtreed.sqlite must be emptied by hand)"
+    [ "$yes" = 1 ] || die "$state holds pomtreed state (pomtreed.sqlite); --fresh would destroy all agents, data and secrets. Re-run with --fresh --yes to confirm, or drop --fresh"
+  fi
+  # Live-daemon refusal: never skipped by --yes. pomtreed.lock's first line is the holder pid (see state-lock.ts).
+  # A live pid is treated as a live daemon even if it could be a reused pid; remove the lock by hand if so.
+  if [ -f "$state/pomtreed.lock" ]; then
+    lockpid="$(head -n1 "$state/pomtreed.lock" 2>/dev/null | tr -d '[:space:]')"
+    case "$lockpid" in
+      ''|*[!0-9]*) die "$state/pomtreed.lock is unreadable; refusing --fresh. Check no pomtreed is running, then remove it" ;;
+    esac
+    if kill -0 "$lockpid" 2>/dev/null || [ -n "$(ps -p "$lockpid" -o pid= 2>/dev/null)" ]; then
+      die "a pomtreed appears to be running on $state (pid $lockpid); stop it first or use --keep/--state"
+    fi
+  fi
+  # Remove contents only; recreate worktree metadata clean (workspaces live under state).
+  find "$state" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  # Drop stale worktree registrations from earlier runs so the blank stack starts clean.
+  git -C "$repo" worktree prune
+fi
+chmod 700 "$state"
+
+# Startup probe: can Docker bind-mount the state dir? (skipped with --no-build or when the daemon is unreachable)
+# TODO(doctor-state-visible): the probe lives here in the shell; it belongs in pomtreed's doctor (pomtree talks only to the daemon API) once the Sandbox port can expose a mount-visibility check
+if [ "$no_build" -eq 0 ] && docker info >/dev/null 2>&1; then
+  docker run --rm --entrypoint ls -v "$state:/pomtreed-state-probe:ro" "$image" /pomtreed-state-probe >/dev/null 2>&1 ||
+    die "Docker cannot see the state dir $state; on Docker Desktop add the path under Settings > Resources > File sharing, or pass --state under \$HOME"
+fi
+
+# pomtreed refuses to start without these three safety settings (docs/configuration.md); local dev gets the permissive-but-contained choice
+# unless the operator already set them.
+# Egress sidecar image: the agent image's local id (digest-pinned by construction), so the sidecar is the image just built or checked above.
+if [ -n "${POMTREED_AGENT_EGRESS_PROXY_IMAGE:-}" ]; then
+  [ "$built" -eq 0 ] || echo "pomtree-up: warning: image $image was just rebuilt but POMTREED_AGENT_EGRESS_PROXY_IMAGE is pre-set, so the sidecar keeps the old pinned proxy image; run 'unset POMTREED_AGENT_EGRESS_PROXY_IMAGE' and re-run scripts/pomtree-up" >&2
+else
+  egress_image="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
+  case "$egress_image" in
+    sha256:????????????????????????????????????????????????????????????????) ;;
+    *) die "could not read the id of image $image (docker image inspect --format '{{.Id}}'); set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image (name@sha256:<64 hex> or sha256:<64 hex>)" ;;
+  esac
+  POMTREED_AGENT_EGRESS_PROXY_IMAGE="$egress_image"
+fi
+# registry: a spawn that names no template (the built-in code agent) can reach the package registries only; none would cut it off entirely.
+POMTREED_AGENT_UNTEMPLATED_EGRESS="${POMTREED_AGENT_UNTEMPLATED_EGRESS:-registry}"
+# all: every extension gated action waits for a human approval in the UI; none would skip approvals.
+POMTREED_EXTENSIONS_APPROVAL="${POMTREED_EXTENSIONS_APPROVAL:-all}"
+export POMTREED_AGENT_EGRESS_PROXY_IMAGE POMTREED_AGENT_UNTEMPLATED_EGRESS POMTREED_EXTENSIONS_APPROVAL
+
+export POMTREED_STATE_DIR="$state" POMTREED_REPO_DIR="$repo" POMTREED_UI_LISTEN="127.0.0.1:$port" POMTREED_AGENT_IMAGE="$image"
+export POMTREED_MODEL_BASE_URL="$model_base_url" POMTREED_MODEL_UPSTREAM_KEY_FILE="$model_key_file" POMTREED_PI_PROVIDER="$provider"
+# POMTREE_SOCKET too: the readiness probe and every later `pomtree` call below must see the relocated socket (pomtree-up-sock).
+[ "$sock" = "$state/pomtreed.sock" ] || export POMTREED_SOCKET_PATH="$sock" POMTREE_SOCKET="$sock"
+# The socket parent is created private and verified: a local user who pre-created a predictable /tmp/pomtreed-<hash> would
+# otherwise own the parent of the socket that carries the operator bearer token (the socket-dir ownership check, discharged 2026-11-03).
+sockdir="$(dirname "$sock")"
+mkdir -m 700 -p "$sockdir"
+sockdir_uid="$(stat -c '%u' "$sockdir" 2>/dev/null || stat -f '%u' "$sockdir" 2>/dev/null || true)"
+# Only the owner/group/other bits are compared; a setgid parent adds a leading digit to the mode.
+sockdir_mode="$(stat -c '%a' "$sockdir" 2>/dev/null || stat -f '%Lp' "$sockdir" 2>/dev/null || true)"
+[ "$sockdir_uid" = "$EUID" ] && [ "${sockdir_mode: -3}" = "700" ] ||
+  die "socket dir $sockdir must be yours with mode 700 (found uid ${sockdir_uid:-?} mode ${sockdir_mode:-?}); remove it and retry"
+
+# pomtreed's stderr is also kept in <state>/pomtreed.log (0600, truncated per start) so a startup failure can name its cause.
+log="$state/pomtreed.log"
+( umask 077; : > "$log" )
+cd "$root"
+node packages/pomtreed/src/main.ts 2> >(trap '' INT TERM; exec tee "$log" >&2) &
+pid=$!
+stopping=0
+stop() {
+  stopping=1
+  if kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid" 2>/dev/null || true; fi
+}
+trap stop INT TERM
+trap 'stop; wait "$pid" 2>/dev/null || true' EXIT
+
+# Known startup failures => operator hint. The one table; first matching pattern wins.
+startup_hint() {
+  case "$1" in
+    *POMTREED_PI_PROVIDER*) echo "set POMTREED_PI_PROVIDER=<provider> (or pass --provider; the provider the model proxy serves, e.g. openrouter)" ;;
+    *POMTREED_MODEL_BASE_URL*) echo "pass --model-base-url URL or set POMTREED_MODEL_BASE_URL; see docs/operating.md" ;;
+    *POMTREED_AGENT_EGRESS_PROXY_IMAGE*|*agent.egressProxyImage*) echo "set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image: name@sha256:<64 hex>, or the local id from docker image inspect --format '{{.Id}}' <image>" ;;
+    *POMTREED_AGENT_UNTEMPLATED_EGRESS*|*agent.untemplatedEgress*) echo "set POMTREED_AGENT_UNTEMPLATED_EGRESS=none|registry (registry: untemplated code agents reach package registries only)" ;;
+    *POMTREED_EXTENSIONS_APPROVAL*|*extensions.approval*) echo "set POMTREED_EXTENSIONS_APPROVAL=all|none|<extension,extension> (all: every gated extension action waits for approval)" ;;
+    *"agent.listen binds"*) echo "set POMTREED_AGENT_LISTEN to a loopback or docker bridge gateway address (or unset it), or set POMTREED_LISTEN_ALLOW_NONLOOPBACK=1 to accept that bind" ;;
+    *POMTREED_MERGE_CHECK*|*merge.check*) echo "unset POMTREED_MERGE_CHECK: no merge check runner is wired yet" ;;
+    *KEY_FILE*|*"key file"*) echo "the key file must be a non-empty 0600 file you own (its contents are never printed); see docs/operating.md" ;;
+  esac
+}
+startup_failed() {
+  sleep 0.3 # let the stderr tee flush
+  causes="$(grep -E '^([A-Za-z]*Error:|pomtreed: refusing to start:)' "$log" 2>/dev/null | cut -c1-300 || true)"
+  cause="$(printf '%s\n' "$causes" | tail -n1)"
+  [ -n "$cause" ] || cause="$(grep -Ev '^[[:space:]]*(at |$)|^Node\.js ' "$log" 2>/dev/null | tail -n1 | cut -c1-300 || true)"
+  if [ -n "$causes" ]; then printf '%s\n' "$causes" | while IFS= read -r line; do echo "pomtree-up: cause: $line" >&2; done
+  else echo "pomtree-up: cause: ${cause:-unknown (log is empty)}" >&2; fi
+  refusal="$(printf '%s\n' "$causes" | grep -F 'pomtreed: refusing to start:' | tail -n1 || true)"
+  hint="$(startup_hint "${refusal:-$cause}")"
+  if [ -n "$hint" ]; then echo "pomtree-up: hint: $hint" >&2; fi
+  die "pomtreed exited during startup; full log: $log"
+}
+
+pomtree() { node "$root/packages/pomtree/src/main.ts" "$@"; }
+ready=0
+ready_start=$SECONDS
+# Wall-clock deadline: each probe runs `pomtree doctor`, so a fixed iteration count under-reports the real wait.
+while [ $((SECONDS - ready_start)) -lt 30 ]; do
+  kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; startup_failed; }
+  # doctor prints "ok" or "FAIL: ..." once the daemon answers; a FAIL (e.g. unreachable agent endpoint) is reported below, not a startup failure.
+  if [ -S "$sock" ] && [ -f "$state/operator.token" ] && d0="$(pomtree doctor 2>&1 || true)" && printf '%s\n' "$d0" | grep -Eq '^(ok|FAIL)'; then ready=1; break; fi
+  sleep 0.3
+done
+[ "$ready" = 1 ] || { stop; die "pomtreed not ready after $((SECONDS - ready_start))s; full log: $log"; }
+
+# Effective agent endpoint (from doctor); warn loudly if containers cannot reach it.
+doc="$(pomtree doctor 2>&1 || true)"
+agentline="$(printf '%s\n' "$doc" | grep 'agent api:' | sed 's/^ *//' || true)"
+[ -n "$agentline" ] || agentline="agent api: off (agents use the unix socket mount)"
+case "$doc" in *"NOT reachable"*|*"agent endpoint unreachable"*) echo "pomtree-up: WARNING: agents in containers cannot reach pomtreed: $(printf '%s\n' "$doc" | head -1)" >&2 ;; esac
+
+url="http://127.0.0.1:$port/ui"
+tokfile="$state/operator.token"
+tokline="Token file (0600, not printed): $tokfile"
+link="$url"
+loginline="Login:  open the URL and paste the operator token (from the token file) into the sign-in page (session cookie lasts 24h)."
+if [ "$show_token" = 1 ]; then
+  tok=""
+  if [ -f "$tokfile" ] && [ -O "$tokfile" ] && [ "$(stat -c %a "$tokfile" 2>/dev/null || stat -f %Lp "$tokfile" 2>/dev/null)" = 600 ]; then
+    tok="$(tr -d '\r\n' < "$tokfile" 2>/dev/null || true)"
+  fi
+  if [ -n "$tok" ]; then
+    link="$url#token=$tok"
+    tokline="Token file (0600): $tokfile"
+    loginline="Login:  open the link below (SENSITIVE: it signs in whoever opens it; valid while the operator token is, i.e. until the state's 'secret' file is regenerated, which a fresh start does; the token is in the fragment so it is not sent to the server)."
+  else
+    echo "pomtree-up: warning: could not read operator token (missing, not owned by you, or mode not 0600); read it from $tokfile" >&2
+    tokline="Token file (0600, unreadable here): $tokfile"
+  fi
+fi
+{
+cat <<MSG
+
+== pomtreed is up (repo $repo) ==
+UI:     $url
+$loginline
+        $tokline
+MSG
+if [ "$link" != "$url" ]; then printf 'Open:\n%s\n' "$link"; fi
+cat <<MSG
+CLI (another terminal):
+$(print_exports | sed 's/^/  /')
+  pomtree doctor
+$agentline   (override with POMTREED_AGENT_LISTEN=host:port|off)
+Stop:   Ctrl-C here (or kill -TERM $$).
+MSG
+} >&2
+
+if [ "$open_link" = 1 ]; then
+  for opener in xdg-open open; do
+    if command -v "$opener" >/dev/null 2>&1; then "$opener" "$link" >/dev/null 2>&1 </dev/null & break; fi
+  done
+fi
+
+rc=0
+wait "$pid" || rc=$?
+# A signal trap interrupts wait; keep waiting for pomtreed's own graceful drain.
+while kill -0 "$pid" 2>/dev/null; do wait "$pid" 2>/dev/null || rc=$?; done
+trap - EXIT
+[ "$stopping" = 1 ] && exit 0
+exit "$rc"

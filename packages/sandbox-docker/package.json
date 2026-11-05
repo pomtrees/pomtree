@@ -1,0 +1,18 @@
+{
+  "name": "@pomtree/sandbox-docker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@pomtree/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@pomtree/testing": "workspace:*"
+  }
+}

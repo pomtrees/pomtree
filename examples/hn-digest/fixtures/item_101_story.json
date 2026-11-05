@@ -1,0 +1,12 @@
+{
+  "by": "pg",
+  "descendants": 42,
+  "id": 101,
+  "kids": [201, 202],
+  "score": 300,
+  "time": 1700000000,
+  "title": "Show: A &amp; B &#x2014; launch",
+  "type": "story",
+  "url": "https://example.com/a?x=1&y=2",
+  "unknown_extra": { "k": 1 }
+}

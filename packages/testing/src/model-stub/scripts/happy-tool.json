@@ -1,0 +1,11 @@
+{
+  "name": "happy-tool",
+  "rules": [
+    {
+      "id": "call-bash",
+      "when": { "toolResults": 0, "offersTool": "bash" },
+      "reply": { "kind": "tool_calls", "calls": [{ "name": "bash", "arguments": { "command": "echo mock-tool-ok" } }], "usage": { "input": 100, "output": 20 } }
+    },
+    { "id": "done", "when": { "toolResults": 1, "lastTool": "bash" }, "reply": { "kind": "text", "text": "STUB-DONE", "usage": { "input": 120, "output": 8 } } }
+  ]
+}

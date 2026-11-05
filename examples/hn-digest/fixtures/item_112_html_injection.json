@@ -1,0 +1,8 @@
+{
+  "id": 112,
+  "time": 1700001000,
+  "title": "<script>alert(1)</script>Safe &lt;b&gt;title&lt;/b&gt;\u202E gnp\u200B",
+  "text": "<style>x{}</style>Hi <a href=\"javascript:alert(1)\">link</a> &#0; &#xD800; &#1114112; &#x1F600; @everyone &amp;lt;tag&amp;gt; &bogus; &nbsp;end <!-- hidden -->",
+  "url": "javascript:alert(1)",
+  "type": "story"
+}

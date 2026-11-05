@@ -1,0 +1,105 @@
+{
+  "apiVersion": 1,
+  "name": "hn-digest",
+  "entry": "entry.mts",
+  "capabilities": {},
+  "deps": [],
+  "params": [
+    {
+      "key": "articleCaptureBytes",
+      "kind": "bytes",
+      "default": 262144,
+      "min": 1,
+      "doc": "Bytes of raw body and rendered DOM captured per article.",
+      "relations": [
+        {
+          "op": "lte",
+          "key": "browser.capture.maxBytesCeiling"
+        },
+        {
+          "op": "lte",
+          "key": "articleAuditBodyMaxBytes"
+        }
+      ]
+    },
+    {
+      "key": "articleAuditBodyMaxBytes",
+      "kind": "bytes",
+      "default": 2097152,
+      "min": 1,
+      "doc": "Largest response body the digest host's audited fetch reads."
+    },
+    {
+      "key": "articleTextMaxBytes",
+      "kind": "bytes",
+      "default": 1048576,
+      "min": 1,
+      "doc": "UTF-8 bytes of article text the digest stores per story, as one retained report (static clip and evidence check); the analyst reads at most ext.hnDigest.articleAnalystReadMaxBytes of it. The browser worker's own clip (browser.capture.textMaxBytes) may not exceed it.",
+      "relations": [
+        {
+          "op": "lte",
+          "key": "report.maxBytes"
+        },
+        {
+          "op": "gte",
+          "key": "browser.capture.textMaxBytes"
+        }
+      ]
+    },
+    {
+      "key": "articlePageMaxBytes",
+      "kind": "bytes",
+      "default": 16384,
+      "min": 4096,
+      "doc": "UTF-8 bytes of one article page the digest publishes to the analyst (a page is a view of the stored text, never the verification authority).",
+      "relations": [
+        {
+          "op": "lte",
+          "key": "articleAnalystReadMaxBytes"
+        },
+        {
+          "op": "lte",
+          "key": "report.maxBytes"
+        }
+      ]
+    },
+    {
+      "key": "articleAnalystReadMaxBytes",
+      "kind": "bytes",
+      "default": 262144,
+      "min": 1,
+      "max": 1048576,
+      "doc": "UTF-8 bytes of the stored article text the digest offers the analyst, as pages; the first pages that fit are published and the rest is named as unread. Quotes still verify against the whole stored text."
+    },
+    {
+      "key": "articleBrowserCaptureDeadlineMs",
+      "kind": "ms",
+      "default": 60000,
+      "min": 1,
+      "doc": "Deadline the digest's browser worker requests for one article capture.",
+      "relations": [
+        {
+          "op": "gte",
+          "key": "browser.capture.deadlineMinMs"
+        },
+        {
+          "op": "lte",
+          "key": "browser.capture.deadlineMaxMs"
+        }
+      ]
+    },
+    {
+      "key": "reportMaxBytes",
+      "kind": "bytes",
+      "default": 65536,
+      "min": 1,
+      "doc": "Largest rendered digest report the digest workflows publish (the content workflow's report bound and the metadata digest's report capability).",
+      "relations": [
+        {
+          "op": "lte",
+          "key": "report.workflowMaxBytes"
+        }
+      ]
+    }
+  ]
+}

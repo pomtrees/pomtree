@@ -1,0 +1,7 @@
+{
+  "name": "single-429",
+  "rules": [
+    { "id": "rate-limited", "when": { "turn": 0 }, "times": 1, "reply": { "kind": "fault", "fault": { "type": "status", "status": 429, "retryAfterS": 1 } } },
+    { "id": "after-retry", "when": { "turn": 0 }, "reply": { "kind": "text", "text": "STUB-DONE after 429", "usage": { "input": 100, "output": 8 } } }
+  ]
+}

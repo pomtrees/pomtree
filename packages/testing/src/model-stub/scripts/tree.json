@@ -1,0 +1,20 @@
+{
+  "name": "tree",
+  "rules": [
+    {
+      "id": "parent-spawn",
+      "when": { "marker": "parent", "toolResults": 0, "offersTool": "bash" },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [{ "name": "bash", "arguments": { "command": "pomtree spawn --json --task '[[stub:child]] say done' --name kid" } }],
+        "usage": { "input": 100, "output": 20 }
+      }
+    },
+    {
+      "id": "parent-done",
+      "when": { "marker": "parent", "toolResults": 1, "lastTool": "bash" },
+      "reply": { "kind": "text", "text": "STUB-PARENT-DONE", "usage": { "input": 130, "output": 8 } }
+    },
+    { "id": "child-done", "when": { "marker": "child" }, "reply": { "kind": "text", "text": "STUB-CHILD-DONE", "usage": { "input": 90, "output": 6 } } }
+  ]
+}

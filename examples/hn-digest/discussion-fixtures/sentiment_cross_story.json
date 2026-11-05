@@ -1,0 +1,7 @@
+{
+  "label": "negative",
+  "target": "captured comments on story 100",
+  "summary": "Cites a comment from another story.",
+  "citations": [201, 301],
+  "_fixture_note": "synthetic offline fixture; not captured from HN"
+}

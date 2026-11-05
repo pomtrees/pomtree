@@ -1,0 +1,17 @@
+{
+  "name": "@pomtree/agent-image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 'src/**/*.test.ts'",
+    "build:image": "node scripts/build.ts",
+    "build:image:demo": "node scripts/build.ts --target demo"
+  },
+  "dependencies": {
+    "@pomtree/core": "workspace:*"
+  }
+}

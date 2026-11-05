@@ -1,0 +1,18 @@
+{
+  "name": "@pomtree/testing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "pomtree-model-stub": "./bin/model-stub.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@pomtree/core": "workspace:*"
+  }
+}

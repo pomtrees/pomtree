@@ -1,0 +1,24 @@
+{
+  "name": "@pomtree/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=${E2E_TEST_CONCURRENCY:-6} --test-timeout=120000 'src/**/*.test.ts'",
+    "test:docker:e2e-scenarios": "node --test --test-concurrency=${E2E_TEST_CONCURRENCY:-6} --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${E2E_TAP:-/dev/null}\" 'src/cli-scenarios*.test.ts' 'src/cli-credentials.test.ts' 'src/cli-observe.test.ts'",
+    "test:docker:e2e-custody": "node --test --test-concurrency=${E2E_TEST_CONCURRENCY:-6} --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${E2E_TAP:-/dev/null}\" 'src/cli-custody*.test.ts' 'src/cli-operator*.test.ts' 'src/cli-relay*.test.ts'",
+    "test:docker:e2e-lifecycle": "node --test --test-concurrency=${E2E_TEST_CONCURRENCY:-6} --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${E2E_TAP:-/dev/null}\" 'src/cli-lifecycle*.test.ts' 'src/cli-recovery*.test.ts' 'src/docker-*.test.ts' 'src/live-model.test.ts' 'src/browser-live-run.test.ts'"
+  },
+  "devDependencies": {
+    "@pomtree/core": "workspace:*",
+    "@pomtree/harness-pi": "workspace:*",
+    "@pomtree/pomtree": "workspace:*",
+    "@pomtree/pomtreed": "workspace:*",
+    "@pomtree/report-dir": "workspace:*",
+    "@pomtree/sandbox-docker": "workspace:*",
+    "@pomtree/sched": "workspace:*",
+    "@pomtree/store-sqlite": "workspace:*",
+    "@pomtree/testing": "workspace:*",
+    "@pomtree/workspace-git": "workspace:*"
+  }
+}

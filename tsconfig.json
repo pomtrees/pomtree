@@ -1,0 +1,53 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/store-sqlite"
+    },
+    {
+      "path": "packages/sandbox-docker"
+    },
+    {
+      "path": "packages/workspace-git"
+    },
+    {
+      "path": "packages/harness-pi"
+    },
+    {
+      "path": "packages/testing"
+    },
+    {
+      "path": "packages/pomtreed"
+    },
+    {
+      "path": "packages/pomtree"
+    },
+    {
+      "path": "packages/e2e"
+    },
+    {
+      "path": "packages/observe"
+    },
+    {
+      "path": "packages/sched"
+    },
+    {
+      "path": "packages/agent-image"
+    },
+    {
+      "path": "packages/report-dir"
+    },
+    {
+      "path": "packages/messaging-discord"
+    },
+    {
+      "path": "packages/messaging-stdio"
+    },
+    {
+      "path": "packages/template-dir"
+    }
+  ]
+}

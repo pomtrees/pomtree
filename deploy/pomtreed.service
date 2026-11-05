@@ -1,0 +1,57 @@
+# systemd unit for the pomtree daemon (pomtreed). Full install steps: deploy/INSTALL.md.
+#
+# Restart=on-failure restarts pomtreed only on a non-zero exit or signal; a clean
+# SIGINT/SIGTERM drain (exit 0) stays down. Restart limiting lives in [Unit].
+# Secrets (model key etc.) go in files named by POMTREED_*_KEY_FILE variables (mode 0600), never in this file.
+# Adjust ExecStart, WorkingDirectory and the ReadWritePaths repo path for your host.
+
+[Unit]
+Description=pomtree daemon (pomtreed)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+# At most 5 starts in 60s, so a crash-looping daemon cannot thrash the host.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pomtreed
+Group=pomtreed
+# Docker socket access (root-equivalent on the host; see INSTALL.md).
+SupplementaryGroups=docker
+ExecStart=/usr/bin/node /srv/pomtree/packages/pomtreed/src/main.ts
+WorkingDirectory=/srv/pomtree
+# Required: POMTREED_MODEL_BASE_URL, POMTREED_MODEL_UPSTREAM_KEY_FILE, POMTREED_PI_PROVIDER, POMTREED_AGENT_EGRESS_PROXY_IMAGE,
+# POMTREED_AGENT_UNTEMPLATED_EGRESS, POMTREED_EXTENSIONS_APPROVAL (values: deploy/pomtreed.env.example).
+EnvironmentFile=/etc/pomtreed/env
+Environment=POMTREED_STATE_DIR=/var/lib/pomtreed
+Environment=POMTREED_REPO_DIR=/srv/pomtree
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a configuration refusal (bad or retired env name, value out of range): restarting cannot fix it, so stay
+# down; `node packages/pomtreed/src/main.ts config show` with the env file loaded lists the problems.
+RestartPreventExitStatus=2
+# SIGTERM lets pomtreed drain (POMTREED_DRAIN_TIMEOUT_MS, default 10s, then it
+# force-exits); TimeoutStopSec must stay above that.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# State dir /var/lib/pomtreed, created 0700 and owned by pomtreed.
+StateDirectory=pomtreed
+StateDirectoryMode=0700
+UMask=0077
+LimitNOFILE=65536
+
+# Hardening. The repo is written to (worktrees, refs), so it is a ReadWritePath.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pomtreed /srv/pomtree
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

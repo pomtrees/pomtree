@@ -1,0 +1,9 @@
+{
+  "id": 204,
+  "dead": true,
+  "type": "comment",
+  "parent": 100,
+  "time": 1700000204,
+  "text": "removed text should not be used",
+  "_fixture_note": "synthetic offline fixture; not captured from HN"
+}

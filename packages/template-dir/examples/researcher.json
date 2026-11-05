@@ -1,0 +1,6 @@
+{
+  "image": "ghcr.io/pomtree/researcher@sha256:3588bb7219b1faa3d01f132a0c60a394258ccc3049d8e4a243b737e62524d147",
+  "systemPrompt": "You research questions and report findings with sources. Use web_search and web_fetch to gather current information.",
+  "extensions": ["web_search", "web_fetch"],
+  "egress": { "kind": "registry" }
+}

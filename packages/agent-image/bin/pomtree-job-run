@@ -1,0 +1,32 @@
+#!/bin/sh
+# pomtree-job-run DIR TIMEOUT_S CMD  -- background job wrapper (TODO(background-jobs)).
+# Launch mode: re-execs itself under `setsid -f` (new session, so Pi's bash-timeout group kill cannot reach it),
+# waits briefly for DIR/pid and prints it. Job mode: stdin /dev/null, output -> DIR/out.log, own timeout via
+# `timeout --kill-after=5`, exit info written atomically to DIR/exit (code=, signal=, endedAt=).
+dir=$1; t=$2; cmd=$3
+[ -n "$dir" ] && [ -n "$t" ] && [ -n "$cmd" ] || { echo "usage: pomtree-job-run DIR TIMEOUT_S CMD" >&2; exit 2; }
+if [ -z "$PTREE_JOB_CHILD" ]; then
+  PTREE_JOB_CHILD=1 setsid -f "$0" "$dir" "$t" "$cmd" </dev/null >/dev/null 2>&1 || exit 1
+  i=0
+  while [ $i -lt 40 ]; do [ -s "$dir/pid" ] && { cat "$dir/pid"; exit 0; }; sleep 0.05; i=$((i+1)); done
+  echo "job did not start" >&2; exit 1
+fi
+exec </dev/null >"$dir/out.log" 2>&1
+echo $$ > "$dir/pid.tmp" && mv "$dir/pid.tmp" "$dir/pid"
+killed=
+timeout --kill-after=5 "$t" sh -c "$cmd" &
+tpid=$!
+onterm() {
+  killed=1
+  kill -TERM -- -"$tpid" 2>/dev/null || kill -TERM "$tpid" 2>/dev/null
+  ( sleep 5; kill -KILL -- -"$tpid" 2>/dev/null; kill -KILL "$tpid" 2>/dev/null ) &
+}
+trap onterm TERM INT
+wait "$tpid"; rc=$?
+while kill -0 "$tpid" 2>/dev/null; do wait "$tpid"; rc=$?; done
+sig=
+if [ -n "$killed" ]; then sig=KILLED
+elif [ "$rc" = 124 ]; then sig=TIMEOUT
+elif [ "$rc" -gt 128 ]; then sig=$(kill -l "$rc" 2>/dev/null || echo "SIG$((rc-128))"); fi
+printf 'code=%s\nsignal=%s\nendedAt=%s\n' "$rc" "$sig" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/exit.tmp" && mv "$dir/exit.tmp" "$dir/exit"
+exit 0

@@ -1,0 +1,10 @@
+{
+  "dir": "/opt/pomtree/ext",
+  "extensions": [
+    { "name": "web_search", "entry": "web_search", "tool": "web_search" },
+    { "name": "web_fetch", "entry": "web_fetch", "tool": "web_fetch" },
+    { "name": "pomtree-mailbox", "entry": "pomtree-mailbox" },
+    { "name": "pomtree-jobs", "entry": "pomtree-jobs" },
+    { "name": "pomtree-events", "entry": "pomtree-events" }
+  ]
+}

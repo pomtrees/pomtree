@@ -1,0 +1,15 @@
+{
+  "name": "reporter",
+  "rules": [
+    {
+      "id": "report",
+      "when": { "toolResults": 0, "offersTool": "bash" },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [{ "name": "bash", "arguments": { "command": "pomtree result --summary 'stub done'" } }],
+        "usage": { "input": 100, "output": 20 }
+      }
+    },
+    { "id": "done", "when": { "toolResults": 1 }, "reply": { "kind": "text", "text": "STUB-DONE", "usage": { "input": 120, "output": 8 } } }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "pomtree",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -b && tsc -p examples/hn-digest --noEmit",
+    "test": "pnpm test:lite",
+    "test:lite": "pnpm -r --no-bail --workspace-concurrency=${WORKSPACE_TEST_CONCURRENCY:-6} test; r=$?; pnpm test:examples || r=1; exit $r",
+    "test:full": "PTREE_DOCKER_TESTS=1 pnpm -r --no-bail --workspace-concurrency=${WORKSPACE_TEST_CONCURRENCY:-6} test; r=$?; PTREE_DOCKER_TESTS=1 pnpm test:examples || r=1; exit $r",
+    "test:docker:sandbox": "tap=${E2E_TAP:+${E2E_TAP%.tap}-}; PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/sandbox-docker exec node --test --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${tap:-/dev/null}${tap:+sandbox-docker.tap}\" 'src/args-runtime.test.ts' 'src/browser-real-article.test.ts' 'src/capture-worker-wacz.test.ts' 'src/docker.test.ts' 'src/network-docker.test.ts' 'src/result-work.test.ts' 'src/sandbox-contract.test.ts'; r=$?; PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/pomtreed exec node --test --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${tap:-/dev/null}${tap:+pomtreed.tap}\" 'src/agent-net.docker.test.ts' || r=1; PTREE_DOCKER_TESTS=1 node --test --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=\"${tap:-/dev/null}${tap:+examples.tap}\" 'examples/hn-digest/content-live-smoke.test.mts' 'examples/hn-digest/content-live-browser-smoke.test.mts' || r=1; exit $r",
+    "test:docker:e2e-scenarios": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-scenarios",
+    "test:docker:e2e-custody": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-custody",
+    "test:docker:e2e-lifecycle": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-lifecycle",
+    "test:examples": "node --test --test-timeout=120000 'examples/hn-digest/*.test.mts'",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:full",
+    "check:lite": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:lite",
+    "format": "biome format --write .",
+    "gen:config": "node packages/core/scripts/gen-config.ts",
+    "gen:getting-started": "node packages/pomtreed/scripts/gen-getting-started.ts",
+    "format:check": "biome format .",
+    "lint": "biome lint ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

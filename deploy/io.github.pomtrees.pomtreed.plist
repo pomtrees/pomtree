@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the pomtree daemon (pomtreed). Full steps: deploy/INSTALL.md.
+
+  Restart policy: KeepAlive { SuccessfulExit = false } restarts pomtreed after any
+  non-zero exit or signal (crash, drain after an unhandled error) and does NOT
+  restart after a clean exit 0. ThrottleInterval is a TOP-LEVEL key: the minimum
+  seconds between launches of a crash-looping daemon.
+
+  Secrets: do NOT put the model key in this file; write it to a 0600 file and set
+  POMTREED_MODEL_UPSTREAM_KEY_FILE to its path in the env file below. Use the wrapper script
+  (ProgramArguments below) that sources a 0600 env file (~/.config/pomtreed/env).
+  If you must put secrets here anyway, chmod 0600 this plist.
+
+  Adjust every /Users/example path, and PATH to the directories of your `node`
+  (>=24) and `docker`. launchd's default PATH lacks Homebrew and nvm.
+  Create the log directory first: mkdir -p ~/Library/Logs/pomtreed
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.pomtrees.pomtreed</string>
+
+  <!-- Wrapper: `set -a; . ~/.config/pomtreed/env; exec node .../pomtreed/src/main.ts` -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/example/.config/pomtreed/run.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/example/pomtree</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Adjust: include the dirs holding node and docker. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>POMTREED_STATE_DIR</key>
+    <string>/Users/example/.pomtreed</string>
+    <key>POMTREED_REPO_DIR</key>
+    <string>/Users/example/pomtree</string>
+  </dict>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- launchd does not expand ~ or $HOME: use absolute paths. -->
+  <key>StandardOutPath</key>
+  <string>/Users/example/Library/Logs/pomtreed/pomtreed.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/example/Library/Logs/pomtreed/pomtreed.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"01a103b6-6e80-732b-9ddd-199206acce77","timestamp":"2026-10-03T21:40:49.920Z","cwd":"/workspace"}
+{"type":"agent_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1791063649947}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1791063649947}}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"deepseek","model":"deepseek-v4-pro","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1791063649964}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"…","thinkingSignature":"reasoning_content"},{"type":"text","text":"Hi! 👋 How can I help you today?"}],"api":"openai-completions","provider":"deepseek","model":"deepseek-v4-pro","usage":{"input":1786,"output":24,"cacheRead":0,"cacheWrite":0,"reasoning":12,"totalTokens":1810,"cost":{"input":0.00235752,"output":0.00009504000000000001,"cacheRead":0,"cacheWrite":0,"total":0.0024525600000000003}},"stopReason":"stop","timestamp":1791063649964,"responseId":"ea9b9c98-deb5-4181-82f0-4a1e10afeca1","rawStopReason":"stop","thinkingLevel":"high"}}
+{"type":"agent_settled"}

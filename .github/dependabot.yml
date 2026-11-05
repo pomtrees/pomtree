@@ -1,0 +1,12 @@
+# Keeps the commit-SHA pins of the actions in .github/workflows/ci.yml current (each pin carries its version in a trailing comment).
+# Grouped so all action updates arrive in one PR: one PR means one CI run.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

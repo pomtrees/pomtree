@@ -1,0 +1,9 @@
+{
+  "label": "mixed",
+  "target": "captured comments on story 100",
+  "summary": "One captured comment praises the approach; another objects to cost.",
+  "citations": [201, 202],
+  "confidence": 0.9,
+  "score": 4,
+  "_fixture_note": "synthetic offline fixture; not captured from HN"
+}

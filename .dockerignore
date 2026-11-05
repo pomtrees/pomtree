@@ -1,0 +1,11 @@
+# Build context is the repo root (packages/agent-image/scripts/build.ts). Send only
+# what the Dockerfile COPYs plus the sources the build compiles on the host.
+.git
+node_modules
+**/node_modules
+**/*.tsbuildinfo
+*.tsbuildinfo
+.pomtreed
+**/.pomtreed
+*.sqlite*
+**/*.sqlite*
