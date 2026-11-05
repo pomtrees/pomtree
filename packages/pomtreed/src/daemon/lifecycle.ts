@@ -3139,8 +3139,14 @@ export class Lifecycle {
       return { record: await d.registry.get(id), changed: false }; // lost the race to another finisher
     }
     // The finished agent's retry ladder is over (a resume to fix a merge conflict starts a new one). Not awaited before the
-    // exit lands, so the first finisher's exit wins as before; a failed clear only leaves a stale count no ladder reads.
-    await d.registry.resetProviderAttempts(id).catch(() => {});
+    // exit lands, so the first finisher's exit wins as before. A failed clear does not block the exit, but the durable count stays:
+    // a later resume's ladder reads it (bumpProviderAttempts, against maxProviderRetries) and starts partway up, until a successful
+    // usage event resets it. So log the failure and its consequence.
+    await d.registry.resetProviderAttempts(id).catch((e: unknown) => {
+      console.error(
+        `pomtreed: agent ${id}: could not reset the provider-attempt count after exit (${e instanceof Error ? e.message : String(e)}); a stale count may make its next run reach the provider retry cap early, so check the store`,
+      );
+    });
     await this.finishTail(upd, exit, cause);
     return { record: upd, changed: true };
   }

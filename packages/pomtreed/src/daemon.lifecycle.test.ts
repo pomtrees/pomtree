@@ -422,3 +422,22 @@ test("top-level default budget applies to operator spawns without a budget, not 
   const b = (await t.operator("POST", "/v1/agents", { name: "x", task: "quick", idempotencyKey: "e", budgetMicros: 7_000 })).body as AgentRecord;
   assert.equal(b.budgetMicros, 7_000);
 });
+
+test("a failed provider-attempt reset on exit is logged with its cause and does not block the exit", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...a: unknown[]) => void logged.push(a.join(" ")));
+  const s = setup(async (c) => {
+    await c.api("POST", "/v1/agents/self/result", { result: { summary: "ok", value: 1 } });
+  });
+  const raw = s.fakes.hooks.raw;
+  const reg = Object.create(raw.registry) as typeof raw.registry;
+  reg.resetProviderAttempts = async () => {
+    throw new Error("attempt-store-unreachable");
+  };
+  const d = new Daemon({ ...s.daemon.deps, registry: reg });
+  const a = (await handle(d, { method: "POST", url: "/v1/agents", token: op, body: { task: "t", idempotencyKey: "k" } })).body as AgentRecord;
+  await s.orchestrator.idle();
+  assert.ok(["exited", "reaped"].includes((await d.get(a.id))!.state));
+  const hits = logged.filter((m) => m.includes(a.id) && m.includes("attempt-store-unreachable"));
+  assert.equal(hits.length, 1, logged.join("\n"));
+});
