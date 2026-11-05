@@ -162,7 +162,7 @@ import {
   verifyGatewayCredential,
   waitChildIds,
 } from "@pomtree/core";
-import type { AgentLedger, CredentialCheck, ModelCallMeta, QuotaCounters, RequestReservation, ReserveResult, SettleResult } from "@pomtree/core";
+import type { AgentLedger, CredentialCheck, LedgerNode, ModelCallMeta, QuotaCounters, RequestReservation, ReserveResult, SettleResult } from "@pomtree/core";
 import { FakeCaptureIndex, FakeCaptureParser } from "./capture-fakes.ts";
 
 export interface Call {
@@ -1772,8 +1772,10 @@ export class FakeModelGateway implements ModelGateway {
 // In-memory ModelDebitStore that mirrors RequestBudget's per-agent accounting and the durable
 // store's authorize/revoke. Scripted results (`reserveResults`/`settleResults`/`cancelResults`) are
 // consumed in order and short-circuit the stateful logic; otherwise the real semantics run and
-// every call is recorded in `calls`. Flat: every bucket is a root of the ledger (no registry), so `ledgerFor` reads a bucket's own
-// cap, as the durable store does for an agent its registry does not know.
+// every call is recorded in `calls`. Without a registry the ledger is flat: every bucket is a root, so `ledgerFor` reads a bucket's own
+// cap, as the durable store does for an agent its registry does not know. With one, `ledgerFor` builds the nodes as store-sqlite's
+// `ledgerView` does: each registered agent contributes its registered cap, parent and liveness, with its bucket's use (0 when it has
+// none), and a bucket for an unregistered agent stays a root.
 export class FakeModelDebitStore implements DurableModelDebitStore {
   calls: {
     method:
@@ -1806,11 +1808,13 @@ export class FakeModelDebitStore implements DurableModelDebitStore {
   private readonly revoked = new Map<AgentId, number>();
   private readonly issued = new Map<AgentId, number>();
   private readonly agents = new Map<AgentId, FakeAgentState>();
+  private readonly registry?: FakeRegistry;
 
-  constructor(options: { secret: string; now?: () => number }) {
+  constructor(options: { secret: string; now?: () => number; registry?: FakeRegistry }) {
     if (!options.secret) throw new Error("secret is required");
     this.secret = options.secret;
     this.now = options.now ?? Date.now;
+    this.registry = options.registry;
   }
 
   private credentialOf(key: string): GatewayCredential | null {
@@ -1928,12 +1932,17 @@ export class FakeModelDebitStore implements DurableModelDebitStore {
     return null;
   }
 
-  // The core ledger over the buckets, each a root (the fake has no registry): committed is spend plus reservations.
+  // The core ledger over the buckets: committed is spend plus reservations. Registered agents (when a registry was given) carry their
+  // registered cap, parent and liveness even with no bucket; every other bucket is a root.
   ledgerFor(agent: AgentId): AgentLedger {
     this.calls.push({ method: "ledgerFor", args: [agent] });
-    const view = budgetLedger(
-      [...this.agents].map(([id, a]) => ({ id, parent: null, budgetMicros: a.budgetMicros, live: true, usedMicros: a.spentMicros + a.reservedMicros })),
-    );
+    const used = (a: FakeAgentState | undefined) => (a ? a.spentMicros + a.reservedMicros : 0);
+    const nodes: LedgerNode[] = [];
+    for (const r of this.registry?.agents.values() ?? [])
+      nodes.push({ id: r.id, parent: r.parent ?? null, budgetMicros: r.budgetMicros, live: r.state !== "reaped", usedMicros: used(this.agents.get(r.id)) });
+    for (const [id, a] of this.agents)
+      if (!this.registry?.agents.has(id)) nodes.push({ id, parent: null, budgetMicros: a.budgetMicros, live: true, usedMicros: used(a) });
+    const view = budgetLedger(nodes);
     const budgetMicros = view.node(agent)?.budgetMicros ?? 0;
     const committedMicros = view.committed(agent);
     return { budgetMicros, committedMicros, remainingMicros: budgetMicros - committedMicros, overageMicros: view.overage(agent) };

@@ -647,13 +647,9 @@ export async function modelGatewayContractBody(w: ModelGatewayContractWorld): Pr
   assert.deepEqual(await g.spend(never), { spentMicros: 0, budgetMicros: B });
   assert.deepEqual(await g.spend("gw-ghost"), { spentMicros: 0, budgetMicros: 0 });
   assert.deepEqual(await g.revoke("gw-ghost"), { unusedMicros: 0 });
-  // The number a credential-less REGISTERED agent's revoke returns is not pinned, only its range: the real gateway over the sqlite
-  // debit ledger (and over journal metering) returns the registered budget, because that ledger reads the agent's cap from the
-  // registry, while the SAME gateway over FakeModelDebitStore returns 0, because that fake holds no registry and so knows no cap
-  // for an agent with no bucket. TODO(gw-debit-ledger): make FakeModelDebitStore.ledgerFor read the registered cap as
-  // store-sqlite's ledgerView does, then pin this to the registered budget.
-  const unused = (await g.revoke(never)).unusedMicros;
-  assert.ok(Number.isSafeInteger(unused) && unused >= 0 && unused <= B, `revoke without a credential returned ${unused}`);
+  // A credential-less REGISTERED agent's revoke returns its whole registered budget: every gateway reads the cap from the registry
+  // (the sqlite debit ledger's ledgerView, the fake debit store given the registry, and journal metering), not from a debit bucket.
+  assert.deepEqual(await g.revoke(never), { unusedMicros: B });
   // (h) revoking an agent that spent nothing returns the whole budget, and a second revoke answers the same (idempotent)
   assert.deepEqual(await g.revoke(a), { unusedMicros: B });
   assert.deepEqual(await g.revoke(a), { unusedMicros: B });

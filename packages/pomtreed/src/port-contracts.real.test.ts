@@ -45,7 +45,7 @@ const gatewayWorld = (withDebits: boolean): ModelGatewayContractWorld => {
     secret: "controller-secret",
     proxyBaseUrl: "http://relay.internal/v1",
     tokenTtlMs: 60_000,
-    ...(withDebits && { debits: new FakeModelDebitStore({ secret: "controller-secret", now }) }),
+    ...(withDebits && { debits: new FakeModelDebitStore({ secret: "controller-secret", now, registry }) }),
   });
   return { gateway, register: modelGatewayRegisterOn(registry) };
 };
