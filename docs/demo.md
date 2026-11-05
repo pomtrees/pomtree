@@ -38,7 +38,7 @@ Every script binds the agent API through `agent-endpoint.ts`, which uses the sam
 
 Common optional settings: `POMTREED_DEMO_MODEL` (the model the keys allow, default `deepseek-flash`), `POMTREED_DEMO_TIMEOUT_MS` (per phase), `POMTREED_AGENT_IMAGE` (default `pomtree/agent:dev`), and for the multi-scenario scripts `POMTREED_DEMO_SCENARIOS` (one character per live run). `budget-escalate.ts` takes `POMTREED_DEMO_AGENT_BUDGET_MICROS`, and `chapters.ts` takes its root budget from `POMTREED_BUDGET_ROOT_MICROS` (default 2000000). The scripts' header comments are the authority for the exact settings. The model proxy has been run against OpenRouter and DeepSeek; results for a release commit are recorded in [validation.md](validation.md).
 
-The key file and the spend rules matter before running any of these: [scripts/live](../scripts/live/README.md) holds the live-run runbook with the key-file rules, caps and stop rules.
+The key file rules and the live-run runbook are in [scripts/live](../scripts/live/README.md).
 
 ## The slim image
 
