@@ -1643,6 +1643,7 @@ test("unexpected exceptions print one internal-error line, not a stack", async (
 
 test("operator-only 403 tells agents what they can use", async () => {
   const h = harness(() => ({ status: 403, body: { error: "operator scope required" } }));
+  h.io.env = { POMTREE_TOKEN: "t", POMTREE_AGENT_GENERATION: "1" };
   await run(["ps"], h.io);
   assert.match(h.err[0]!, /operator scope required \(this command is for the host operator; agents can use: .*peers/);
 });
@@ -1709,8 +1710,37 @@ test("ask --wait over the threshold parks on the escalation", async () => {
 
 test("a bare 'forbidden' 403 also gets the agent-commands hint", async () => {
   const h = harness(() => ({ status: 403, body: { error: "forbidden" } }));
+  h.io.env = { POMTREE_TOKEN: "t", POMTREE_AGENT_GENERATION: "1" };
   await run(["tree"], h.io);
   assert.match(h.err[0]!, /forbidden \(this command is for the host operator; agents can use: .*peers/);
+});
+
+test("the agent-commands hint on a 403 is for agents, not the host operator", async () => {
+  // The daemon answers an operator token on the agent-only publish route with this body (route scope check, no route-specific text).
+  const dir = mkdtempSync(join(tmpdir(), "pomtree-report-"));
+  const file = join(dir, "r.txt");
+  writeFileSync(file, "hello");
+  const forbidden = () => ({ status: 403, body: { error: "forbidden" } });
+  try {
+    const op = harness(forbidden);
+    op.io.env = {};
+    assert.equal(await run(["report", "publish", file], op.io), EXIT.denied);
+    assert.equal(op.err[0], "pomtree: forbidden");
+    assert.doesNotMatch(op.err.join("\n"), /agents can use/);
+    // An Io with no env cannot identify the caller, so the hint stays (the e2e smoke harness calls run this way).
+    const unknown = harness(forbidden);
+    assert.equal(unknown.io.env, undefined);
+    assert.equal(await run(["report", "publish", file], unknown.io), EXIT.denied);
+    assert.match(unknown.err[0]!, /forbidden \(this command is for the host operator; agents can use: .*report publish/);
+    for (const env of [{ POMTREE_TOKEN: "t", POMTREE_AGENT_GENERATION: "1" }, { POMTREE_TOKEN: "t" }]) {
+      const h = harness(forbidden);
+      h.io.env = env;
+      assert.equal(await run(["report", "publish", file], h.io), EXIT.denied);
+      assert.match(h.err[0]!, /forbidden \(this command is for the host operator; agents can use: .*report publish/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("agent help hides operator-only spawn flags; operator help keeps them", async () => {

@@ -395,18 +395,22 @@ export function spawnDisposition(modeFlag: string | undefined, ttlFlag: string |
   return { mode: mode ?? "hold", ...(ttlMs !== undefined && { ttlMs }) };
 }
 
+// Who is calling, read from the environment main.ts builds the transport from: inside an agent container pomtreed injects
+// POMTREE_AGENT_GENERATION and the agent's POMTREE_TOKEN; an explicit POMTREE_TOKEN elsewhere is a token the caller chose;
+// otherwise the operator token file POMTREED_STATE_DIR/operator.token was used. The token itself is never echoed.
+function callerKind(env: Record<string, string | undefined> | undefined): "agent" | "env" | "operator" {
+  return env?.POMTREE_AGENT_GENERATION !== undefined ? "agent" : env?.POMTREE_TOKEN ? "env" : "operator";
+}
+
 // The stderr hint for a refused call, chosen by cause class. Exit codes come from the status alone (codeFor);
 // `body.code` is the daemon's optional machine cause (uncommitted_work, stale_generation, token_revoked,
 // idempotency_conflict) and only refines the advice, so an older daemon without it still gets a useful hint.
-// The caller kind decides the 401 advice, read from the environment main.ts builds the transport from: inside an agent
-// container pomtreed injects POMTREE_AGENT_GENERATION and the agent's POMTREE_TOKEN; an explicit POMTREE_TOKEN elsewhere is a token
-// the caller chose; otherwise the operator token file POMTREED_STATE_DIR/operator.token was used. Advice about one is wrong
-// for the others. The token itself is never echoed.
+// The caller kind decides the 401 advice; advice about one kind is wrong for the others.
 // `command` is the pomtree subcommand when the hint depends on it: for `result` a repeated key with another value means a result is already recorded.
 export function failureHint(status: number, body: unknown, env: Record<string, string | undefined> | undefined, command?: string): string | undefined {
   const b = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const code = typeof b.code === "string" ? b.code : undefined;
-  const caller = env?.POMTREE_AGENT_GENERATION !== undefined ? "agent" : env?.POMTREE_TOKEN ? "env" : "operator";
+  const caller = callerKind(env);
   if (status === 401) {
     if (caller === "agent")
       return code === "token_revoked"
@@ -531,6 +535,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
         codeFor(status),
         typeof msg === "string" &&
           status === 403 &&
+          // An Io without env cannot tell the caller (callerKind(undefined) reads as operator), so it keeps the hint; only a known operator skips it.
+          !(io.env !== undefined && callerKind(io.env) === "operator") &&
           (msg === "operator scope required" || msg === "forbidden" || /operator/.test(msg)) &&
           !/agents can use/.test(msg)
           ? `${msg} ${AGENT_HINT}`
