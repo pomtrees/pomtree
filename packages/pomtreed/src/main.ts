@@ -65,7 +65,7 @@ import type { WorkflowCapabilityServices } from "./workflow-capabilities.ts";
 import { testFetchSeam, testFetchWarning } from "./test-fetch.ts";
 import { createCronExtension } from "./builtin/cron.ts";
 import { resolveSocketPath } from "./socket-path.ts";
-import { checkStateDir, isLoopbackHost, publishScanWarning, shortHash, stamp, uiChannelWarning } from "./config.ts";
+import { checkStateDir, isLoopbackListenHost, publishScanWarning, shortHash, stamp, uiChannelWarning } from "./config.ts";
 import { realpathLoose, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
 import { formatStartupFailure } from "./startup-failure.ts";
 
@@ -158,8 +158,7 @@ const agentListenCfg = cfg["agent.listen"] === "" ? undefined : cfg["agent.liste
 // An explicit host is gateway-independent in the plan, so it shows whether detection is needed.
 const explicitListen = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: undefined });
 const needGateway =
-  process.platform === "linux" &&
-  (agentListenCfg === undefined || (explicitListen.mode === "explicit" && !isLoopbackHost(explicitListen.host.replace(/^\[(.*)\]$/, "$1"))));
+  process.platform === "linux" && (agentListenCfg === undefined || (explicitListen.mode === "explicit" && !isLoopbackListenHost(explicitListen.host)));
 const agentGateway = needGateway ? await detectBridgeGateway(dockerExec) : undefined;
 const agentPlan = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: agentGateway });
 // Dangerous silent defaults refuse the start (TODO(safety-defaults)): every violation is listed at once, before any state is created.

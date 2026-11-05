@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { openStore } from "@pomtree/store-sqlite";
 import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
-import { isLoopbackHost } from "../../pomtreed/src/config.ts";
+import { isLoopbackListenHost } from "../../pomtreed/src/config.ts";
 import { realpathLoose, safetyBootErrors } from "../../pomtreed/src/safety-boot.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -377,7 +377,7 @@ async function expectedRefusals(env: Record<string, string>, stateDir: string): 
   const listen = e.POMTREED_AGENT_LISTEN === "" ? undefined : e.POMTREED_AGENT_LISTEN;
   const explicit = planAgentListen({ listen, platform: process.platform, gateway: undefined });
   const gateway =
-    process.platform === "linux" && explicit.mode === "explicit" && !isLoopbackHost(explicit.host.replace(/^\[(.*)\]$/, "$1"))
+    process.platform === "linux" && explicit.mode === "explicit" && !isLoopbackListenHost(explicit.host)
       ? await detectBridgeGateway(dockerExec, true)
       : undefined;
   return safetyBootErrors(

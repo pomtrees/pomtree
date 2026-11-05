@@ -22,7 +22,7 @@ export class Tree {
   }
 
   // The default SpawnSpec for an untemplated spawn: the daemon's base image, no env layer,
-  // extensions, and only the manifest's registries plus the node relay. TODO(templates):
+  // extensions, and egress set by agent.untemplatedEgress (none, or the registries). TODO(templates):
   // provider/model/systemPrompt/extensions resolve from a template once TemplateStore is wired.
   defaultSpec(): SpawnSpec {
     const d = this.ctx.deps;

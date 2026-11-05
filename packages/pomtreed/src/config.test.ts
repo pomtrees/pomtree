@@ -4,6 +4,7 @@ import {
   assertLoopbackOrAllowed,
   checkStateDir,
   isLoopbackHost,
+  isLoopbackListenHost,
   parseListen,
   publishScanEnabled,
   publishScanWarning,
@@ -32,6 +33,15 @@ test("non-loopback binds are refused unless opted in", () => {
   assert.throws(() => assertLoopbackOrAllowed("POMTREED_UI_LISTEN", { host: "0.0.0.0", port: 1 }, false), /POMTREED_LISTEN_ALLOW_NONLOOPBACK/);
   assertLoopbackOrAllowed("POMTREED_UI_LISTEN", { host: "0.0.0.0", port: 1 }, true);
   assertLoopbackOrAllowed("POMTREED_UI_LISTEN", { host: "127.0.0.1", port: 1 }, false);
+});
+
+test("isLoopbackListenHost accepts bracketed and bare loopback, refuses the rest", () => {
+  assert.equal(isLoopbackListenHost("[::1]"), true);
+  assert.equal(isLoopbackListenHost("::1"), true);
+  assert.equal(isLoopbackListenHost("127.0.0.1"), true);
+  assert.equal(isLoopbackListenHost("10.0.0.5"), false);
+  assert.equal(isLoopbackListenHost("[fe80::1]"), false);
+  assert.equal(isLoopbackListenHost("[::]"), false);
 });
 
 test("checkStateDir requires an owned directory and asks for chmod when not 0700", () => {

@@ -6,7 +6,7 @@
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { AgentListenPlan } from "./agent-net.ts";
-import { isLoopbackHost } from "./config.ts";
+import { isLoopbackListenHost } from "./config.ts";
 import { type DaemonConfig, envName } from "./daemon-config.ts";
 
 export interface SafetyBootFacts {
@@ -75,9 +75,9 @@ export function safetyBootErrors(cfg: SafetyConfig, facts: SafetyBootFacts): str
     );
   }
   if (facts.agentListen.mode === "explicit" && !cfg["listen.allowNonloopback"]) {
-    // planAgentListen keeps the brackets of an IPv6 literal ("[::1]:0"); the loopback check wants the bare address.
+    // planAgentListen keeps the brackets of an IPv6 literal ("[::1]:0"); the gateway comparison and message want the bare address.
     const host = facts.agentListen.host.replace(/^\[(.*)\]$/, "$1");
-    if (!isLoopbackHost(host) && host !== facts.bridgeGateway)
+    if (!isLoopbackListenHost(facts.agentListen.host) && host !== facts.bridgeGateway)
       errors.push(
         `pomtreed: refusing to start: agent.listen binds ${host}, which is neither loopback nor the docker bridge gateway (${facts.bridgeGateway ?? "not detected"}): the agent listener is plain HTTP guarded only by agent tokens. Set ${envName("agent.listen")} to a loopback or bridge-gateway address (or leave it unset), or set ${envName("listen.allowNonloopback")}=1 to accept this`,
       );
