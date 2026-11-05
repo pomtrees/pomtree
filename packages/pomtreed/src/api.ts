@@ -159,7 +159,8 @@ function dispositionBody(v: unknown): ResultDisposition {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw new ApiError(400, "disposition must be an object {mode, ttlMs?}");
   const o = v as Record<string, unknown>;
   const ttlMs = positiveInt(o.ttlMs, "disposition.ttlMs");
-  return { mode: str(o, "mode") as ResultDisposition["mode"], ...(ttlMs !== undefined && { ttlMs }) };
+  if (typeof o.mode !== "string" || !o.mode) throw new ApiError(400, 'disposition.mode must be a non-empty string: "hold" or "reap-on-exit"');
+  return { mode: o.mode as ResultDisposition["mode"], ...(ttlMs !== undefined && { ttlMs }) };
 }
 
 function oneOf<T extends string>(v: unknown, what: string, allowed: readonly T[], fallback: T): T {

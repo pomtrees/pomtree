@@ -309,3 +309,17 @@ test("spawn body validation: a disposition that is not an object, has no mode, o
   }
   assert.equal((await post("d6", { mode: "hold", ttlMs: 5000 })).status, 201);
 });
+
+test("spawn body validation: a missing or empty disposition mode is refused with the disposition.mode prefix and the allowed values", async () => {
+  const t = setup(async () => {});
+  for (const [key, bad] of [
+    ["m1", {}],
+    ["m2", { mode: "" }],
+    ["m3", { ttlMs: 5000 }],
+    ["m4", { mode: 7 }],
+  ] as const) {
+    const r = await t.operator("POST", "/v1/agents", { name: "w", task: "t", idempotencyKey: key, disposition: bad });
+    assert.equal(r.status, 400, key);
+    assert.match(JSON.stringify(r.body), /disposition\.mode must be a non-empty string: \\"hold\\" or \\"reap-on-exit\\"/, key);
+  }
+});

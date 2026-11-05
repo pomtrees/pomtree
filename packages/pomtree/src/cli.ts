@@ -379,6 +379,22 @@ function deadlineDuration(raw: string | undefined, allowZero: boolean, name = "d
   return ms;
 }
 
+// The body `pomtree spawn` sends for --disposition/--ttl, or undefined when neither flag is given. These checks are
+// the client-side mirror of core's `dispositionError` (the authority the daemon applies); disposition.test.ts proves
+// they refuse exactly the same inputs.
+export function spawnDisposition(modeFlag: string | undefined, ttlFlag: string | undefined): { mode: "hold" | "reap-on-exit"; ttlMs?: number } | undefined {
+  const ttlMs = deadlineDuration(ttlFlag, true, "ttl");
+  if (ttlMs === 0)
+    throw new Usage(
+      "--ttl 0 is not a valid TTL; pass a positive duration such as 30m or 2h, or omit --ttl to hold the exited child until its parent collects it",
+    );
+  const mode = modeFlag;
+  if (mode !== undefined && mode !== "hold" && mode !== "reap-on-exit") throw new Usage(`--disposition must be "hold" or "reap-on-exit", got "${mode}"`);
+  if (ttlMs !== undefined && mode === "reap-on-exit") throw new Usage("--ttl applies only to --disposition hold; drop --ttl or use hold");
+  if (mode === undefined && ttlMs === undefined) return undefined;
+  return { mode: mode ?? "hold", ...(ttlMs !== undefined && { ttlMs }) };
+}
+
 // The stderr hint for a refused call, chosen by cause class. Exit codes come from the status alone (codeFor);
 // `body.code` is the daemon's optional machine cause (uncommitted_work, stale_generation, token_revoked,
 // idempotency_conflict) and only refines the advice, so an older daemon without it still gets a useful hint.
@@ -583,14 +599,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const deadlineMs = deadlineDuration(flag("deadline"), true);
         const wrapupMs = deadlineDuration(flag("wrapup"), true, "wrapup");
         if (wrapupMs === 0) throw new Usage("--wrapup must be positive");
-        const ttlMs = deadlineDuration(flag("ttl"), true, "ttl");
-        if (ttlMs === 0)
-          throw new Usage(
-            "--ttl 0 is not a valid TTL; pass a positive duration such as 30m or 2h, or omit --ttl to hold the exited child until its parent collects it",
-          );
-        const mode = flag("disposition");
-        if (mode !== undefined && mode !== "hold" && mode !== "reap-on-exit") throw new Usage(`--disposition must be "hold" or "reap-on-exit", got "${mode}"`);
-        if (ttlMs !== undefined && mode === "reap-on-exit") throw new Usage("--ttl applies only to --disposition hold; drop --ttl or use hold");
+        const disposition = spawnDisposition(flag("disposition"), flag("ttl"));
         const modelFlag = flag("model");
         const slash = modelFlag === undefined ? -1 : modelFlag.indexOf("/");
         if (modelFlag !== undefined && (slash < 1 || slash === modelFlag.length - 1)) throw new Usage("--model must be PROVIDER/ID (see `pomtree models`)");
@@ -601,7 +610,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           ...(deadlineMs !== undefined && { deadlineMs }),
           ...(wrapupMs !== undefined && { wrapupMs }),
           ...(flag("template") !== undefined && { template: flag("template") }),
-          ...((mode !== undefined || ttlMs !== undefined) && { disposition: { mode: mode ?? "hold", ...(ttlMs !== undefined && { ttlMs }) } }),
+          ...(disposition !== undefined && { disposition }),
           ...(modelFlag !== undefined && { model: { provider: modelFlag.slice(0, slash), id: modelFlag.slice(slash + 1) } }),
           // pomtreed's spawn route honors fork/fromCommit/sessionRef: it cuts a branch from `fromCommit`
           // and inherits `sessionRef` (Pi parentSession).
