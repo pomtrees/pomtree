@@ -1,4 +1,4 @@
-// The analysis step may start only from a template carrying the analyst allowlist profile (TODO(analyst-allowlist-binding)); harness: content-harness.mts.
+// The analysis step may start only from a template carrying the analyst allowlist profile. Requested by `requireAllowlist: "analyst"` in content-workflow.mts, refused by the spawn check in packages/pomtreed/src/daemon/lifecycle.ts; harness: content-harness.mts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setup, until } from "./content-harness.mts";
