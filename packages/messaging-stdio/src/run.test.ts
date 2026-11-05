@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { InboundBody, MessageFailedBody, OutboxEntry } from "@pomtree/core";
 import type { StdioClient } from "./client.ts";
-import { runStdio } from "./run.ts";
+import { onStdoutClosed, runStdio } from "./run.ts";
 
 const entry = (seq: number, subject = "s"): OutboxEntry => ({
   seq,
@@ -192,4 +192,37 @@ test("an abort during the retry sleep ends the retries at once", async () => {
   await done;
   assert.ok(Date.now() - started < 5_000);
   assert.equal(calls.posts.length, 1);
+});
+
+function stdoutFx() {
+  const r = { stderr: [] as string[], code: undefined as number | undefined, aborted: false, closed: false };
+  const fx = {
+    stderr: (s: string) => void r.stderr.push(s),
+    setExitCode: (c: number) => {
+      r.code = c;
+    },
+    abort: () => {
+      r.aborted = true;
+    },
+    closeInput: () => {
+      r.closed = true;
+    },
+  };
+  return { r, fx };
+}
+
+test("onStdoutClosed names the cause and the action on stderr", () => {
+  const { r, fx } = stdoutFx();
+  onStdoutClosed(new Error("write EPIPE"), fx);
+  assert.equal(r.stderr.length, 1);
+  assert.match(r.stderr[0] ?? "", /stdout closed \(write EPIPE\)/);
+  assert.match(r.stderr[0] ?? "", /restart it attached to a terminal or a live pipe\n$/);
+});
+
+test("onStdoutClosed sets exit code 1, aborts the run and closes the input", () => {
+  const { r, fx } = stdoutFx();
+  onStdoutClosed(new Error("write EPIPE"), fx);
+  assert.equal(r.code, 1);
+  assert.equal(r.aborted, true);
+  assert.equal(r.closed, true);
 });

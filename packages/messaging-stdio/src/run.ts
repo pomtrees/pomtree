@@ -112,3 +112,18 @@ export async function runStdio(o: StdioRun): Promise<void> {
     clearInterval(timer);
   }
 }
+
+export interface StdoutClosedEffects {
+  stderr: (s: string) => void;
+  setExitCode: (code: number) => void;
+  abort: () => void;
+  closeInput: () => void;
+}
+
+// A closed stdout (EPIPE) would otherwise lose every later line silently, or crash with an unhandled 'error'.
+export function onStdoutClosed(e: Error, fx: StdoutClosedEffects): void {
+  fx.stderr(`messaging-stdio: stdout closed (${e.message}); the adapter stops; restart it attached to a terminal or a live pipe\n`);
+  fx.setExitCode(1);
+  fx.abort();
+  fx.closeInput();
+}
