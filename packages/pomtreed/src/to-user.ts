@@ -1,5 +1,5 @@
 import type { MessageKind, Signal } from "@pomtree/core";
-import { clipText } from "./daemon-util.ts";
+import { clipText, INVISIBLE_RE } from "./daemon-util.ts";
 
 // Pure sanitizer for ALL user-bound text (Discord posts, approver-facing questions, handoff
 // summaries). Agent-influenced text must not hide itself from an approver (bidi / zero-width
@@ -10,8 +10,6 @@ import { clipText } from "./daemon-util.ts";
 export const USER_TEXT_MAX = 2000;
 
 const ZWSP = "\u200b";
-// Bidi controls, zero-width chars, and the Unicode line separators (NEL, LS, PS).
-const INVISIBLE_RE = /[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\u200b-\u200d\u2060\ufeff\u0085\u2028\u2029]/g;
 const MARKER_RESERVE = 40; // "… [truncated N chars]" with a generous digit allowance
 
 // Inserts a ZWSP after the '@' of @everyone/@here/@word and after the '<' of <@id>, <@!id>,

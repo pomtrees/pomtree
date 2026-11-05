@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentRecord, Signal } from "@pomtree/core";
+import { DEFAULT_CONTAINER_CONFIG } from "./daemon-util.ts";
 import { get, setup, until } from "./test-setup.ts";
 
 const post = (c: { api: (m: string, u: string, b?: unknown) => Promise<{ status: number; body: unknown }> }, body: unknown) =>
@@ -91,6 +92,63 @@ test("child_exited carries handoff, branch and spend; the resume text and reap r
   assert.equal(typeof s.spentMicros, "number");
   assert.equal(typeof s.budgetMicros, "number");
   assert.equal(reap.merge, undefined, "reap no longer merges");
+});
+
+test("child_exited handoff drops bidi and zero-width characters but keeps accented and CJK text", async () => {
+  let got: Signal[] = [];
+  const t = setup(async (c) => {
+    if (c.prompt === "kid")
+      return void (await post(c, { result: { summary: "caf\u00e9 \u65e5\u672c\u8a9e \u202eevil\u202c\u200bhid\u200dden\u2066x\u2069\ufeff" } }));
+    const kid = (await c.api("POST", "/v1/agents", { task: "kid", idempotencyKey: "k1" })).body as AgentRecord;
+    await until(async () => (await t.daemon.get(kid.id))!.state === "exited");
+    got = (await c.api("GET", "/v1/agents/self/inbox")).body as Signal[];
+    await post(c, { result: { summary: "parent done" } });
+  });
+  await t.spawn();
+  await t.orchestrator.idle();
+  const s = got.find((s) => s.kind === "child_exited") as Extract<Signal, { kind: "child_exited" }>;
+  assert.equal(s.handoff, "caf\u00e9 \u65e5\u672c\u8a9e evilhiddenx");
+  const r = got.find((s) => s.kind === "child_result") as Extract<Signal, { kind: "child_result" }>;
+  assert.equal(r.handoff, "caf\u00e9 \u65e5\u672c\u8a9e evilhiddenx");
+});
+
+test("the resume text naming a finished child drops bidi and zero-width characters but keeps accented and CJK text", async () => {
+  let gate!: () => void;
+  const opened = new Promise<void>((r) => (gate = r));
+  const wakes: string[] = [];
+  let pId = "";
+  const t = setup(
+    async (c) => {
+      if (c.prompt === "kid") {
+        await opened;
+        return void (await post(c, { result: { summary: "caf\u00e9 \u65e5\u672c\u8a9e \u202eevil\u202c\u200bhid\u200dden\u2066x\u2069\ufeff" } }));
+      }
+      if (c.wake !== undefined) {
+        wakes.push(c.wake);
+        return void (await post(c, { result: { summary: "ok" } }));
+      }
+      pId = c.agent;
+      const kid = (await c.api("POST", "/v1/agents", { task: "kid", idempotencyKey: "k1" })).body as AgentRecord;
+      await c.api("POST", "/v1/agents/self/park", { on: { kind: "child", child: kid.id }, timeoutMs: 60_000, idempotencyKey: "pk" });
+    },
+    { containerConfig: { ...DEFAULT_CONTAINER_CONFIG, "wait.yieldMs": 20 } },
+  );
+  await t.spawn();
+  await until(async () => pId !== "" && (await get(t, pId)).state === "yielded", 30_000);
+  gate();
+  await t.orchestrator.idle();
+  assert.equal(wakes.length, 1);
+  assert.match(wakes[0]!, /Handoff: caf\u00e9 \u65e5\u672c\u8a9e evilhiddenx Branch: /);
+});
+
+test("an oversized failed summary is stored without bidi or zero-width characters and capped with the marker", async () => {
+  const t = setup(async (c) => void (await post(c, { status: "failed", result: { summary: `caf\u00e9 \u65e5\u672c\u8a9e \u202e\u200b${"a".repeat(9000)}` } })));
+  const a = await t.spawn();
+  await t.orchestrator.idle();
+  const summary = ((await get(t, a.id)).result as { summary: string }).summary;
+  assert.ok(summary.startsWith("caf\u00e9 \u65e5\u672c\u8a9e aaa"), summary.slice(0, 40));
+  assert.doesNotMatch(summary, /[\u202a-\u202e\u200b-\u200d\ufeff]/);
+  assert.match(summary, /\u2026 \[truncated \d+ chars\]$/);
 });
 
 test("reap reports no merge outcome for a failed child or a succeeded one", async () => {

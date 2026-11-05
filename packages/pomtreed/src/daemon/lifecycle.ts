@@ -114,6 +114,7 @@ import {
   PROVIDER_DEGRADED_KIND,
   HANDOFF_REQUIRED,
   SIGNAL_HANDOFF_CHARS,
+  clipAgentText,
   clipText,
   handoffOf,
   usd,
@@ -1055,7 +1056,7 @@ export class Lifecycle {
     if (Buffer.byteLength(h.summary) > MAX_HANDOFF_BYTES) {
       if (status === "succeeded")
         throw new LifecycleError(400, `handoff summary is too long (max ${MAX_HANDOFF_BYTES} bytes); shorten it and put detail in files`);
-      result = { ...h, summary: clipText(h.summary, MAX_HANDOFF_BYTES) };
+      result = { ...h, summary: clipAgentText(h.summary, MAX_HANDOFF_BYTES) };
     }
     return result;
   }
@@ -1183,7 +1184,7 @@ export class Lifecycle {
     if (await this.ctx.hub.ops.seen(child.id, "child_result", generationKey)) return;
     const owner = child.parent ? await this.ctx.deps.registry.get(child.parent) : null;
     if (!owner || owner.state === "reaped") return;
-    const signal: Signal = { kind: "child_result", child: child.id, status, handoff: clipText(handoffOf(result)!.summary, SIGNAL_HANDOFF_CHARS) };
+    const signal: Signal = { kind: "child_result", child: child.id, status, handoff: clipAgentText(handoffOf(result)!.summary, SIGNAL_HANDOFF_CHARS) };
     const key = `${child.id}:${child.generation}:child_result`;
     if (await this.messaging.toMailbox(child, owner.id, signal, key)) {
       await this.ctx.record(owner, { kind: "signal", signal }, `${key}:journal`);
@@ -2698,7 +2699,7 @@ export class Lifecycle {
         if (c && isDone(c)) {
           const h = handoffOf(c.result);
           const res = h
-            ? ` Handoff: ${clipText(h.summary, SIGNAL_HANDOFF_CHARS)}${Array.isArray(h.files) && h.files.length ? ` Files: ${h.files.join(", ")}.` : ""} Branch: agent/${c.id}.`
+            ? ` Handoff: ${clipAgentText(h.summary, SIGNAL_HANDOFF_CHARS)}${Array.isArray(h.files) && h.files.length ? ` Files: ${h.files.join(", ")}.` : ""} Branch: agent/${c.id}.`
             : c.result === undefined || c.result === null
               ? ""
               : ` Result: ${clip(typeof c.result === "string" ? c.result : JSON.stringify(c.result), 2000)}`;
@@ -3209,7 +3210,7 @@ export class Lifecycle {
       child: child.id,
       exit,
       ...(cause !== undefined && { cause }),
-      ...(h && { handoff: clipText(h.summary, SIGNAL_HANDOFF_CHARS) }),
+      ...(h && { handoff: clipAgentText(h.summary, SIGNAL_HANDOFF_CHARS) }),
       ...(child.executor === "container" && { branch: `agent/${child.id}` }),
       ...(spent !== undefined && { spentMicros: spent }),
       budgetMicros: child.budgetMicros,

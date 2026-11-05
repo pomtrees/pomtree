@@ -453,6 +453,14 @@ export function clipText(text: string, max: number): string {
   return clean.length <= max ? clean : `${clean.slice(0, max)}… [truncated ${clean.length - max} chars]`;
 }
 
+// Bidi controls, zero-width chars, and the Unicode line separators (NEL, LS, PS).
+export const INVISIBLE_RE = /[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\u200b-\u200d\u2060\ufeff\u0085\u2028\u2029]/g;
+
+// For agent-bound text: strips invisible characters, then clips; does no mention-breaking (Discord-specific, in toUser).
+export function clipAgentText(text: string, max: number): string {
+  return clipText(text.replace(INVISIBLE_RE, ""), max);
+}
+
 // Handoff convention (pomtree result): a non-blank `summary` string, <= MAX_HANDOFF_BYTES (core config/image-facts.ts).
 export const HANDOFF_REQUIRED = 'A handoff is required: pass --summary "what you did, where the outputs are, anything the parent must know"';
 export const SIGNAL_HANDOFF_CHARS = 2048;
