@@ -38,6 +38,40 @@ export function realpathLoose(path: string): string {
   }
 }
 
+export interface SafetyBootFactsInput {
+  stateDir: string;
+  /** The configured dirs; "" = the default under stateDir (templates, sessions, env-cache). */
+  templatesDir: string;
+  sessionDir: string;
+  envCacheDir: string;
+  /** The resolved extensions dir. */
+  extensionsDir: string;
+  socketPath: string;
+  agentListen: AgentListenPlan;
+  bridgeGateway: string | undefined;
+}
+
+/** The one place the load-dir and agent-writable layout under the state dir is built, shared by main.ts and the boot-refusal e2e test. No merge check runner is wired (TODO(merge-checks)). */
+export function buildSafetyBootFacts(input: SafetyBootFactsInput): SafetyBootFacts {
+  const { stateDir } = input;
+  return {
+    checkRunnerWired: false,
+    agentListen: input.agentListen,
+    bridgeGateway: input.bridgeGateway,
+    loadDirs: {
+      templates: realpathLoose(input.templatesDir || join(stateDir, "templates")),
+      extensions: realpathLoose(input.extensionsDir),
+    },
+    agentWritable: [
+      { key: "state.dir", path: realpathLoose(join(stateDir, "workspaces")) },
+      { key: "state.dir", path: realpathLoose(join(stateDir, "agents")) },
+      { key: "session.dir", path: realpathLoose(input.sessionDir || join(stateDir, "sessions")) },
+      { key: "envCache.dir", path: realpathLoose(input.envCacheDir || join(stateDir, "env-cache")) },
+      { key: "socket.path", path: realpathLoose(input.socketPath) },
+    ],
+  };
+}
+
 const inside = (child: string, parent: string) => {
   const rel = relative(parent, child);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`));

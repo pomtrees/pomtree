@@ -23,7 +23,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore } from "@pomtree/store-sqlite";
 import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
 import { isLoopbackListenHost } from "../../pomtreed/src/config.ts";
-import { realpathLoose, safetyBootErrors } from "../../pomtreed/src/safety-boot.ts";
+import { buildSafetyBootFacts, safetyBootErrors } from "../../pomtreed/src/safety-boot.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const pomtreedMain = join(ROOT, "packages/pomtreed/src/main.ts");
@@ -371,7 +371,7 @@ const FRAGMENT: Record<Violation, string> = {
 const SAF4_TIMEOUT_MS = POMTREED_TIMEOUT_MS + 10_000; // also covers the docker network inspect timeout (5 s) of the listen case
 
 // The exact lines the daemon prints for `env` (SAFE_ENV overlaid with it), built by safetyBootErrors itself.
-// The load-directory and agent-writable facts mirror main.ts's safetyBootErrors call for the default layout under `stateDir`.
+// The load-directory and agent-writable facts come from the same buildSafetyBootFacts main.ts uses, for the default layout under `stateDir`.
 async function expectedRefusals(env: Record<string, string>, stateDir: string): Promise<string[]> {
   const e = { ...SAFE_ENV, ...env };
   const listen = e.POMTREED_AGENT_LISTEN === "" ? undefined : e.POMTREED_AGENT_LISTEN;
@@ -388,22 +388,16 @@ async function expectedRefusals(env: Record<string, string>, stateDir: string): 
       "merge.check": e.POMTREED_MERGE_CHECK ?? "",
       "listen.allowNonloopback": false,
     },
-    {
-      checkRunnerWired: false,
+    buildSafetyBootFacts({
+      stateDir,
+      templatesDir: e.POMTREED_TEMPLATES_DIR ?? "",
+      sessionDir: e.POMTREED_SESSION_DIR ?? "",
+      envCacheDir: "",
+      extensionsDir: join(stateDir, "extensions"),
+      socketPath: e.POMTREED_SOCKET_PATH || join(stateDir, "pomtreed.sock"),
       agentListen: planAgentListen({ listen, platform: process.platform, gateway }),
       bridgeGateway: gateway,
-      loadDirs: {
-        templates: realpathLoose(e.POMTREED_TEMPLATES_DIR || join(stateDir, "templates")),
-        extensions: realpathLoose(join(stateDir, "extensions")),
-      },
-      agentWritable: [
-        { key: "state.dir", path: realpathLoose(join(stateDir, "workspaces")) },
-        { key: "state.dir", path: realpathLoose(join(stateDir, "agents")) },
-        { key: "session.dir", path: realpathLoose(e.POMTREED_SESSION_DIR || join(stateDir, "sessions")) },
-        { key: "envCache.dir", path: realpathLoose(join(stateDir, "env-cache")) },
-        { key: "socket.path", path: realpathLoose(e.POMTREED_SOCKET_PATH || join(stateDir, "pomtreed.sock")) },
-      ],
-    },
+    }),
   );
 }
 

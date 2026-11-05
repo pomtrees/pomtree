@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentListenPlan } from "./agent-net.ts";
 import { envName } from "./daemon-config.ts";
-import { realpathLoose, type SafetyBootFacts, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
+import { buildSafetyBootFacts, realpathLoose, type SafetyBootFacts, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
 
 const IMAGE = `sha256:${"0".repeat(64)}`;
 const safeCfg = {
@@ -43,6 +43,48 @@ const bad = {
   "merge.check": "make test",
 };
 const badFacts: SafetyBootFacts = { ...safeFacts, agentListen: plan("explicit", "0.0.0.0"), bridgeGateway: undefined };
+
+test("buildSafetyBootFacts lays the defaults out under the state dir, and explicit dirs override them", () => {
+  const root = realpathLoose(mkdtempSync(join(tmpdir(), "safety-facts-")));
+  try {
+    const base = {
+      stateDir: root,
+      templatesDir: "",
+      sessionDir: "",
+      envCacheDir: "",
+      extensionsDir: join(root, "extensions"),
+      socketPath: join(root, "pomtreed.sock"),
+      agentListen: plan("gateway", "172.17.0.1"),
+      bridgeGateway: "172.17.0.1",
+    };
+    assert.deepEqual(buildSafetyBootFacts(base), {
+      checkRunnerWired: false,
+      agentListen: base.agentListen,
+      bridgeGateway: "172.17.0.1",
+      loadDirs: { templates: join(root, "templates"), extensions: join(root, "extensions") },
+      agentWritable: [
+        { key: "state.dir", path: join(root, "workspaces") },
+        { key: "state.dir", path: join(root, "agents") },
+        { key: "session.dir", path: join(root, "sessions") },
+        { key: "envCache.dir", path: join(root, "env-cache") },
+        { key: "socket.path", path: join(root, "pomtreed.sock") },
+      ],
+    });
+    const over = buildSafetyBootFacts({
+      ...base,
+      templatesDir: join(root, "t2"),
+      sessionDir: join(root, "s2"),
+      envCacheDir: join(root, "e2"),
+    });
+    assert.equal(over.loadDirs.templates, join(root, "t2"));
+    assert.deepEqual(
+      over.agentWritable.map((w) => w.path),
+      [join(root, "workspaces"), join(root, "agents"), join(root, "s2"), join(root, "e2"), join(root, "pomtreed.sock")],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("a fully safe config returns no errors", () => {
   assert.deepEqual(safetyBootErrors(safeCfg, safeFacts), []);

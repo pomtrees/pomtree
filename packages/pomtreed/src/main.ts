@@ -67,7 +67,7 @@ import { createCronExtension } from "./builtin/cron.ts";
 import { resolveSocketPath } from "./socket-path.ts";
 import { checkStateDir, isLoopbackListenHost, publishScanWarning, shortHash, stamp, uiChannelWarning } from "./config.ts";
 import { dockerSandboxDeps } from "./sandbox-deps.ts";
-import { realpathLoose, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
+import { buildSafetyBootFacts, safetyBootErrors, untemplatedEgressNoneWarning } from "./safety-boot.ts";
 import { formatStartupFailure } from "./startup-failure.ts";
 
 // Until the drain handlers below are installed, an error thrown while starting prints one line (formatStartupFailure) and exits 1,
@@ -163,24 +163,20 @@ const needGateway =
 const agentGateway = needGateway ? await detectBridgeGateway(dockerExec) : undefined;
 const agentPlan = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: agentGateway });
 // Dangerous silent defaults refuse the start (TODO(safety-defaults)): every violation is listed at once, before any state is created.
-// No merge check runner is wired (TODO(merge-checks)).
 // Agent-writable host paths (self-modification guard): the workspace clones, the session dirs, the per-agent Pi dirs, the env layer cache and the daemon socket.
-const safetyErrors = safetyBootErrors(cfg, {
-  checkRunnerWired: false,
-  agentListen: agentPlan,
-  bridgeGateway: agentGateway,
-  loadDirs: {
-    templates: realpathLoose(cfg["templates.dir"] || join(stateDir, "templates")),
-    extensions: realpathLoose(loaded.extensionsDir),
-  },
-  agentWritable: [
-    { key: "state.dir", path: realpathLoose(join(stateDir, "workspaces")) },
-    { key: "state.dir", path: realpathLoose(join(stateDir, "agents")) },
-    { key: "session.dir", path: realpathLoose(cfg["session.dir"] || join(stateDir, "sessions")) },
-    { key: "envCache.dir", path: realpathLoose(cfg["envCache.dir"] || join(stateDir, "env-cache")) },
-    { key: "socket.path", path: realpathLoose(socketPath) },
-  ],
-});
+const safetyErrors = safetyBootErrors(
+  cfg,
+  buildSafetyBootFacts({
+    stateDir,
+    templatesDir: cfg["templates.dir"],
+    sessionDir: cfg["session.dir"],
+    envCacheDir: cfg["envCache.dir"],
+    extensionsDir: loaded.extensionsDir,
+    socketPath,
+    agentListen: agentPlan,
+    bridgeGateway: agentGateway,
+  }),
+);
 if (safetyErrors.length > 0) {
   for (const e of safetyErrors) console.error(e);
   process.exit(1);
