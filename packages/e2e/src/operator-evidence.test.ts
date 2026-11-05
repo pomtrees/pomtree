@@ -41,3 +41,21 @@ test("formatYieldEvidence reports an unreadable database inline instead of throw
   assert.match(text, /could not read the journal/);
   assert.match(text, /budget tables unreadable/);
 });
+
+test("formatYieldEvidence keeps each agent's journal readable when another agent's payload is not JSON", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pomtree-cli-ev-"));
+  try {
+    const path = join(dir, "pomtreed.sqlite");
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE journal (seq INTEGER, ts INTEGER, agent TEXT, generation INTEGER, payload TEXT);
+      INSERT INTO journal VALUES (1,1000,'ag-a',0,'not json {'),(2,2000,'ag-b',0,'{"kind":"resumed"}');`);
+    db.close();
+    const text = formatYieldEvidence(path, { first: "ag-a", second: "ag-b" }, new Timeline());
+    assert.match(text, /seq=1 ts=1000 gen=0 not json \{/, "the raw payload is printed");
+    assert.match(text, /seq=2 ts=2000 gen=0 \{"kind":"resumed"\}/, "the later agent's journal is still dumped");
+    assert.ok(!/could not read the journal/.test(text), "no agent's journal is reported unreadable");
+    assert.match(text, /budget tables unreadable/, "the budget failure is still reported on its own");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

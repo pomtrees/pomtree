@@ -9,11 +9,11 @@ import { dumpDeadlineEvidence } from "./crash-recovery-evidence.ts";
 function fixtureDb(dir: string): string {
   const path = join(dir, "pomtreed.sqlite");
   const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE journal (seq INTEGER, agent TEXT, generation INTEGER, payload TEXT);
+  db.exec(`CREATE TABLE journal (seq INTEGER, ts INTEGER, agent TEXT, generation INTEGER, payload TEXT);
     CREATE TABLE model_debit_agents (agent TEXT, spent_micros INTEGER);
     CREATE TABLE model_debit_requests (request_id TEXT, agent TEXT, status TEXT, charged_micros INTEGER, created_at INTEGER);
     CREATE TABLE reservations (agent TEXT, micros INTEGER);
-    INSERT INTO journal VALUES (1,'ag-a',0,'{"kind":"started"}'),(2,'ag-b',0,'{"kind":"started"}'),(3,'ag-a',0,'{"kind":"yielded"}');
+    INSERT INTO journal VALUES (1,1000,'ag-a',0,'{"kind":"started"}'),(2,1100,'ag-b',0,'{"kind":"started"}'),(3,1250,'ag-a',0,'{"kind":"yielded"}');
     INSERT INTO model_debit_agents VALUES ('ag-a',700),('ag-b',300);
     INSERT INTO model_debit_requests VALUES ('r1','ag-a','settled',700,1),('r2','ag-b','settled',300,2);
     INSERT INTO reservations VALUES ('ag-a',5000);`);
@@ -30,6 +30,11 @@ test("dumpDeadlineEvidence writes per-agent journals and debit rows, the budget 
     assert.deepEqual(
       (written.get("journal-ag-a.json") as { seq: number }[]).map((e) => e.seq),
       [1, 3],
+    );
+    assert.deepEqual(
+      (written.get("journal-ag-a.json") as { ts: number }[]).map((e) => e.ts),
+      [1000, 1250],
+      "the journal dump carries each row's commit timestamp",
     );
     assert.equal((written.get("debit-rows-ag-b.json") as unknown[]).length, 1);
     assert.deepEqual(Object.keys(written.get("deadline-tables.json") as object), ["model_debit_agents", "model_debit_requests", "reservations"]);
