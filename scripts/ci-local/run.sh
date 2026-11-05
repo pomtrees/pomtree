@@ -2,11 +2,12 @@
 # Recorded local run of .github/workflows/ci.yml in clean environments (the first-cut CI gate;
 # TODO(ci-image-gate)). See scripts/ci-local/README.md for what differs from hosted CI.
 #
-# Usage: scripts/ci-local/run.sh [--out <dir>] [--jobs <a,b,..>] [--keep] [--image-tag <tag>]
+# Usage: scripts/ci-local/run.sh [--out <dir>] [--jobs <a,b,..>] [--keep] [--image-tag <tag>] [--no-image-cache]
 #   --out <dir>        where logs and verdict.txt go (default: a fresh mktemp dir under /tmp)
 #   --jobs <list>      comma list from format,lint,typecheck,test-lite,image,docker (default: all; docker implies image)
 #   --keep             keep extractions, containers and the built image
 #   --image-tag <tag>  agent image tag for image/docker (default pomtree/agent:ci-local-<shortsha>; ci.yml uses :dev)
+#   --no-image-cache   build the image without the persistent layer cache (AGENT_IMAGE_CACHE_DIR is not passed on)
 #
 # format, lint, typecheck and test-lite each get a fresh node:24-bookworm-slim container holding a fresh clone of HEAD
 # of the repo, run as a non-root user. image and docker run on the host (Docker-gated suites bind-mount host temp paths, which
@@ -29,14 +30,15 @@ CI_YML_PATH=.github/workflows/ci.yml
 ALL_JOBS=(format lint typecheck test-lite image docker)
 NODE_IMAGE=node:24-bookworm-slim
 
-OUT=""; JOBS=""; KEEP=0; TAG=""
-usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+OUT=""; JOBS=""; KEEP=0; TAG=""; IMAGE_CACHE=1
+usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage; JOBS=$2; shift 2 ;;
     --image-tag) [ $# -ge 2 ] || usage; TAG=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --no-image-cache) IMAGE_CACHE=0; shift ;;
     *) usage ;;
   esac
 done
@@ -267,7 +269,14 @@ host_jobs() {
     echo "::host-node $(node -v) $(command -v node)"
     step install 300 pnpm install --frozen-lockfile
     # Build the agent image. The tag differs from ci.yml's :dev so a pre-existing :dev image is untouched.
-    step build-image 1200 env AGENT_IMAGE_TAG="$TAG" pnpm --filter @pomtree/agent-image build:image
+    # The layer cache lives outside $WORK (removed on exit) so it survives across runs; a pre-set non-empty AGENT_IMAGE_CACHE_DIR overrides the default.
+    if [ "$IMAGE_CACHE" = 1 ]; then
+      IMAGE_CACHE_DIR="${AGENT_IMAGE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/pomtree/ci-local/agent-image-cache}"
+      step cache-dir 30 mkdir -p "$IMAGE_CACHE_DIR"
+      step build-image 1200 env AGENT_IMAGE_TAG="$TAG" AGENT_IMAGE_CACHE_DIR="$IMAGE_CACHE_DIR" pnpm --filter @pomtree/agent-image build:image
+    else
+      step build-image 1200 env -u AGENT_IMAGE_CACHE_DIR AGENT_IMAGE_TAG="$TAG" pnpm --filter @pomtree/agent-image build:image
+    fi
   ) >> "$log" 2>&1
   rc=$?
   docker image inspect "$TAG" >/dev/null 2>&1 && : > "$BUILT_FLAG"
