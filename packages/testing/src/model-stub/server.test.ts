@@ -138,3 +138,40 @@ test("describeCall names the matched rule or UNMATCHED and the same fields as th
   const miss = up.unmatched.at(-1) as RecordedCall;
   assert.ok(describeCall(miss).startsWith(`${miss.index} UNMATCHED model=zz `), describeCall(miss));
 });
+
+test("keyMatched: null when no expected key was configured", { timeout: 10_000 }, async () => {
+  const before = up.calls.length;
+  await (await post("/chat/completions", { model: "m", messages: sys("none") })).text();
+  assert.equal(up.calls[before]?.keyMatched, null);
+});
+
+test("keyMatched: true for each accepted header form, false for a wrong or missing key", { timeout: 10_000 }, async () => {
+  const key = "expected-key-0123456789";
+  const keyed = await FakeModelUpstream.start({ script, expectKey: key });
+  try {
+    const send = async (path: string, headers: Record<string, string>) => {
+      const body =
+        path === "/messages"
+          ? { model: "m", stream: true, system: "[[stub:x]]", messages: [{ role: "user", content: "x" }] }
+          : { model: "m", messages: sys("x") };
+      await (
+        await fetch(`${keyed.baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) })
+      ).text();
+    };
+    await send("/chat/completions", { authorization: `Bearer ${key}` });
+    await send("/messages", { "x-api-key": key });
+    await send("/messages", { authorization: `Bearer ${key}` });
+    await send("/chat/completions", { authorization: "Bearer wrong" });
+    await send("/chat/completions", {});
+    await send("/chat/completions", { "x-api-key": key }); // not accepted on the OpenAI wire
+    await send("/messages", { "x-api-key": "wrong" });
+    await send("/messages", {});
+    assert.deepEqual(
+      keyed.calls.map((c) => c.keyMatched),
+      [true, true, true, false, false, false, false, false],
+    );
+    assert.equal(JSON.stringify(keyed.calls).includes(key), false, "the recorded calls must not hold the key");
+  } finally {
+    await keyed.close();
+  }
+});

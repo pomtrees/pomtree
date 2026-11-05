@@ -149,9 +149,10 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
   for (const [name, t] of Object.entries(o.templates ?? {})) writeFileSync(join(templatesDir, `${name}.json`), JSON.stringify(t));
   const repo = gitRepo();
   const keyFile = join(root, "upstream.key");
-  writeFileSync(keyFile, "stub-upstream-key-not-real\n", { mode: 0o600 });
+  const upstreamKey = "stub-upstream-key-not-real";
+  writeFileSync(keyFile, `${upstreamKey}\n`, { mode: 0o600 });
   const socket = join(root, "pomtreed.sock"); // short: unix socket paths are limited to ~100 bytes
-  const stub = await FakeModelUpstream.start({ script: o.script });
+  const stub = await FakeModelUpstream.start({ script: o.script, expectKey: upstreamKey });
   const uiPort = await freePort();
   const catalogDir = join(root, "pi-catalog");
   writeCatalogFixture(catalogDir);

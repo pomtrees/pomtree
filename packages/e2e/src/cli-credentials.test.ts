@@ -195,7 +195,13 @@ test("cli credentials CRD-2: no upstream key bytes in the agent or sidecar conta
       },
       150_000,
     );
-    // TODO(harness-stub-auth): FakeModelUpstream should record whether Authorization matched an expected key; until then this S1 run cannot show the proxy presented the key upstream (proxy-credentials.test.ts CRD-2 does, in-process).
+    // The settled call proves the proxy reached the stub; every call it recorded must have carried the upstream key (never recorded itself).
+    assert.ok(s.stub.calls.length >= 1, "the stub recorded no call");
+    assert.deepEqual(
+      s.stub.calls.map((c) => c.keyMatched),
+      s.stub.calls.map(() => true),
+      "every upstream call must carry the upstream key: the proxy must present it (startStack passes it as expectKey)",
+    );
     const sandbox = (await showAgent(s, a.id)).sandbox!;
     const containers = { agent: `pomtree-${sandbox}`, sidecar: `pomtree-egress-proxy-${sandbox}` };
     const keyFile = readFileSync(join(s.stateDir, "..", "upstream.key"), "utf8").trim();

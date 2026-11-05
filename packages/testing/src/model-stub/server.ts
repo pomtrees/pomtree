@@ -7,6 +7,7 @@
 //   POST …/messages          Anthropic Messages, stream only
 //   GET  …/models            the models named by the script's rules (or "stub-model")
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { planResponse } from "./faults.ts";
@@ -21,6 +22,20 @@ function headerMap(req: IncomingMessage): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(req.headers)) out[k] = Array.isArray(v) ? v.join(", ") : v;
   return out;
+}
+
+/** True when `got` equals `want`; the digests are compared in constant time. Neither value is stored or logged. */
+function sameSecret(got: string | undefined, want: string): boolean {
+  if (got === undefined) return false;
+  const digest = (v: string) => createHash("sha256").update(v).digest();
+  return timingSafeEqual(digest(got), digest(want));
+}
+
+/** Whether the request carried `key` the way a real upstream of this wire accepts it: Bearer on both wires, plus `x-api-key` on the Anthropic wire. */
+function carriesKey(headers: Record<string, string | undefined>, wire: Wire, key: string): boolean {
+  const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
+  if (bearer !== undefined && sameSecret(bearer, key)) return true;
+  return wire === "anthropic-messages" && sameSecret(headers["x-api-key"], key);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -50,6 +65,7 @@ export class FakeModelUpstream {
   private script: ModelScript;
   private used = new Map<string, number>();
   private readonly recorded: RecordedCall[] = [];
+  private expectKey: string | null = null;
   private waiters: { n: number; resolve: () => void }[] = [];
 
   private constructor(server: Server, script: ModelScript, baseUrl: string) {
@@ -58,7 +74,8 @@ export class FakeModelUpstream {
     this.baseUrl = baseUrl;
   }
 
-  static start(opts: { script: ModelScript; host?: string; port?: number }): Promise<FakeModelUpstream> {
+  /** `expectKey`: each recorded call then says whether the request carried it (`keyMatched`); the key itself is never recorded. */
+  static start(opts: { script: ModelScript; host?: string; port?: number; expectKey?: string }): Promise<FakeModelUpstream> {
     const host = opts.host ?? "127.0.0.1";
     const server = createServer();
     return new Promise((resolve, reject) => {
@@ -71,6 +88,7 @@ export class FakeModelUpstream {
         server.on("request", (req, res) => {
           up.handle(req, res).catch(() => res.destroy());
         });
+        up.expectKey = opts.expectKey ?? null;
         resolve(up);
       });
     });
@@ -167,6 +185,7 @@ export class FakeModelUpstream {
       path,
       matched: rule?.id ?? null,
       replyKind: replyKind(reply),
+      keyMatched: this.expectKey === null ? null : carriesKey(headers, wire, this.expectKey),
     });
     const plan = planResponse(reply, {
       wire,

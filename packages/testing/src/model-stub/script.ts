@@ -130,6 +130,8 @@ export interface RecordedCall extends RequestShape {
   matched: string | null;
   /** `text`, `tool_calls`, or `fault:<type>`. */
   replyKind: string;
+  /** Whether the request carried the upstream key the stub was started with (Bearer, or `x-api-key` on the Anthropic wire); null when none was configured. The key is never recorded. */
+  keyMatched: boolean | null;
 }
 
 export const DEFAULT_FALLBACK: Reply = {
