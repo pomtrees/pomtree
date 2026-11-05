@@ -42,8 +42,13 @@ export function formatSignal(s: MailSignal): string {
       return `[pomtree] ${body}`;
     case "child_result":
       return `[pomtree] Child agent ${from(s.child)} reported (${String(s.status)}). Handoff: ${String(s.handoff)}`;
-    case "child_exited":
-      return `[pomtree] Child agent ${from(s.child)} exited (${JSON.stringify(s.exit)}).`;
+    case "child_exited": {
+      const child = from(s.child);
+      const held = s.custodyOf
+        ? ` Held for you: its parent ${from(s.custodyOf)} is gone; inspect it with \`pomtree show ${child}\`, then \`pomtree reap ${child}\`.`
+        : "";
+      return `[pomtree] Child agent ${child} exited (${JSON.stringify(s.exit)}).${held}`;
+    }
     case "escalation": {
       const id = String(s.escalation);
       const raise =

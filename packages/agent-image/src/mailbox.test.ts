@@ -151,3 +151,16 @@ test("escalation steers like other steering kinds; budget_warning is advisory an
     ["steer", "steer", "followUp", "followUp", "followUp"],
   );
 });
+
+test("formatSignal child_exited names the dead parent and the custody commands when custodyOf is set", () => {
+  const out = formatSignal({ kind: "child_exited", child: "c1", exit: "succeeded", custodyOf: "p1" });
+  assert.equal(
+    out,
+    '[pomtree] Child agent c1 exited ("succeeded"). Held for you: its parent p1 is gone; inspect it with `pomtree show c1`, then `pomtree reap c1`.',
+  );
+});
+
+test("formatSignal child_exited without custodyOf is the plain exit text", () => {
+  assert.equal(formatSignal({ kind: "child_exited", child: "c1", exit: "succeeded" }), '[pomtree] Child agent c1 exited ("succeeded").');
+  assert.equal(formatSignal({ kind: "child_exited", child: "c1", exit: "succeeded", custodyOf: "" }), '[pomtree] Child agent c1 exited ("succeeded").');
+});
