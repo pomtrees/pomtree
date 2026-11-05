@@ -420,3 +420,49 @@ test("/ui shell references the vendored xterm files and each is served byte-for-
     server.close();
   }
 });
+
+test("terminal ws: every upgrade attempt writes one access line (status, principal), never the token or cookie", async () => {
+  const f = await fixture();
+  const lines: string[] = [];
+  const server = makeServer(f.t.daemon, false, { accessLog: { mode: "all", sink: (l) => lines.push(l) }, vendorDir: f.vendor });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  const path = `/v1/agents/${f.a.id}/terminal`;
+  const cookie = issueUiCookie(SECRET, 60_000);
+  const hdr = (extra: Record<string, string>) => ({ origin: `http://127.0.0.1:${port}`, ...extra });
+  try {
+    const none = await wsConnect(port, path, hdr({}));
+    const agentTok = f.t.daemon.agentToken(f.a.id, f.a.generation);
+    const agent = await wsConnect(port, path, hdr({ authorization: `Bearer ${agentTok}` }));
+    const evil = await wsConnect(port, path, { authorization: `Bearer ${op}`, origin: "http://evil.example" });
+    const ok = await wsConnect(port, path, hdr({ authorization: `Bearer ${op}` }));
+    const okCookie = await wsConnect(port, path, hdr({ cookie }));
+    const sts = [none, agent, evil, ok, okCookie].map(status);
+    ok.socket.destroy();
+    okCookie.socket.destroy();
+    await until(() => lines.length === 5);
+    assert.deepEqual(sts, [401, 403, 403, 101, 101]);
+    const parts = lines.map((l) => l.split(" "));
+    const row = (i: number) => ({ method: parts[i]![2], path: parts[i]![3], status: parts[i]![4], principal: parts[i]![6] });
+    assert.deepEqual(row(0), { method: "GET", path: `/v1/agents/${f.a.id}/terminal`, status: "401", principal: "anon" });
+    assert.match(lines[0]!, /auth=missing-credential/);
+    assert.equal(row(1).status, "403");
+    assert.equal(row(1).principal, `agent:${f.a.id}`);
+    assert.equal(row(2).status, "403");
+    assert.match(lines[2]!, /origin not allowed/);
+    assert.equal(row(3).status, "101");
+    assert.equal(row(3).principal, "operator");
+    assert.equal(row(4).status, "101");
+    assert.equal(row(4).principal, "operator");
+    for (const l of lines) {
+      assert.ok(!l.includes(op), "operator token must not be logged");
+      assert.ok(!l.includes(cookie), "cookie value must not be logged");
+      assert.ok(!l.includes(agentTok), "agent token must not be logged");
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    f.server.closeAllConnections();
+    f.server.close();
+  }
+});

@@ -7,6 +7,7 @@ import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { SandboxUnavailableError } from "@pomtree/core";
 import type { Daemon } from "./daemon.ts";
+import type { ReqCtx } from "./server.ts";
 import { verifyToken, verifyUiCookie } from "./auth.ts";
 import { CloseCode, WsConnection, checkUpgrade, encodeBinary, encodePing, encodeText, handshakeResponse, originAllowed } from "./websocket.ts";
 import type { WsEvent } from "./websocket.ts";
@@ -95,20 +96,29 @@ export async function handleTerminalUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-): Promise<void> {
+  ctx: ReqCtx,
+): Promise<number> {
   socket.on("error", () => {}); // a reset mid-handshake must not crash the process
+  // Resolves to the status for the access line (101 on handshake), recording the refusal reason, credential and principal in ctx.
+  const refuse = (status: number, message: string, extra: Record<string, unknown> = {}): number => {
+    ctx.error = message;
+    reject(socket, status, message, extra);
+    return status;
+  };
   const m = PATH.exec(new URL(req.url ?? "/", "http://pomtreed").pathname);
-  if (restricted || !m) return reject(socket, 404, "not found");
+  if (restricted || !m) return refuse(404, "not found");
   const up = checkUpgrade(req.headers, req.method);
-  if (!up.ok) return reject(socket, up.status, up.reason);
+  if (!up.ok) return refuse(up.status, up.reason);
 
   // Same credentials as handleRequest: Bearer token or UI session cookie; a terminal is shell-equivalent, so operator only.
   const auth = req.headers.authorization;
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  ctx.hadCredential = token !== undefined || req.headers.cookie !== undefined;
   let principal = token ? verifyToken(daemon.deps.secret, token) : null;
   if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie)) principal = { scope: "operator" };
-  if (!principal) return reject(socket, 401, "missing or invalid token");
-  if (principal.scope !== "operator") return reject(socket, 403, "operator scope required");
+  ctx.principal = principal;
+  if (!principal) return refuse(401, "missing or invalid token");
+  if (principal.scope !== "operator") return refuse(403, "operator scope required");
   // Browsers always send Origin on a WebSocket handshake and cookies ride along cross-site, so it must match Host.
   const hostOk = (o: string) => {
     try {
@@ -117,12 +127,12 @@ export async function handleTerminalUpgrade(
       return false;
     }
   };
-  if (!originAllowed(req.headers.origin, hostOk)) return reject(socket, 403, "origin not allowed");
+  if (!originAllowed(req.headers.origin, hostOk)) return refuse(403, "origin not allowed");
 
   const id = decodeURIComponent(m[1]!);
   const rec = await daemon.get(id);
-  if (!rec) return reject(socket, 404, `no such agent: ${id}`);
-  if (rec.state !== "running" || !rec.sandbox) return reject(socket, 409, noTerminalMessage(id, rec.state), { state: rec.state });
+  if (!rec) return refuse(404, `no such agent: ${id}`);
+  if (rec.state !== "running" || !rec.sandbox) return refuse(409, noTerminalMessage(id, rec.state), { state: rec.state });
 
   const st = stateFor(daemon, opts);
   let gone = socket.destroyed;
@@ -133,11 +143,15 @@ export async function handleTerminalUpgrade(
   try {
     lease = await st.hub.acquire(id, DEFAULT_TERMINAL_SIZE);
   } catch (e) {
-    if (e instanceof SandboxUnavailableError) return reject(socket, 409, `agent ${id} has no attachable terminal`, { state: rec.state });
+    if (e instanceof SandboxUnavailableError) return refuse(409, `agent ${id} has no attachable terminal`, { state: rec.state });
     console.error(`pomtreed: terminal ${id} open failed: ${e instanceof Error ? e.message : String(e)}`);
-    return reject(socket, 500, "internal error");
+    return refuse(500, "internal error");
   }
-  if (gone) return lease.detach();
+  if (gone) {
+    lease.detach();
+    ctx.error = "client closed before the handshake"; // socket already gone: nothing to write, only the log line
+    return 499;
+  }
 
   const conn = new WsConnection({ maxMessage: opts.maxMessage });
   (socket as Partial<Pick<Socket, "setTimeout" | "setNoDelay">>).setTimeout?.(0);
@@ -237,4 +251,5 @@ export async function handleTerminalUpgrade(
     close: (reason) => finish(reason),
   });
   if (head.length) feed(head);
+  return 101;
 }

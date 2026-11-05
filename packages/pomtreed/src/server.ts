@@ -99,6 +99,32 @@ export interface ReqCtx {
 }
 export const ctxs = new WeakMap<ServerResponse | IncomingMessage, ReqCtx>();
 
+// One access line for a request or upgrade attempt, through the same formatter, filter and sink for both.
+function accessEmitter(access: { mode: AccessLogMode; sink: AccessSink }, listener: ListenerKind, req: IncomingMessage, ctx: ReqCtx, t0: number) {
+  return (status: number, note?: string): void => {
+    if (!shouldLog(access.mode, status)) return;
+    try {
+      access.sink(
+        formatAccessLine({
+          at: new Date(),
+          listener,
+          method: req.method ?? "?",
+          url: req.url ?? "/",
+          status,
+          durationMs: Date.now() - t0,
+          principal: ctx.principal,
+          hadCredential: ctx.hadCredential,
+          ...(ctx.error !== undefined && { error: ctx.error }),
+          ...(ctx.detail !== undefined && { detail: ctx.detail }),
+          ...(note !== undefined && { note }),
+        }),
+      );
+    } catch {
+      /* logging must never affect a request */
+    }
+  };
+}
+
 export interface ExtractedError {
   name: string;
   message: string;
@@ -601,15 +627,21 @@ export function makeServer(
     }
   });
 
-  // Terminal websocket (GET /v1/agents/:id/terminal; TODO(termlog): no access-log line). Upgraded sockets leave
+  // Terminal websocket (GET /v1/agents/:id/terminal): one access line per attempt (101 on success, the refusal status otherwise). Upgraded sockets leave
   // node's http connection tracking, so closeAllConnections (the shutdown path) is extended to close them too.
   server.on("upgrade", (req, socket, head) => {
-    const ctx: ReqCtx = { listener, startTime: Date.now(), principal: null, hadCredential: false };
+    const t0 = Date.now();
+    const ctx: ReqCtx = { listener, startTime: t0, principal: null, hadCredential: false };
     ctxs.set(req, ctx);
-    void handleTerminalUpgrade(daemon, opts.terminal ?? {}, agentOnly || opts.hostOnly === true, req, socket, head).catch((e) => {
-      logRequestError(agentOnly, e, req);
-      socket.destroy();
-    });
+    const emit = accessEmitter(opts.accessLog ?? defaultAccess, listener, req, ctx, t0);
+    void handleTerminalUpgrade(daemon, opts.terminal ?? {}, agentOnly || opts.hostOnly === true, req, socket, head, ctx)
+      .then(emit)
+      .catch((e) => {
+        logRequestError(agentOnly, e, req);
+        ctx.error = "internal error";
+        emit(500);
+        socket.destroy();
+      });
   });
   const closeAll = server.closeAllConnections.bind(server);
   server.closeAllConnections = () => {
@@ -623,28 +655,7 @@ export function makeServer(
     const ctx: ReqCtx = { listener, startTime: t0, principal: null, hadCredential: false };
     ctxs.set(res, ctx);
     ctxs.set(req, ctx);
-    const emit = (status: number, note?: string) => {
-      if (!shouldLog(access.mode, status)) return;
-      try {
-        access.sink(
-          formatAccessLine({
-            at: new Date(),
-            listener,
-            method: req.method ?? "?",
-            url: req.url ?? "/",
-            status,
-            durationMs: Date.now() - t0,
-            principal: ctx.principal,
-            hadCredential: ctx.hadCredential,
-            ...(ctx.error !== undefined && { error: ctx.error }),
-            ...(ctx.detail !== undefined && { detail: ctx.detail }),
-            ...(note !== undefined && { note }),
-          }),
-        );
-      } catch {
-        /* logging must never affect a request */
-      }
-    };
+    const emit = accessEmitter(access, listener, req, ctx, t0);
     // SSE: one line at open (headers flushed) and one at close; heartbeats are never logged.
     const origWriteHead = res.writeHead.bind(res) as (...a: unknown[]) => ServerResponse;
     (res as { writeHead: unknown }).writeHead = (...a: unknown[]) => {
