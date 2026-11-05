@@ -225,7 +225,7 @@ Structured-result durability uses the submission contract above.
 
 ## 11. Prior art and design comparison
 
-An external survey found no framework that replaces this design; each system below matches one mechanism. What is unusual here is the combination: parenthood as custody, where an exited child is a durable obligation of its parent until the parent accounts for it. Prior art is a source of mechanisms and reopen triggers, not a plan to adopt any of it. Source claims are labeled by whether the primary page was read (access date for all sources: 2026-10-13).
+An external survey found no framework that replaces this design; each system below matches one mechanism. What is unusual here is the combination: parenthood as custody, where an exited child is a durable obligation of its parent until the parent accounts for it. Prior art is a source of mechanisms and reopen triggers, not a plan to adopt any of it. Source claims are labeled by whether the primary page was read (access date for all sources: 2026-10-13). This section compares mechanisms; [`docs/prior-art.md`](prior-art.md) compares whole systems.
 
 ### 11.1 Prior art by mechanism
 
