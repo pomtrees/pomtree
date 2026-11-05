@@ -108,3 +108,45 @@ test("server logs 200/401/403/404/500 lines without secrets", async () => {
   assert.match(lines[4]!, / 500 .*error="internal error" detail="db exploded/);
   for (const secret of ["TOPSECRET", "COOKIESECRET", op, agentTok]) assert.ok(!all.includes(secret), `leaked ${secret}`);
 });
+
+test("server access log never contains the operator token on the browser login path", async () => {
+  const t = setup(async () => {});
+  const lines: string[] = [];
+  configureAccessLog("all", (l) => lines.push(l));
+  const sock = join(tmpDir("pomtreed-"), "s.sock");
+  const server = await listen(t.daemon, sock);
+  const wrong = "op.deadbeefdeadbeefdeadbeef.WRONGTOKENSIG";
+  const json = { "content-type": "application/json" };
+  const origErr = console.error;
+  console.error = () => {};
+  let cookieValue = "";
+  try {
+    const viaBody = await sockRequest(sock, "/ui/login", { method: "POST", headers: json, payload: JSON.stringify({ token: op }) });
+    assert.equal(viaBody.status, 200);
+    const setCookie = [viaBody.headers["set-cookie"] ?? []].flat().join(";");
+    cookieValue = /pomtreed_ui=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    assert.ok(cookieValue.length > 0, "login must set the pomtreed_ui cookie");
+    assert.equal((await sockRequest(sock, "/ui/login", { method: "POST", headers: { authorization: `Bearer ${op}` } })).status, 200);
+    assert.equal((await sockRequest(sock, "/ui/login", { method: "POST", headers: json, payload: JSON.stringify({ token: wrong }) })).status, 401);
+    const shell = await sockRequest(sock, "/ui", { headers: { cookie: `pomtreed_ui=${cookieValue}` } });
+    assert.equal(shell.status, 200);
+    assert.ok(!shell.body.includes(op), "the shell must not embed the operator token");
+    // A client that mangled the fragment into a query string: the request still succeeds and the query is redacted from the log.
+    assert.equal((await sockRequest(sock, `/ui?token=${op}`)).status, 200);
+  } finally {
+    console.error = origErr;
+    configureAccessLog("off");
+    await new Promise<void>((r) => {
+      server.closeAllConnections();
+      server.close(() => r());
+    });
+  }
+  const all = lines.join("\n");
+  for (const secret of [op, wrong, cookieValue]) assert.ok(!all.includes(secret), `leaked ${secret}`);
+  assert.equal(lines.length, 5, all);
+  assert.match(lines[0]!, / unix POST \/ui\/login 200 \d+ms anon$/); // the body token is read after the principal is resolved
+  assert.match(lines[1]!, / unix POST \/ui\/login 200 \d+ms operator$/);
+  assert.match(lines[2]!, / unix POST \/ui\/login 401 /);
+  assert.match(lines[3]!, / unix GET \/ui 200 \d+ms operator$/);
+  assert.match(lines[4]!, / unix GET \/ui 200 \d+ms anon$/);
+});
