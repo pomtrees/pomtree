@@ -42,6 +42,8 @@ stack_down() {
   kill -TERM "$pid" 2>/dev/null
   for i in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { echo "pomtree-up still alive after 60s; SIGKILL"; kill -KILL "$pid" 2>/dev/null; }
+  # TODO(live-stack-singleton): namespace live stacks for parallel runs. Current behavior: stack_down waits on fixed port 18080.
+  # The pomtree-egress network and the pomtree=1 label filters in scripts/live are host-wide, so stacks share them.
   # pomtreed must be gone too: nothing may still listen on the model proxy port.
   for i in $(seq 1 30); do ss -ltn 2>/dev/null | grep -q ':18080 ' || break; sleep 1; done
   if ss -ltn 2>/dev/null | grep -q ':18080 '; then

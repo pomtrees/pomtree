@@ -31,6 +31,8 @@ export const BROWSER_EXT = `${BROWSER_EXT_ROOT}/pomtree-browser`;
 export const BROWSER_TOOLS = ["browser_capture", "capture_finish"] as const;
 // The fixed Pi flags after the tool allowlist, the same for every profile.
 const BROWSER_ISOLATION_FLAGS = ["--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-approve"] as const;
+// TODO(browser-allowlist): verify live that --tools hides pi-browser's own tools from the real model request. Current behavior:
+// the flag passes only the BROWSER_TOOLS names; no code checks the tool list sent in the model request.
 export const BROWSER_PI_FLAGS: readonly string[] = ["--tools", BROWSER_TOOLS.join(","), ...BROWSER_ISOLATION_FLAGS];
 // EXPERIMENTAL interactive profile: the pinned pi-browser tools that drive one page (navigate, a11y snapshot, click, type, keys, scroll,
 // viewport screenshot, back, tabs, wait) plus capture_finish. Excluded by omission, and pinned absent by test: script evaluation, storage,

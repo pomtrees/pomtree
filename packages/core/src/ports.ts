@@ -542,6 +542,8 @@ export interface ModelGateway {
   priceUsage?(usage: { model?: string; inputTokens: number; outputTokens: number }): Promise<number | null>;
 }
 
+// TODO(capability-caveats): bind generation and route-set caveats into the HMAC credential. Current behavior: it signs agent,
+// budget, expiry, issuance stamp, id and model allowlist only.
 // A short-lived, signed bearer credential for the controller-side model proxy. It carries the
 // agent's budget and expiry but never the upstream provider credential. The proxy verifies it
 // before forwarding; a container can use it only through the controller proxy.

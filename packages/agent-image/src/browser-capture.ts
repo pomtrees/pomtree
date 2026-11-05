@@ -309,6 +309,8 @@ export interface CaptureObservation {
 }
 export async function observeCapture(page: CapturePage, opts: CaptureCoreOptions, originalUrl: string, remaining: () => number): Promise<CaptureObservation> {
   const limits = opts.limits;
+  // TODO(robots): evaluate robots.txt on the browser capture path. Current behavior: nothing in this file consults robots.txt.
+  // The capture broker (packages/pomtreed/src/capture/broker.ts) is where robots.txt is evaluated today.
   const response = await page.goto(originalUrl, { waitUntil: "domcontentloaded", timeout: remaining() });
   if (!response) throw new Error("browser capture missing main response; no raw body receipt can be issued");
   const finalUrl = captureUrl(page.url());

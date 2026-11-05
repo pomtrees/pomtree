@@ -105,6 +105,8 @@ export function classifyDockerError(cause: Error): Error {
   return DAEMON_UNREACHABLE.test(cause.message) ? new SandboxUnavailableError() : cause;
 }
 
+// TODO(container-cli): make the container runtime binary and socket location configurable. Current behavior: the docker binary
+// is hardcoded here and in the log spawn; terminal.ts defaults the socket to /var/run/docker.sock when DOCKER_HOST is unset.
 // `docker logs` replays the container's stderr on this process's stderr, so a successful logs call returns both streams.
 const realExec: Exec = (args, env) =>
   new Promise((resolve, reject) => {
@@ -876,6 +878,8 @@ export class DockerSandbox implements Sandbox {
     return sandboxes;
   }
 
+  // TODO(rec8-egress-volume): find why REC-8 leaks an egress volume. Current behavior: this sweep runs once per boot.
+  // egressOwnedBy accepts older epochs of the same store, so a later boot reclaims a volume stamped with the pre-restart epoch.
   // Reclaim exact named proxies/socket volumes whose labelled sandbox container is gone,
   // e.g. a crash between startEgress and the agent `docker run`. Only this instance's owner's resources are candidates
   // (egressOwnedBy: our store_id, not a newer daemon_epoch), never another daemon's on the same engine, and never one whose

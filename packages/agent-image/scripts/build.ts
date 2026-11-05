@@ -149,5 +149,7 @@ try {
   rmSync(bundleDir, { recursive: true, force: true });
 }
 
+// TODO(demo-image): publish the slim demo image. Current behavior: this script builds and tags the demo target locally and never
+// pushes.
 const digest = execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", tag], { encoding: "utf8" }).trim();
 console.log(`${tag} ${digest}`);

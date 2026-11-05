@@ -89,6 +89,8 @@ type SafetyConfig = Pick<
   "agent.egressProxyImage" | "agent.untemplatedEgress" | "extensions.approval" | "merge.check" | "listen.allowNonloopback"
 >;
 
+// TODO(supervised-enforcement): decide whether to enforce supervised use. Current behavior: nothing at startup detects it.
+// Refusals here cover only the listed silent defaults; supervised use is documented, not enforced.
 /** Every boot-refusal message, in a fixed order; empty = safe to start. */
 export function safetyBootErrors(cfg: SafetyConfig, facts: SafetyBootFacts): string[] {
   const errors: string[] = [];

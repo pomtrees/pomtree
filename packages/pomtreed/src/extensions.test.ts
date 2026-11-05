@@ -16,6 +16,8 @@ import { bearer, sockRequest } from "./test-http.ts";
 
 // Everything declared: the default for fixtures that are not about capability enforcement (those pass their own blocks).
 const ALL_CAPS: ExtensionCapabilities = { routes: true, verbs: true, journalKinds: true, hooks: { journal: true, spawn: true } };
+// TODO(seam-exhaustive): make seam checks fail when the surface grows. Current behavior: ALL_DEPS, CAP_OPS, DEP_OPS are manual.
+// No check ties them to ExtensionCapabilities or ExtensionDepName, so a new flag or dep with no probe is not caught.
 const ALL_DEPS: ExtensionDepName[] = ["registry", "journal", "record", "deliver", "authorize", "credentials", "store"];
 
 function writeExt(dir: string, name: string, manifest: unknown, entrySource?: string) {

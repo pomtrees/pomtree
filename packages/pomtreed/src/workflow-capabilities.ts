@@ -348,6 +348,8 @@ export function buildRunOps(args: {
     instance,
     // Per task (new agent id per launch). Handlers that need a stable logical run persist it in their own state; this is not durable.
     runKey: ctx.agent,
+    // TODO(workflow-store): finish state store stages 2 and 3. Current behavior: getState/setState use root journal rows.
+    // This cell lives beside the keyed StateStore below and is read by scanning those journal rows.
     // Single instance cell, intentionally unkeyed on read: getState returns the latest accepted write for this workflow + instance.
     // The `key` argument of setState is a mutation idempotency key (same key + same value is a replay; same key + other value is
     // refused), not a cell name. There is no generic key/value store. Each payload carries STATE_VERSION (v:1).

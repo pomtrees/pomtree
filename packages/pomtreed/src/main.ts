@@ -253,6 +253,8 @@ const folderIdleMs = cfg["folder.retentionMs"];
 const folderReapedGraceMs = cfg["folder.reapedGraceMs"];
 const folderMinFreeBytes = cfg["folder.minFreeBytes"];
 const foldersRoot = join(stateDir, "workspaces");
+// TODO(adapter-registry): select adapters through a registry keyed by name and chosen by config. Current behavior: adapters are
+// constructed directly in this file.
 const workspace = new GitWorkspace({ repoDir, mirrorDir: join(stateDir, "mirror.git"), foldersRoot, infoExclude: WORKSPACE_GIT_EXCLUDES });
 {
   const gv = await checkGitVersion();
@@ -317,6 +319,8 @@ const proxyBaseUrl = `http://host.docker.internal:${modelProxyPort}`;
 const proxyProvider = cfg["pi.provider"];
 // Token prices come from Pi's own catalog (never operator-entered). A missing catalog is not fatal: every request then
 // charges the provider-reported cost or the per-request maximum (fail closed), and zero-cost usage events stay unpriced.
+// TODO(catalog-host-skew): price settlement from the agent image Pi catalog, not the host Pi. Current behavior: with
+// pi.catalogDir unset, the catalog is found from the host pi on PATH.
 const catalog = openPiCatalog(process.env, proxyProvider, homedir(), cfg["pi.catalogDir"]);
 console.error(catalog.message);
 // The controller-side model proxy is the only model path: the daemon issues per-agent scoped credentials and the
@@ -422,6 +426,8 @@ const extensionsDir = loaded.extensionsDir;
 mkdirSync(extensionsDir, { recursive: true, mode: 0o700 });
 const extensionsDirReal = realpathSync(extensionsDir);
 
+// TODO(main-untested): extract and test the entrypoint wiring. Current behavior: the wiring is inline in this file.
+// Inline and unexported here: resourceGate, diskFreeBytes, publishTargets, publishPush and the extensions.approval parsing.
 // Host-level resource gate (consulted by spawnNow and admit): disk free above the floor, the
 // sandbox reachable (list throws SandboxUnavailableError when down), and under the container cap.
 // TODO(cleanup): pre-existing fail-closed admission logic lives in this untested shell; extract with injected statfs/sandbox/memory ports.
@@ -786,6 +792,8 @@ extensions.registerBuiltin(
         ...(intent.model !== undefined && { model: intent.model }),
         idempotencyKey,
       }),
+    // TODO(cron-identity): give cron steer messages an automated sender identity, not a human one. Current behavior: no sender is
+    // passed, so the message_received row is attributed to cli:operator.
     steerAgent: (agent, body, key) => daemon.messageAgent(agent, body, key, "queue"),
     wakeAgent: (agent, body, key) => daemon.resumeAgent(agent, body, {}, key),
     pendingSignals: (agent) => daemon.deps.mailbox.peek(agent),

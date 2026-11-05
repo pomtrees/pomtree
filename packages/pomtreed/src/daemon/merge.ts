@@ -63,6 +63,8 @@ export class Merge {
     if (isDefault ? !(await this.tree.isTopLevel(a)) : req.branch !== `agent/${agent}`)
       throw new LifecycleError(403, `agents may publish only their own branch (agent/${agent})`);
     if (!pub.allowedTargets.includes(req.target)) throw new LifecycleError(403, `target ${req.target} is not allowed`);
+    // TODO(misc-wave2): return the journaled target on replay. Current behavior: a replay returns the request's target.
+    // The issue also lists receiveMessage, parseTranscript, the provider breaker and a decideApproval test gap.
     const key = `${agent}:publish:${req.idempotencyKey}`;
     for (let from = 1; ; ) {
       const page = await d.journal.read({ from, agent, limit: 500 });
@@ -103,6 +105,9 @@ export class Merge {
       if (credentialPath(name)) shown += ` [WARN: credential file ${name}]`;
     }
     if (pub.requireApproval !== false) await this.ctx.hub.escalation.requireApproval(a, "publish", shown, req.idempotencyKey);
+    // TODO(publish-errors): trace errors. Current behavior: a crash after this push leaves no record; a retry re-pushes.
+    // The issue also lists two untraced claims: the approver sees the agent-authored commit subject,
+    // and an approval pending across the upgrade is orphaned.
     await pub.push(agent, req.branch, req.target, pin.sha);
     await this.ctx.record(a, { kind: PUBLISHED_KIND, key, branch: req.branch, target: req.target }, `${key}:published`);
     return { branch: req.branch, target: req.target };

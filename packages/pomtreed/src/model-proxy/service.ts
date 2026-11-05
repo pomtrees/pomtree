@@ -498,6 +498,8 @@ export class ModelProxy {
       const style = this.o.authStyle ?? "bearer";
       if (style !== "x-api-key") headers.set("authorization", `Bearer ${this.o.upstream.key}`);
       if (style !== "bearer") headers.set("x-api-key", this.o.upstream.key);
+      // TODO(gateway): decide whether a fetch that rejects or aborts before headers should be charged. Current behavior: its
+      // reservation is cancelled at zero charge.
       upstream = await this.fetch(
         target,
         {
@@ -753,6 +755,9 @@ export class ModelProxy {
     }
   }
 
+  // TODO(credential-expired): define how the harness reacts to a credential-expired 401 (issue a fresh key, or exit with a clear
+  // cause). Current behavior: the proxy answers 401 credential-expired and the access log classes it; the harness does not handle
+  // it.
   // The 401 for a refused credential: MODEL_PROXY_CREDENTIAL_EXPIRED when the store says the key is expired (so the harness
   // knows to issue a fresh one), MODEL_PROXY_INVALID_CREDENTIAL for anything else (invalid, revoked, or no checkCredential).
   // The body is the code alone: nothing about the key, its agent or its expiry.

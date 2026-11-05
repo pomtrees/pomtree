@@ -110,6 +110,8 @@ interface RunOptions {
 
 class IndexUnavailable extends Error {}
 
+// TODO(capture-s2-wire): start capture workers from the broker with a read-only mounted job file. Current behavior: the broker
+// dials and stores bytes itself and parses through the CaptureParser child; no capture worker is started.
 export function createCaptureBroker(deps: CaptureBrokerDeps): CaptureBroker {
   const cfg = deps.config;
   // The identity is resolved upstream (resolveConfig maps a blank to the default); a blank or invalid one here is a wiring bug, not a request failure.

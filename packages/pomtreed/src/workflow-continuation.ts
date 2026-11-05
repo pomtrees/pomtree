@@ -9,6 +9,8 @@ export interface WorkflowContinuation {
   inbox: string[];
 }
 
+// TODO(continuation-scan): skip and journal a malformed continuation row instead of failing. Current behavior:
+// latestContinuation scans the agent's whole journal in pages of 500 and throws on any malformed continuation row.
 // Task-local journal snapshots deliberately do not masquerade as container checkpoints. Audit-kind retention preserves them.
 export async function latestContinuation(journal: Journal, agent: AgentId): Promise<WorkflowContinuation | undefined> {
   let from = 0;

@@ -389,6 +389,9 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
     return entry;
   };
 
+  // TODO(ledger-audit): add a startup and doctor replay of settled totals. Current behavior: neither startup nor pomtree doctor
+  // checks them. Only the seeded test in budget-nest.test.ts asserts the conservation identity; a replay mismatch should
+  // block reservations.
   // The hierarchical ledger (core budget-ledger.ts) over the registry and the debit buckets, read inside the caller's transaction.
   // A registered agent's budget is its registry carve (the root's is the operator pool); a bucket the registry does not know
   // (library use) is its own root with the cap setBudget gave it. Own use is settled spend plus in-flight reservations.
@@ -1365,6 +1368,8 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
           if (req) return { ok: false as const, reason: "idempotency-conflict" as const };
           // Hierarchical: the reservation must fit the agent's remaining, and any spill past its carve must fit each ancestor's.
           const view = ledgerView();
+          // TODO(ledger-broken): report a corrupt budget tree distinctly. Current behavior: all refusals map to budget-exhausted.
+          // Cycle, unknown node and too-deep refusals all collapse here; the cause ledgerFits returns is dropped.
           if (!ledgerFits(view, credential.agent, maximumMicros).ok) return { ok: false as const, reason: "budget-exhausted" as const };
 
           db.prepare(

@@ -218,6 +218,8 @@ export function proxyPiCredentials(options: ProxyPiCredentialsOptions): PiCreden
     providerIds() {
       return [options.provider];
     },
+    // TODO(auth-stage-leak): remove leftover auth.json files for non-running agents at startup. Current behavior: unstage runs
+    // on the yield, exit and settle paths only; after a crash the files remain, and reconcileWorktrees does not scan them.
     unstage(id) {
       rmSync(join(options.stateDir, "agents", id), { recursive: true, force: true });
     },

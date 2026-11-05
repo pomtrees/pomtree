@@ -203,6 +203,8 @@ function analysedStories(f: RunFacts): Verdict {
   return analysed >= 1 ? pass(`${analysed} of ${f.limit} requested stories analysed`) : fail(`0 analysed stories of ${f.limit} requested`);
 }
 
+// TODO(zero-articles-exit): verify the exit 3 live. Current behavior: this check fails a run whose every article was dropped.
+// A failed usable-article check makes the live run exit 3 (content-live-run.mts).
 // A published run must have produced at least one usable article when it had URL-bearing stories, unless the pages themselves were the
 // reason (thin, boilerplate, non-HTML, blocked, an HTTP error): every article dropped for a worker or verification reason means the run
 // produced nothing it could check, which is not a success (the entry exits 3, as for analysed-stories).

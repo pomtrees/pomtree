@@ -72,11 +72,15 @@ export function shortHash(s: string, hash: (s: string) => string): string {
   return hash(s).slice(0, 16);
 }
 
+// TODO(operability): add structured logging, metrics and backup rotation. Current behavior: stamp() only prefixes plain text.
+// Startup and crash lines are plain console.error text, many without a timestamp; there is no level or JSON-line form.
 /** ISO-timestamped log line for startup/shutdown/crash messages. */
 export function stamp(msg: string, now: Date = new Date()): string {
   return `${now.toISOString()} ${msg}`;
 }
 
+// TODO(ui-default-off): refuse or redirect when the ui channel has no listener. Current behavior: it only warns at startup.
+// With no UI listener, asks and approvals can be answered only over the unix socket (pomtree CLI); otherwise they time out.
 /** The startup warning when approvals/asks go to the UI channel but no UI listener exists, else null. */
 export function uiChannelWarning(channels: ChannelRegistry, uiListen: string): string | null {
   if (!channels.get("ui")?.outbound || uiListen !== "off") return null;

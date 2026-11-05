@@ -673,6 +673,8 @@ export class Reconcile {
     }
     for (const s of listed) {
       if (this.live.has(s.agent)) continue;
+      // TODO(recon-adopt): revisit the unregistered-container kill. Current behavior: an owned container with no row is killed.
+      // Safe only while spawn writes the registry row before sandbox.start; reordering would make this kill race spawn.
       const r = await this.ctx.deps.registry.get(s.agent);
       if (!r) {
         await this.ctx.deps.sandbox.kill(s.id).catch(() => {});

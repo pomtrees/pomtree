@@ -514,6 +514,8 @@ export interface DeterministicOpCall {
   key?: string;
   arg?: unknown;
 }
+// TODO(workflow-ops-contract): import the child ownership rule from core. Current behavior: this fake tracks ownership itself.
+// The daemon keys continuation-workflow messages generation-free as workflow:message:<id>:<key>; core does not state that.
 export class FakeDeterministicOps implements DeterministicOps {
   readonly calls: DeterministicOpCall[] = [];
   readonly sent: { to: MessageTarget; body: string }[] = [];

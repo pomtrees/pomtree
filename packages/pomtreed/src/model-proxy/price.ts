@@ -214,6 +214,8 @@ function positiveInt(v: unknown): number | null {
 // caller reserves the larger of that bound and the fixed amount. Without a ceiling, `estimate` null means the fixed amount.
 export type EstimateOutcome = { refuse: string } | { body: Uint8Array; estimate: RequestEstimate | null; unknownBound?: RequestEstimate };
 
+// TODO(trace-tool-list): record offered tool names in audit output. Current behavior: tools are only checked for hosted types.
+// Nothing in the model proxy keeps the tool names.
 // A refusal for a request shape that would bill outside max_tokens (hosted tools, priority tiers), or null. Pi sends only
 // function tools and the default tier; Anthropic custom tools carry no type or type "custom".
 function refusedFeature(parsed: Record<string, unknown>): string | null {
@@ -247,6 +249,8 @@ function jsonDepthExceeds(root: unknown, limit: number): boolean {
   return false;
 }
 
+// TODO(proxy-gaps): bound or price remaining inputs. Current behavior: prompt sized at BYTES_PER_TOKEN, no remote-input bound.
+// Open: beta headers, remote file or image inputs, CJK and emoji under-count, hosted-tool fees, non-default service tiers.
 export function createRequestEstimate(rates: RatesSource, provider: string): (body: Uint8Array, path: string) => EstimateOutcome {
   return (body, path) => {
     let parsed: unknown;
@@ -302,6 +306,8 @@ export function createRequestEstimate(rates: RatesSource, provider: string): (bo
     const output = rate.outputMicrosPerToken;
     const prompt = Math.ceil((canonical.length / BYTES_PER_TOKEN) * rate.inputMicrosPerToken);
     const cap = (v: number): number => Math.min(Number.MAX_SAFE_INTEGER, v);
+    // TODO(proxy-reserve-billing): cap the output reservation. Current behavior: it reserves the request's full output limit.
+    // reserveMicros prices that limit (times n and best_of) at the model's highest output rate; no operator-set cap applies.
     const estimate: RequestEstimate = {
       reserveMicros: cap(prompt + Math.ceil(tokens * multiplier * output)),
       floorMicros: cap(prompt + Math.ceil(Math.min(tokens, MIN_OUTPUT_TOKENS) * multiplier * output)),

@@ -696,6 +696,8 @@ export class Daemon implements Driver {
     } else {
       await d.mailbox.send(agent, signal, `msg:${from.channel}:${idempotencyKey}:signal`);
       await d.orchestrator.wake(agent, signal);
+      // TODO(wake-waiting): verify waking a waiting agent live. Current behavior: the message is mailboxed and reported steered.
+      // Also open: the collision with a user typing in the same terminal.
       if (waiting) delivered = "steered";
       else if (a.state === "yielded" && (await d.registry.get(agent))?.state !== "yielded") delivered = "woke";
     }
@@ -720,6 +722,8 @@ export class Daemon implements Driver {
     const id = escalationIdFor(agent, req.idempotencyKey);
     // Agent-controlled text reaches a human's chat: sanitize once (toUser: control/bidi/zero-width chars, mentions, length cap
     // with a visible marker) and persist that value, so the escalation, journal and outbox all carry the same text.
+    // TODO(ask-text-cap): tell the asker when its ask text was truncated. Current behavior: toUser caps the question with a
+    // visible marker and the ask result carries no truncation indicator.
     const question = toUser(req.question);
     const options = (req.options ?? []).slice(0, ASK_OPTIONS_MAX).map((o) => toUser(o, ASK_OPTION_MAX));
     // An ask bubbles up the ancestor chain (root excluded); a top-level agent's ask goes straight to the user.
@@ -872,6 +876,9 @@ export class Daemon implements Driver {
     opts: { force?: boolean; operator?: boolean } = {},
   ): Promise<IngestResult> {
     const d = this.deps;
+    // TODO(custody-force): decide an operator route for forced ingest. Current behavior: push throws 403 for force without
+    // operator; its only non-test caller, transfer-route, forwards force and never sets operator. forcedFrom goes to the journal
+    // row and a host warning only.
     if (opts.force && !opts.operator)
       throw new LifecycleError(403, "--force is operator-only; run `pomtree pull`, fast-forward your branch onto the ingested tip, then push again");
     const r = await d.registry.get(agent);
@@ -1534,6 +1541,8 @@ export class Daemon implements Driver {
     return reason ? { ...r, pendingReason: reason } : r;
   }
 
+  // TODO(session-reservation): reserve sessions per tree. Current behavior: children queue on placement.admit under one cap.
+  // The cap is capacity.maxSessions with no per-tree share; a waiting parent keeps its slot until it yields.
   private async admit(id: AgentId, priority: number = PRIORITY.interactive): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const last = { v: "" };

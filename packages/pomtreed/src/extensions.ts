@@ -422,6 +422,8 @@ export class ExtensionRegistryImpl implements ExtensionRegistry {
     }
   }
 
+  // TODO(ext-gate-unreviewed): gate start, routes and hooks on reviewed owners. Current behavior: startAll starts every extension
+  // whose status is ok with no reviewed-owner check; only workflow admission (workflows.commit) is policy-gated here.
   async startAll(): Promise<void> {
     if (this.stopped) throw new Error("extensions are terminal after stop: startAll refused");
     if (this.started) return;

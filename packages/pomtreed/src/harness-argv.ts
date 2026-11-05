@@ -3,6 +3,8 @@ import { isAllowlistProfile, isBrowserProfile, systemPromptProblem } from "@pomt
 import { ALLOWLIST_PROFILE_TOOLS } from "@pomtree/agent-image";
 import { piArgv } from "@pomtree/harness-pi";
 
+// TODO(harness-driver): move Pi specifics behind the Harness port as a driver. Current behavior: harnessArgv in this file builds
+// the Pi argv with piArgv from harness-pi, and main.ts wires it into the daemon as the harness command.
 // The Pi argv for a spawn spec. A spec whose template named an allowlist profile gets exactly that profile's tools and extension
 // (ALLOWLIST_PROFILE_TOOLS) and never the default loadout (bash, read, write, edit, web, steer, jobs); an unknown profile throws, so a
 // corrupted or newer spec cannot fall through to the default. A spec with no profile gets the default loadout.

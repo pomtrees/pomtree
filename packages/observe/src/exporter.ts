@@ -48,6 +48,8 @@ export interface RunHandle extends Promise<void> {
 // the stream continues. Permanent client errors (4xx other than 408/429) are not retried.
 const retryable = (status: number) => status < 400 || status >= 500 || status === 408 || status === 429;
 
+// TODO(perf-observability): add performance telemetry. Current behavior: this exporter posts traces only, to /v1/traces.
+// Its stats counters are read only inside this class; no code under packages uses perf_hooks or process.memoryUsage.
 export class OtlpExporter {
   readonly stats: ExporterStats = { exportedSpans: 0, failedPosts: 0, droppedBatches: 0 };
   readonly #tracker: SpanTracker;

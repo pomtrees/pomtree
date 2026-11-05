@@ -214,6 +214,8 @@ export class Messaging {
     const step = (suffix: string): string | undefined => (raw ? key : `${scope}${suffix}`);
     const mkey = raw ? `msg:${key}` : scope; // mailbox/wake keys: the operator (raw) keys are unchanged
 
+    // TODO(channels-core-fail-closed): refuse chat-rank actions when no authorizeInbound hook is installed. Current behavior:
+    // without the hook the per-sender check is skipped for chat rank (fail-open); only the main.ts boot check refuses.
     // Per-sender authorization runs before any rate-limit slot is taken, so unauthorized floods cannot lock out the real answer.
     // Operator rank skips the allowlist: the credential itself (operator token / UI cookie) is the authority.
     if (!operatorRank && d.authorizeInbound) {
@@ -487,6 +489,8 @@ export class Messaging {
     await this.ctx.record(a, { kind: USER_ESC_KIND } as never, `${agent}:${a.generation}:user-esc:${this.bootNonce}:${++this.signalSeq}`);
   }
 
+  // TODO(interactive-mode): replace await-user and ask --wait with a sticky mode. Current behavior: await-user is gated.
+  // await-user is accepted only while a typed, chat or operator message is unanswered, so a fresh spawn task cannot use it.
   // `pomtree await-user`: the agent declares its next settle is a wait for the human's reply. Accepted only while an interactive
   // message (TTY-typed or operator) is unanswered (core `settleStep`); consumed by the settle that follows (or withdrawn by a
   // newer human message). A retry with the same key is accepted again without a second entry.

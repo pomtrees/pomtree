@@ -223,6 +223,8 @@ export function createCronExtension(opts: CronExtensionOptions): Extension & { s
     for (const t of fires) {
       let target: AgentRecord | null = null;
       let busy: boolean;
+      // TODO(cron-target): close the open gaps in agent-targeted schedules. Current behavior: a fire steers a non-yielded target,
+      // wakes a yielded one, and orphans the schedule with one alert when the target is missing, exited or reaped.
       if (s.agent !== undefined) {
         target = await d.getAgent(s.agent);
         if (!target || target.state === "exited" || target.state === "reaped") {
