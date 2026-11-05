@@ -7,7 +7,7 @@ import type { Server } from "node:http";
 import { connect } from "node:net";
 import { cpus, freemem, homedir, hostname, tmpdir, totalmem } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
+import { DEFAULT_CONTAINER_CPUS, DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
 import { EgressAuditCollector, ingestEgressAuditSafely } from "./egress-audit.ts";
 import { nearCapTransition } from "./health.ts";
 import { openStateStore } from "@pomtree/store-sqlite";
@@ -52,7 +52,7 @@ import {
   unreachableMessage,
 } from "./agent-net.ts";
 import { autoMaxSessions, maxSessionsOf } from "./auto-sessions.ts";
-import { DEFAULT_CONTAINER_CPUS, memoryGate, memoryHolders, pinnedAgentPort, writeSecretFile } from "./host-guards.ts";
+import { memoryGate, memoryHolders, pinnedAgentPort, writeSecretFile } from "./host-guards.ts";
 import { acquireStateLock, configureAccessLog, listen, listenAgents, listenHost, listenUi } from "./server.ts";
 import { createExtensionRegistry } from "./extensions.ts";
 import { scanExtensionManifests } from "./extension-manifest.ts";

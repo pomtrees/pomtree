@@ -35,6 +35,9 @@ export function userLabelArgs(labels: Record<string, string> | undefined): strin
 // the agent cannot exhaust the host pid table. Overridable via RunArgsOptions.pidsLimit.
 export const DEFAULT_PIDS_LIMIT = 512;
 
+// Default docker --cpus for a sandbox whose spec sets no resources.cpus. pomtreed sizes auto max-sessions from the same value.
+export const DEFAULT_CONTAINER_CPUS = 2;
+
 // Minimum sane docker stop grace: `docker stop -t 0` skips SIGTERM entirely (immediate SIGKILL),
 // defeating graceful shutdown. Clamp every grace to at least one second.
 export const MIN_GRACE_MS = 1000;
@@ -227,7 +230,7 @@ export function describeRunHardening(spec: SandboxSpec, opts: Pick<RunArgsOption
     pidsLimit: opts.pidsLimit ?? shape.pidsLimit,
     memoryBytes,
     memorySwapBytes: memoryBytes,
-    cpus: res.cpus ?? 2,
+    cpus: res.cpus ?? DEFAULT_CONTAINER_CPUS,
     ...(res.shmBytes !== undefined ? { shmBytes: res.shmBytes } : {}),
     stopTimeoutSeconds: shape.stopTimeoutSeconds,
     ipv6Disabled: spec.egress?.auditedPublic !== undefined,

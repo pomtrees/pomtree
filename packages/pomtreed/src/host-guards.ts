@@ -4,7 +4,6 @@ import { CONFIG_DEFAULTS, type SandboxId } from "@pomtree/core";
 
 // The registry default of capacity.containerMemoryBytes (one source); main.ts also passes it as the containers' real --memory.
 export const DEFAULT_CONTAINER_MEMORY_BYTES = CONFIG_DEFAULTS["capacity.containerMemoryBytes"];
-export const DEFAULT_CONTAINER_CPUS = 2; // matches the sandbox-docker per-container default (`--cpus`, args.ts); not exported there
 
 // Admission by reserved memory: one more container must fit in `fraction` of host memory
 // (TODO(admission-capacity): host RAM stands in for `docker info` MemTotal; they differ only with a remote Docker).

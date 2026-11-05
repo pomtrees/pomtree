@@ -1460,6 +1460,20 @@ test("doctor prints the daemon's build identity when the daemon reports one", as
   assert.doesNotMatch(old.out[0]!, /pomtreed:/);
 });
 
+test("doctor prints the max-sessions line with its mode, and none when the daemon reports no capacity", async () => {
+  for (const [mode, value] of [
+    ["auto", 7],
+    ["manual", 3],
+  ] as const) {
+    const h = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0, maxSessions: { value, mode } } }));
+    assert.equal(await run(["doctor"], h.io), EXIT.ok);
+    assert.ok(h.out[0]!.split("\n").includes(`  max sessions: ${value} (${mode})`), h.out[0]);
+  }
+  const none = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 } }));
+  await run(["doctor"], none.io);
+  assert.doesNotMatch(none.out[0]!, /max sessions/);
+});
+
 test("doctor warns loudly (but stays ok) on a client/server revision mismatch", async () => {
   const h = harness(
     route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0, gitSha: "abc1234", imageRevision: "def5678", revisionMismatch: true } }),
