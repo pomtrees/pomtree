@@ -6,10 +6,10 @@
 // Docker-gated like cli-scenarios.test.ts (cliScenarioSkip); the scanner's own unit tests run everywhere.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createReadStream, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, type Stats, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
 import { describeCall, type ModelScript } from "@pomtree/testing";
 import { docker, freePort, showAgent } from "./cli-crash.ts";
 import { type AgentJson, agentErrorDump, bash, cliScenarioSkip, image, MODEL, PROVIDER, type Stack, startStack } from "./cli-scenarios-harness.ts";
@@ -83,19 +83,49 @@ async function scanFile(path: string): Promise<Scan> {
   return { count: c.count, bytes: c.bytes };
 }
 
+type TreeOps = { readdir: (d: string) => string[]; lstat: (p: string) => Stats; scan: (p: string) => Promise<Scan> };
+const realOps: TreeOps = { readdir: (d) => readdirSync(d), lstat: (p) => lstatSync(p), scan: scanFile };
+const vanished = (e: unknown) => (e as NodeJS.ErrnoException)?.code === "ENOENT";
+
 // Every regular file under `dir` (sockets and other special files cannot be read), nothing excluded. `files` counts files with a match.
-async function scanTree(dir: string): Promise<Scan & { files: number; withMatch: string[] }> {
+// The walk is over a live tree the daemon may still be changing (workspace folders are evicted or rewritten), so an entry can legitimately
+// disappear between being listed and being read. Such an entry is skipped: a vanished file no longer holds anything at rest. Every other
+// error, and a missing `dir` itself, still throws. The walk is not a snapshot: content written after its directory was listed (for example a file renamed into place mid-walk) is not seen, a limit the walk had before this change too.
+async function scanTree(dir: string, ops: TreeOps = realOps): Promise<Scan & { files: number; withMatch: string[]; vanished: string[] }> {
   let count = 0;
   let bytes = 0;
   let files = 0;
   const withMatch: string[] = [];
-  const walk = async (d: string): Promise<void> => {
-    for (const e of readdirSync(d)) {
+  const vanishedPaths: string[] = [];
+  const walk = async (d: string, root: boolean): Promise<void> => {
+    let names: string[];
+    try {
+      names = ops.readdir(d);
+    } catch (e) {
+      if (root || !vanished(e)) throw e;
+      vanishedPaths.push(d.slice(dir.length));
+      return;
+    }
+    for (const e of names) {
       const p = join(d, e);
-      const st = lstatSync(p);
-      if (st.isDirectory()) await walk(p);
+      let st: Stats;
+      try {
+        st = ops.lstat(p);
+      } catch (err) {
+        if (!vanished(err)) throw err;
+        vanishedPaths.push(p.slice(dir.length));
+        continue;
+      }
+      if (st.isDirectory()) await walk(p, false);
       else if (st.isFile()) {
-        const r = await scanFile(p);
+        let r: Scan;
+        try {
+          r = await ops.scan(p);
+        } catch (err) {
+          if (!vanished(err)) throw err;
+          vanishedPaths.push(p.slice(dir.length));
+          continue;
+        }
         files++;
         count += r.count;
         bytes += r.bytes;
@@ -103,8 +133,8 @@ async function scanTree(dir: string): Promise<Scan & { files: number; withMatch:
       }
     }
   };
-  await walk(dir);
-  return { count, bytes, files, withMatch };
+  await walk(dir, true);
+  return { count, bytes, files, withMatch, vanished: vanishedPaths };
 }
 
 test("credentials scanner: counts across chunk boundaries, finds nothing in clean data", () => {
@@ -117,6 +147,89 @@ test("credentials scanner: counts across chunk boundaries, finds nothing in clea
   clean.push(Buffer.from("x"));
   assert.equal(clean.count, 0);
   assert.equal(clean.bytes, KEY.length);
+});
+
+// A skipped entry is not a failure, but it is surfaced so a scan that skipped a lot is visible in the run output.
+function reportVanished(t: TestContext, vanishedPaths: string[]): void {
+  if (vanishedPaths.length > 0) t.diagnostic(`state-dir scan skipped ${vanishedPaths.length} entries that vanished mid-walk: ${vanishedPaths.join(", ")}`);
+}
+
+test("credentials scanner: a tree walk tolerates entries that vanish mid-walk but still throws on other errors", async () => {
+  const root = mkdtempSync(join(tmpdir(), "crd2-walk-"));
+  try {
+    mkdirSync(join(root, "gone-dir"));
+    writeFileSync(join(root, "gone-dir", "x"), "x");
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "sub", "keep.txt"), `${KEY}\n`);
+    writeFileSync(join(root, "gone-lstat"), "x");
+    writeFileSync(join(root, "gone-read"), "x");
+    writeFileSync(join(root, "plain.txt"), "clean");
+    const enoent = (p: string) => Object.assign(new Error(`ENOENT: no such file or directory, ${p}`), { code: "ENOENT" });
+    // Each doomed entry is listed, then removed before it is read.
+    const racing: TreeOps = {
+      readdir: (d) => {
+        const names = readdirSync(d);
+        if (d === root) {
+          rmSync(join(root, "gone-lstat"));
+          rmSync(join(root, "gone-dir"), { recursive: true });
+        }
+        return names;
+      },
+      lstat: lstatSync,
+      scan: async (p) => {
+        if (p.endsWith("gone-read")) rmSync(p);
+        return scanFile(p);
+      },
+    };
+    const t = await scanTree(root, racing);
+    assert.deepEqual(t.withMatch, ["/sub/keep.txt"], "the planted key in a surviving file is still found");
+    assert.equal(t.count, 1);
+    assert.equal(t.files, 2, "only plain.txt and sub/keep.txt remain");
+    assert.deepEqual([...t.vanished].sort(), ["/gone-dir", "/gone-lstat", "/gone-read"], "every skipped entry is reported");
+    // Non-ENOENT errors are real failures, wherever they occur.
+    const eacces = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    await assert.rejects(
+      scanTree(root, {
+        ...realOps,
+        lstat: () => {
+          throw eacces;
+        },
+      }),
+      /EACCES/,
+    );
+    await assert.rejects(
+      scanTree(root, {
+        ...realOps,
+        scan: async () => {
+          throw eacces;
+        },
+      }),
+      /EACCES/,
+    );
+    await assert.rejects(
+      scanTree(root, {
+        ...realOps,
+        readdir: (d) => {
+          if (d !== root) throw eacces;
+          return readdirSync(d);
+        },
+      }),
+      /EACCES/,
+    );
+    // The root itself must exist, and a subdirectory listing that fails with ENOENT is skipped.
+    await assert.rejects(scanTree(join(root, "absent")), /ENOENT/);
+    const t2 = await scanTree(root, {
+      ...realOps,
+      readdir: (d) => {
+        if (d === join(root, "sub")) throw enoent(d);
+        return readdirSync(d);
+      },
+    });
+    assert.deepEqual(t2.withMatch, []);
+    assert.deepEqual(t2.vanished, ["/sub"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 async function withStack(o: Parameters<typeof startStack>[0], fn: (s: Stack) => Promise<void>): Promise<void> {
@@ -169,7 +282,7 @@ async function dockerControl(): Promise<{ inspect: Scan; logs: Scan; exp: Scan }
 test("cli credentials CRD-2: no upstream key bytes in the agent or sidecar container, pomtreed log, trace or state dir; every scan can find the string", {
   skip: SKIP,
   timeout: 280_000,
-}, async () => {
+}, async (t) => {
   // The agent holds until the test releases it (touch /tmp/go), so every container scan happens while it runs.
   const script: ModelScript = {
     name: "crd2",
@@ -222,9 +335,12 @@ test("cli credentials CRD-2: no upstream key bytes in the agent or sidecar conta
       const planted = join(s.stateDir, "crd2-planted.txt");
       writeFileSync(planted, `${KEY}\n`);
       const withPlant = await scanTree(s.stateDir);
+      reportVanished(t, withPlant.vanished);
       rmSync(planted);
       assert.deepEqual(withPlant.withMatch, ["/crd2-planted.txt"], "control: the state-dir scan must find a planted file and only that one");
-      assert.ok((await scanTree(s.stateDir)).withMatch.length === 0, "the planted file must be gone before the real scan");
+      const clean = await scanTree(s.stateDir);
+      reportVanished(t, clean.vanished);
+      assert.ok(clean.withMatch.length === 0, "the planted file must be gone before the real scan");
       const planted2 = join(scratch, "t.md");
       writeFileSync(planted2, `trace ${KEY}\n`);
       assert.equal((await scanFile(planted2)).count, 1, "control: the file scan must find the string");
@@ -267,6 +383,7 @@ test("cli credentials CRD-2: no upstream key bytes in the agent or sidecar conta
     assert.ok(log.bytes > 0, "the pomtreed log was empty");
     assert.equal(log.count, 0, `pomtreed's log contains the upstream key ${log.count} time(s)`);
     const tree = await scanTree(s.stateDir);
+    reportVanished(t, tree.vanished);
     assert.ok(tree.files > 0 && tree.bytes > 0, "the state dir scan read nothing");
     assert.equal(tree.count, 0, `the state dir has the upstream key in ${tree.withMatch.length} file(s) (${tree.count} matches): ${tree.withMatch.join(", ")}`);
     assert.deepEqual(s.stub.unmatched, []);
