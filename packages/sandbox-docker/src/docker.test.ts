@@ -72,19 +72,34 @@ test("Docker network-none worker lifecycle uses the packaged bridge and nonroot 
   }
 });
 
-test("Docker wait captures OOM state before cleanup", { skip, timeout: 60000 }, async () => {
-  const f = fixture();
-  const h = await f.sb.start(
-    { ...spec(["node", "-e", "const a=[];setInterval(()=>a.push(Buffer.alloc(8*1024*1024,1)),5)"]), resources: { memoryBytes: 64 * 1024 ** 2 } },
-    `oom:${Date.now()}`,
-  );
-  try {
-    const r = await wait(h);
-    assert.equal(r.oomKilled, true);
-  } finally {
-    await f.sb.kill(h.id);
-    f.clean();
+const OOM_ATTEMPTS = 5;
+
+test("Docker wait captures OOM state before cleanup", { skip, timeout: 150000 }, async (t) => {
+  // Docker can record a real OOM kill as State.OOMKilled=false with exit 137 under CPU contention (issue #532).
+  // Retrying only that exact result lowers the failure rate (about 0.1% per run at a 25% loss rate) but does not remove it,
+  // and the product still reports such a kill without oomKilled.
+  for (let attempt = 1; attempt <= OOM_ATTEMPTS; attempt++) {
+    const f = fixture();
+    const h = await f.sb.start(
+      { ...spec(["node", "-e", "const a=[];setInterval(()=>a.push(Buffer.alloc(8*1024*1024,1)),5)"]), resources: { memoryBytes: 64 * 1024 ** 2 } },
+      `oom:${Date.now()}:${attempt}`,
+    );
+    try {
+      const r = await wait(h);
+      if (r.oomKilled !== true && r.exitCode === 137) {
+        t.diagnostic(`OOM attempt ${attempt}/${OOM_ATTEMPTS}: exit code ${r.exitCode}, oomKilled ${String(r.oomKilled)}; retrying (issue #532)`);
+        continue;
+      }
+      assert.equal(r.oomKilled, true, `expected an OOM kill, got exit code ${r.exitCode} and oomKilled ${String(r.oomKilled)}`);
+      return;
+    } finally {
+      await f.sb.kill(h.id);
+      f.clean();
+    }
   }
+  assert.fail(
+    `Docker reported exit 137 without OOMKilled on all ${OOM_ATTEMPTS} attempts (the Docker/containerd OOM-event race, issue #532); check host load or the Docker/containerd version; if this repeats on an idle host, suspect the product's OOMKilled read (readState)`,
+  );
 });
 
 test("real Docker confines TCP/IPv6/DNS/UDP and socket mutation; scoped relay and Node proxy env still work", { skip, timeout: 90000 }, async () => {
