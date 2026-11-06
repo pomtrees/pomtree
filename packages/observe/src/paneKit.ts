@@ -64,7 +64,19 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     tr.appendChild(td);
     return tr;
   };
-  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow };
+  // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi,
+  // mount(root, { agent? }, host) -> { unmount(), fit?() } }, host = { setTitle(text), navigate(hash) }.
+  const viewTypes = new Map();
+  const registerView = (def) => {
+    const id = def && def.id;
+    if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id)) throw new Error("registerView: invalid view id " + JSON.stringify(id) + "; use a lowercase id such as terminal");
+    if (viewTypes.has(id)) throw new Error("registerView: view " + id + " is already registered; register each view id once");
+    if (typeof def.title !== "string" || typeof def.multi !== "boolean" || typeof def.mount !== "function") throw new Error("registerView: view " + id + " needs a string title, a boolean multi and a mount function");
+    viewTypes.set(id, def);
+  };
+  const view = (id) => viewTypes.get(id);
+  const views = () => [...viewTypes.values()];
+  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views };
 })());
 `;
 

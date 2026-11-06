@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createContext, runInContext, type Context } from "node:vm";
 import { renderAuditPane, renderEscalationsPane, renderHostsPane, renderSchedulesPane, renderTerminalPane } from "./tabs.ts";
 import { NEW_AGENT_LOGIC_JS, renderNewAgentPane } from "./newAgent.ts";
+import { PANE_KIT_JS } from "./paneKit.ts";
 import { renderShell } from "./shell.ts";
 import { renderReportsPane, renderTreePane } from "./web.ts";
 
@@ -101,6 +102,45 @@ interface FakeNode {
   focus(): void;
   scrollTop: number;
   classList: { toggle(name: string, force?: boolean): void };
+  fragment?: boolean;
+  querySelector(selector: string): FakeNode | null;
+}
+
+// Selectors the panes use: tag?[attr="value"].
+function matches(node: FakeNode, selector: string): boolean {
+  const m = /^([a-z]+)?\[([\w-]+)="([^"]*)"\]$/.exec(selector);
+  if (!m) throw new Error(`fake DOM: unsupported selector ${selector}`);
+  return (!m[1] || node.tagName === m[1]) && node.attrs.get(m[2]!) === m[3];
+}
+
+const VOID_TAGS = new Set(["input", "br", "img"]);
+// Parses the terminal template markup (tags, quoted or boolean attributes, text) into a fragment of fake nodes.
+function parseHtml(html: string): FakeNode {
+  const frag = fakeNode();
+  frag.fragment = true;
+  const stack: FakeNode[] = [frag];
+  const re = /<(\/?)([a-zA-Z0-9]+)((?:\s+[^\s=>]+(?:="[^"]*")?)*)\s*>|([^<]+)/g;
+  for (const m of html.matchAll(re)) {
+    const top = stack[stack.length - 1]!;
+    if (m[4] !== undefined) {
+      if (m[4].trim() !== "") top.textContent += m[4];
+    } else if (m[1]) {
+      stack.pop();
+    } else {
+      const el = fakeNode();
+      el.tagName = m[2]!;
+      for (const a of m[3]!.matchAll(/([^\s=>]+)(?:="([^"]*)")?/g)) {
+        const [, name, value] = a;
+        if (name === "id") el.id = value ?? "";
+        else if (name === "class") el.className = value ?? "";
+        else if (name === "hidden") el.hidden = true;
+        else el.setAttribute(name!, value ?? "");
+      }
+      top.appendChild(el);
+      if (!VOID_TAGS.has(el.tagName)) stack.push(el);
+    }
+  }
+  return frag;
 }
 
 function fakeNode(id = ""): FakeNode {
@@ -134,8 +174,20 @@ function fakeNode(id = ""): FakeNode {
       return node.children[0] ?? null;
     },
     appendChild(child) {
+      if (child.fragment) {
+        for (const c of child.children.splice(0)) node.appendChild(c);
+        return;
+      }
       child.parent = node;
       node.children.push(child);
+    },
+    querySelector(selector) {
+      for (const c of node.children) {
+        if (matches(c, selector)) return c;
+        const deep = c.querySelector(selector);
+        if (deep) return deep;
+      }
+      return null;
     },
     insertBefore(child, ref) {
       child.parent = node;
@@ -205,6 +257,7 @@ function fakeDocument(tabIds: readonly string[]): FakeDoc {
   };
   const sections = tabIds.map((id) => {
     const s = fakeNode();
+    s.tagName = "section";
     s.setAttribute("data-tab", id);
     return s;
   });
@@ -243,6 +296,7 @@ interface FakeTerm {
   handlers: Record<string, (x: unknown) => void>;
   keyHandler?: (ev: unknown) => boolean;
   selection: string;
+  host?: FakeNode;
 }
 interface Es {
   url: string;
@@ -354,8 +408,13 @@ function runShell(
       this.options = opts;
       terms.push(this);
     }
-    loadAddon() {}
-    open() {}
+    loadAddon(addon: { term?: unknown }) {
+      addon.term = this;
+    }
+    host?: FakeNode;
+    open(el: FakeNode) {
+      this.host = el;
+    }
     reset() {
       this.resets++;
     }
@@ -398,17 +457,38 @@ function runShell(
   const fitDims = { cols: 100, rows: 30 };
   const FitAddon = {
     FitAddon: class {
+      term?: FakeTerm;
       fit() {
-        const t = terms[terms.length - 1]!;
+        const t = this.term ?? terms[terms.length - 1]!;
         t.cols = fitDims.cols;
         t.rows = fitDims.rows;
       }
     },
   };
   const timeouts: { fn: () => void; ms: number; cleared: boolean }[] = [];
+  const headNodes: FakeNode[] = [];
+  const observers: { cb: () => void; observed: unknown[]; disconnected: boolean }[] = [];
+  class ResizeObserver {
+    rec: (typeof observers)[number];
+    constructor(cb: () => void) {
+      this.rec = { cb, observed: [], disconnected: false };
+      observers.push(this.rec);
+    }
+    observe(el: unknown) {
+      this.rec.observed.push(el);
+    }
+    disconnect() {
+      this.rec.disconnected = true;
+    }
+  }
+  // The terminal pane ships its markup as a <template>; document.querySelector hands out a clone source for it.
+  const templateHtml = /<template data-view-template="terminal">([\s\S]*?)<\/template>/.exec(html)![1]!;
+  const templateNode = Object.assign(fakeNode(), { tagName: "template", content: { cloneNode: () => parseHtml(templateHtml) } });
+  templateNode.setAttribute("data-view-template", "terminal");
   const sandbox: Context = {
     document: {
       body: pageBody,
+      head: { appendChild: (n: FakeNode) => headNodes.push(n) },
       addEventListener: (type: string, fn: Listener) => {
         if (type === "keydown") docKeys.push(fn);
       },
@@ -417,6 +497,11 @@ function runShell(
         if (type === "keydown" && i >= 0) docKeys.splice(i, 1);
       },
       getElementById: doc.getElementById,
+      querySelector: (selector: string): unknown => {
+        if (matches(templateNode, selector)) return templateNode;
+        const sec = doc.sections.find((s) => matches(s, selector));
+        return sec ?? null;
+      },
       createElement: doc.createElement,
       createTextNode: doc.createTextNode,
       querySelectorAll: doc.querySelectorAll,
@@ -433,6 +518,7 @@ function runShell(
     },
     EventSource,
     WebSocket,
+    ResizeObserver,
     Terminal,
     FitAddon,
     TextEncoder,
@@ -493,9 +579,31 @@ function runShell(
     location.hash = h;
     for (const fn of hashListeners) fn({});
   };
-  return { doc, pageBody, docKeys, es, fetches, intervals, timeouts, sockets, terms, fitDims, resize, navigate, location, reloads };
+  return {
+    doc,
+    pageBody,
+    docKeys,
+    es,
+    fetches,
+    intervals,
+    timeouts,
+    sockets,
+    terms,
+    fitDims,
+    resize,
+    navigate,
+    location,
+    reloads,
+    observers,
+    headNodes,
+    context,
+    resizeListeners,
+    hashListeners,
+  };
 }
 
+// A terminal-view element by data-role, inside the legacy single-section adapter's mount.
+const role = (doc: FakeDoc, r: string): FakeNode => doc.sections.find((s) => s.getAttribute("data-tab") === "terminal")!.querySelector(`[data-role="${r}"]`)!;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const shownTab = (doc: FakeDoc) => doc.sections.filter((s) => !s.hidden).map((s) => s.getAttribute("data-tab"));
 
@@ -537,13 +645,13 @@ test("terminal: connects to the per-agent websocket, resets, sends the fitted si
   const ws = sockets[0]!;
   assert.equal(ws.url, "ws://ui.test/v1/agents/a1/terminal");
   assert.equal(ws.binaryType, "arraybuffer");
-  assert.equal(doc.getElementById("term-conn")!.textContent, "connecting");
-  assert.equal(doc.getElementById("term-title")!.textContent, "a1");
+  assert.equal(role(doc, "conn")!.textContent, "connecting");
+  assert.equal(role(doc, "title")!.textContent, "a1");
   ws.open();
   const t = terms[0]!;
   assert.equal(t.resets, 1);
   assert.ok(t.focused >= 1);
-  assert.equal(doc.getElementById("term-conn")!.textContent, "connected");
+  assert.equal(role(doc, "conn")!.textContent, "connected");
   assert.deepEqual(ws.sent.map(String), ['{"type":"resize","cols":100,"rows":30}']); // fit on open -> one control frame
   ws.onmessage!({ data: new Uint8Array([104, 105]).buffer });
   assert.equal(text(t.writes[0]), "hi");
@@ -578,10 +686,10 @@ test("terminal: a server 'closed' frame then a socket drop reconnects with backo
   sockets[0]!.open();
   sockets[0]!.onmessage!({ data: '{"type":"closed","reason":"remote"}' });
   sockets[0]!.drop();
-  assert.equal(doc.getElementById("term-conn")!.textContent, "disconnected");
-  assert.equal(doc.getElementById("term-reconnect")!.hidden, false);
+  assert.equal(role(doc, "conn")!.textContent, "disconnected");
+  assert.equal(role(doc, "reconnect")!.hidden, false);
   await flush();
-  assert.match(doc.getElementById("term-note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\) in \d+s/);
+  assert.match(role(doc, "note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\) in \d+s/);
   const retry = timeouts.filter((x) => !x.cleared && x.ms !== 120).pop()!;
   assert.ok(retry.ms >= 375 && retry.ms <= 625, String(retry.ms));
   assert.ok(intervals.some((i) => !i.cleared)); // countdown ticker
@@ -589,9 +697,9 @@ test("terminal: a server 'closed' frame then a socket drop reconnects with backo
   assert.equal(sockets.length, 2);
   sockets[1]!.open();
   assert.equal(terms[0]!.resets, 2); // the daemon replays on connect, so the screen restarts clean
-  assert.equal(doc.getElementById("term-conn")!.textContent, "connected");
-  assert.equal(doc.getElementById("term-note")!.textContent, "");
-  assert.equal(doc.getElementById("term-reconnect")!.hidden, true);
+  assert.equal(role(doc, "conn")!.textContent, "connected");
+  assert.equal(role(doc, "note")!.textContent, "");
+  assert.equal(role(doc, "reconnect")!.hidden, true);
 });
 
 test("terminal: a finished agent shows 'No live terminal: agent <state>' and does not loop; Reconnect retries by hand", async () => {
@@ -600,13 +708,13 @@ test("terminal: a finished agent shows 'No live terminal: agent <state>' and doe
   sockets[0]!.open();
   sockets[0]!.drop();
   await flush();
-  assert.match(doc.getElementById("term-note")!.textContent, /^No live terminal: agent exited \(the screen above is its last output\)$/);
-  assert.equal(doc.getElementById("term-conn")!.textContent, "frozen");
-  assert.equal(doc.getElementById("term-state")!.textContent, "exited");
+  assert.match(role(doc, "note")!.textContent, /^No live terminal: agent exited \(the screen above is its last output\)$/);
+  assert.equal(role(doc, "conn")!.textContent, "frozen");
+  assert.equal(role(doc, "state")!.textContent, "exited");
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
   assert.equal(sockets.length, 1);
-  assert.equal(doc.getElementById("term-reconnect")!.hidden, false);
-  clickEl(doc.getElementById("term-reconnect")!);
+  assert.equal(role(doc, "reconnect")!.hidden, false);
+  clickEl(role(doc, "reconnect")!);
   assert.equal(sockets.length, 2);
 });
 
@@ -615,13 +723,13 @@ test("terminal: a yielded agent that was never connected (409) is labelled Yield
   await flush();
   sockets[0]!.drop(); // the handshake was refused with 409: no open
   await flush();
-  assert.equal(doc.getElementById("term-note")!.textContent, "Yielded: this agent is waiting and has no live terminal; it resumes on its wait condition");
-  assert.equal(doc.getElementById("term-conn")!.textContent, "yielded");
-  assert.equal(doc.getElementById("term-state")!.textContent, "yielded");
+  assert.equal(role(doc, "note")!.textContent, "Yielded: this agent is waiting and has no live terminal; it resumes on its wait condition");
+  assert.equal(role(doc, "conn")!.textContent, "yielded");
+  assert.equal(role(doc, "state")!.textContent, "yielded");
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
   assert.ok(intervals.every((i) => i.cleared || i.ms !== 1000)); // no countdown ticker (the 5s state poll stays)
   assert.equal(sockets.length, 1);
-  assert.equal(doc.getElementById("term-reconnect")!.hidden, false); // manual retry stays available
+  assert.equal(role(doc, "reconnect")!.hidden, false); // manual retry stays available
 });
 
 test("terminal: a screen left by a connection that then yielded is kept and labelled frozen, never live", async () => {
@@ -630,8 +738,8 @@ test("terminal: a screen left by a connection that then yielded is kept and labe
   sockets[0]!.open();
   sockets[0]!.drop();
   await flush();
-  assert.match(doc.getElementById("term-note")!.textContent, /^frozen: agent yielded/);
-  assert.equal(doc.getElementById("term-conn")!.textContent, "frozen");
+  assert.match(role(doc, "note")!.textContent, /^frozen: agent yielded/);
+  assert.equal(role(doc, "conn")!.textContent, "frozen");
   assert.equal(terms[0]!.disposed, false);
   assert.equal(terms[0]!.resets, 1); // not cleared
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
@@ -642,12 +750,12 @@ test("terminal: a reaped agent says no live terminal; an unknown state still ret
   await flush();
   reaped.sockets[0]!.drop();
   await flush();
-  assert.equal(reaped.doc.getElementById("term-note")!.textContent, "No live terminal: agent reaped");
+  assert.equal(role(reaped.doc, "note")!.textContent, "No live terminal: agent reaped");
   const odd = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "mystery" } } });
   await flush();
   odd.sockets[0]!.drop();
   await flush();
-  assert.match(odd.doc.getElementById("term-note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\)/);
+  assert.match(role(odd.doc, "note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\)/);
 });
 
 test("terminal: an unknown agent (404) stops with 'agent not found'", async () => {
@@ -655,18 +763,19 @@ test("terminal: an unknown agent (404) stops with 'agent not found'", async () =
   await flush();
   sockets[0]!.drop();
   await flush();
-  assert.match(doc.getElementById("term-note")!.textContent, /agent not found/);
+  assert.match(role(doc, "note")!.textContent, /agent not found/);
 });
 
 test("terminal: no agent selected, and leaving the tab closes the socket and disposes the terminal", async () => {
   const none = runShell("#/terminal/");
   await flush();
-  assert.match(none.doc.getElementById("term-note")!.textContent, /no agent selected/);
+  assert.match(role(none.doc, "note")!.textContent, /no agent selected/);
   assert.equal(none.sockets.length, 0);
 
   const { sockets, terms, navigate, intervals, doc } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
+  const reconnect = role(doc, "reconnect"); // the elements leave the page on unmount, so hold the node
   navigate("#/audit");
   assert.equal(sockets[0]!.closed, true);
   assert.equal(terms[0]!.disposed, true);
@@ -674,7 +783,7 @@ test("terminal: no agent selected, and leaving the tab closes the socket and dis
   sockets[0]!.drop(); // a late close from the old socket must not schedule a reconnect
   await flush();
   assert.equal(sockets.length, 1);
-  assert.equal(doc.getElementById("term-reconnect")!.hidden, true);
+  assert.equal(reconnect.hidden, true);
 });
 
 test("terminal: switching agents by hash reconnects to the new id", async () => {
@@ -685,7 +794,7 @@ test("terminal: switching agents by hash reconnects to the new id", async () => 
   await flush();
   assert.equal(sockets[0]!.closed, true);
   assert.equal(sockets[1]!.url, "ws://ui.test/v1/agents/b2/terminal");
-  assert.equal(doc.getElementById("term-title")!.textContent, "b2");
+  assert.equal(role(doc, "title")!.textContent, "b2");
 });
 
 test("terminal: copy chord copies a selection instead of sending ^C; key bar sends escape sequences with one-shot Ctrl", async () => {
@@ -697,7 +806,7 @@ test("terminal: copy chord copies a selection instead of sending ^C; key bar sen
   assert.equal(t.keyHandler!({ type: "keydown", key: "c", ctrlKey: true }), true); // no selection: reaches the program
   t.selection = "picked";
   assert.equal(t.keyHandler!({ type: "keydown", key: "c", ctrlKey: true }), false);
-  const keys = doc.getElementById("term-keys")!;
+  const keys = role(doc, "keys")!;
   const before = ws.sent.length;
   clickEl(keys, keyBtn("Esc"));
   clickEl(keys, keyBtn("ArrowUp"));
@@ -706,10 +815,10 @@ test("terminal: copy chord copies a selection instead of sending ^C; key bar sen
     ["\u001b", "\u001b[A"],
   );
   clickEl(keys, keyBtn("Ctrl"));
-  assert.equal(doc.getElementById("term-ctrl")!.getAttribute("aria-pressed"), "true");
+  assert.equal(role(doc, "ctrl")!.getAttribute("aria-pressed"), "true");
   t.handlers.data!("c");
   assert.equal(text(ws.sent[ws.sent.length - 1]), "\u0003");
-  assert.equal(doc.getElementById("term-ctrl")!.getAttribute("aria-pressed"), "false");
+  assert.equal(role(doc, "ctrl")!.getAttribute("aria-pressed"), "false");
   t.handlers.data!("c"); // Ctrl was one-shot
   assert.equal(text(ws.sent[ws.sent.length - 1]), "c");
 });
@@ -755,8 +864,8 @@ test("terminal: Shift+Enter/Ctrl+Enter/Ctrl+Shift+letter reach the socket as byt
 test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): cancel and Escape keep it off, confirm turns it on", async () => {
   const { doc } = runShell("#/terminal/a1", running);
   await flush();
-  const raw = doc.getElementById("term-trace-raw")!;
-  const prompt = doc.getElementById("term-trace-confirm")!;
+  const raw = role(doc, "trace-raw")!;
+  const prompt = role(doc, "trace-confirm")!;
   const fire = (n: FakeNode, type: string, ev: unknown = {}) => {
     for (const fn of n.listeners.get(type) ?? []) fn(ev);
   };
@@ -767,8 +876,8 @@ test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): can
   check();
   assert.equal(raw.checked, false); // off until confirmed
   assert.equal(prompt.hidden, false);
-  assert.equal(doc.getElementById("term-trace-confirm-ok")!.focused, 1);
-  clickEl(doc.getElementById("term-trace-confirm-cancel")!);
+  assert.equal(role(doc, "trace-confirm-ok")!.focused, 1);
+  clickEl(role(doc, "trace-confirm-cancel")!);
   assert.equal(prompt.hidden, true);
   assert.equal(raw.checked, false);
   assert.equal(raw.focused, 1);
@@ -780,7 +889,7 @@ test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): can
   assert.equal(raw.checked, false);
   assert.equal(raw.focused, 2);
   check();
-  clickEl(doc.getElementById("term-trace-confirm-ok")!);
+  clickEl(role(doc, "trace-confirm-ok")!);
   assert.equal(prompt.hidden, true);
   assert.equal(raw.checked, true);
   assert.equal(raw.focused, 3);
@@ -792,8 +901,8 @@ test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): can
 test("terminal: View trace opens an in-app viewer with the checked options, closes on Escape and returns focus; no agent means no fetch", async () => {
   const { doc, pageBody, docKeys, fetches } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "# Trace text" } });
   await flush();
-  const btn = doc.getElementById("term-trace-view")!;
-  doc.getElementById("term-trace-children")!.checked = true;
+  const btn = role(doc, "trace-view")!;
+  role(doc, "trace-children")!.checked = true;
   const before = fetches.length;
   clickEl(btn);
   await flush();
@@ -811,14 +920,14 @@ test("terminal: View trace opens an in-app viewer with the checked options, clos
   // negative control: without an open agent the button does nothing
   const none = runShell("#/terminal");
   await flush();
-  clickEl(none.doc.getElementById("term-trace-view")!);
+  clickEl(role(none.doc, "trace-view")!);
   assert.equal(none.pageBody.children.length, 0);
 });
 
 test("terminal: View trace twice keeps one viewer; navigating to another agent dismisses it", async () => {
   const r = runShell("#/terminal/a1", { ...running, "/v1/agents/a2": { body: { state: "running" } } });
   await flush();
-  const btn = r.doc.getElementById("term-trace-view")!;
+  const btn = role(r.doc, "trace-view")!;
   clickEl(btn);
   clickEl(btn);
   await flush();
@@ -832,13 +941,13 @@ test("terminal: View trace twice keeps one viewer; navigating to another agent d
 test("terminal: View trace never fetches raw unless the raw opt-in was confirmed", async () => {
   const r = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "t" } });
   await flush();
-  const raw = r.doc.getElementById("term-trace-raw")!;
+  const raw = role(r.doc, "trace-raw")!;
   const fire = (n: FakeNode, type: string) => {
-    for (const fn of r.doc.getElementById(n.id)!.listeners.get(type) ?? []) fn({});
+    for (const fn of n.listeners.get(type) ?? []) fn({});
   };
   const view = async () => {
     const n = r.fetches.length;
-    clickEl(r.doc.getElementById("term-trace-view")!);
+    clickEl(role(r.doc, "trace-view")!);
     await flush();
     const url = r.fetches[n]!.url;
     for (const fn of [...r.docKeys]) fn({ key: "Escape" });
@@ -847,11 +956,11 @@ test("terminal: View trace never fetches raw unless the raw opt-in was confirmed
   raw.checked = true; // checking opens the in-page prompt and keeps raw off
   fire(raw, "change");
   assert.doesNotMatch(await view(), /raw=1/, "prompt open, unconfirmed");
-  clickEl(r.doc.getElementById("term-trace-confirm-cancel")!);
+  clickEl(role(r.doc, "trace-confirm-cancel")!);
   assert.doesNotMatch(await view(), /raw=1/, "cancelled");
   raw.checked = true;
   fire(raw, "change");
-  clickEl(r.doc.getElementById("term-trace-confirm-ok")!);
+  clickEl(role(r.doc, "trace-confirm-ok")!);
   assert.match(await view(), /raw=1/, "confirmed");
 });
 
@@ -859,14 +968,14 @@ test("terminal: key bar toggle, Alt one-shot, named keys, Send key menu, and off
   const store: Record<string, string> = {};
   const { doc, sockets, terms } = runShell("#/terminal/a1", running, undefined, store);
   await flush();
-  const keys = doc.getElementById("term-keys")!;
-  const menu = doc.getElementById("term-keymenu")!;
+  const keys = role(doc, "keys")!;
+  const menu = role(doc, "keymenu")!;
   const ws = sockets[0]!;
   clickEl(keys, keyBtn("Esc")); // connecting: no-op, no throw
   assert.equal(ws.sent.length, 0);
   assert.match(keys.className, /\boff\b/);
   assert.doesNotMatch(keys.className, /\bopen\b/); // desktop default: collapsed
-  clickEl(doc.getElementById("term-keys-toggle")!);
+  clickEl(role(doc, "keys-toggle")!);
   assert.match(keys.className, /\bopen\b/);
   assert.equal(store["pomtree.termKeysOpen"], "1");
   ws.open();
@@ -876,13 +985,13 @@ test("terminal: key bar toggle, Alt one-shot, named keys, Send key menu, and off
   for (const k of ["Tab", "Shift+Tab", "Enter", "Shift+Enter"]) clickEl(keys, keyBtn(k));
   assert.deepEqual(ws.sent.slice(before).map(text), ["\t", "\u001b[Z", "\r", "\n"]);
   clickEl(keys, keyBtn("Alt"));
-  assert.equal(doc.getElementById("term-alt")!.getAttribute("aria-pressed"), "true");
+  assert.equal(role(doc, "alt")!.getAttribute("aria-pressed"), "true");
   t.handlers.data!("b");
   assert.equal(text(ws.sent[ws.sent.length - 1]), "\u001bb");
-  assert.equal(doc.getElementById("term-alt")!.getAttribute("aria-pressed"), "false");
+  assert.equal(role(doc, "alt")!.getAttribute("aria-pressed"), "false");
   clickEl(keys, keyBtn("Alt"));
-  doc.getElementById("term-host")!.listeners.get("focusout")![0]!({}); // blur clears armed modifiers
-  assert.equal(doc.getElementById("term-alt")!.getAttribute("aria-pressed"), "false");
+  role(doc, "host")!.listeners.get("focusout")![0]!({}); // blur clears armed modifiers
+  assert.equal(role(doc, "alt")!.getAttribute("aria-pressed"), "false");
   clickEl(keys, keyBtn("SendKey"));
   assert.equal(menu.hidden, false);
   const item = fakeNode();
@@ -902,10 +1011,10 @@ test("terminal: font size buttons clamp, persist as a benign pref, and apply to 
   await flush();
   sockets[0]!.open();
   assert.equal(terms[0]!.options.fontSize, 20);
-  clickEl(doc.getElementById("term-font-inc")!);
+  clickEl(role(doc, "font-inc")!);
   assert.equal(terms[0]!.options.fontSize, 21);
   assert.equal(store["pomtree.termFontSize"], "21");
-  for (let i = 0; i < 40; i++) clickEl(doc.getElementById("term-font-dec")!);
+  for (let i = 0; i < 40; i++) clickEl(role(doc, "font-dec")!);
   assert.equal(terms[0]!.options.fontSize, 8);
 });
 
@@ -1523,4 +1632,204 @@ test("report viewer: images use <img> via /render; unknown types are download-on
     .filter((n) => n.tagName === "a")
     .map((n) => n.href);
   assert.deepEqual(links, ["#/reports/a/r1", "/v1/agents/a/reports/r1?raw=1"]);
+});
+
+// --- multi-instance terminal views ----------------------------------------------------------------
+
+interface ViewHost {
+  setTitle(text: string): void;
+  navigate(hash: string): void;
+}
+interface ViewDef {
+  id: string;
+  title: string;
+  multi: boolean;
+  mount(root: FakeNode, params: { agent?: string }, host: ViewHost): { unmount(): void; fit?(): void };
+}
+const twoAgents = {
+  "/v1/agents/a1": { body: { state: "running" } },
+  "/v1/agents/b2": { body: { state: "running" } },
+};
+// A page whose terminal tab is not active (so the legacy adapter mounts nothing), with the registered view mounted twice.
+function mountTwo() {
+  const r = runShell("#/tree", twoAgents);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  const titles: string[] = [];
+  const navs: string[] = [];
+  const hostFor = (tag: string): ViewHost => ({ setTitle: (t) => titles.push(`${tag}:${t}`), navigate: (h) => navs.push(h) });
+  const rootA = fakeNode();
+  const rootB = fakeNode();
+  const a = def.mount(rootA, { agent: "a1" }, hostFor("A"));
+  const b = def.mount(rootB, { agent: "b2" }, hostFor("B"));
+  const inRoot = (root: FakeNode, name: string) => root.querySelector(`[data-role="${name}"]`)!;
+  return { ...r, def, titles, navs, rootA, rootB, a, b, inRoot };
+}
+
+test("view registry: registers one view per id, lists them, and rejects duplicate or malformed ids by naming the id", () => {
+  const kit = runInContext(`(() => { ${PANE_KIT_JS}; return K; })()`, createContext({ globalThis: {}, JSON, Date, Math, Object, fetch: () => {} })) as {
+    registerView(d: unknown): void;
+    view(id: string): ViewDef | undefined;
+    views(): ViewDef[];
+  };
+  const mount = () => ({ unmount() {} });
+  const def = { id: "notes", title: "Notes", multi: false, mount };
+  assert.equal(kit.view("notes"), undefined);
+  kit.registerView(def);
+  assert.equal(kit.view("notes")!.title, "Notes");
+  assert.deepEqual(
+    Array.from(kit.views(), (v) => v.id),
+    ["notes"],
+  );
+  assert.throws(() => kit.registerView({ ...def, title: "Other" }), /view notes is already registered/);
+  assert.equal(kit.view("notes")!.title, "Notes", "a rejected duplicate leaves the first registration");
+  for (const bad of ["", "Has Space", "UP", 7, undefined]) {
+    assert.throws(
+      () => kit.registerView({ ...def, id: bad }),
+      (e: Error) => /invalid view id/.test(e.message) && e.message.includes(JSON.stringify(bad) ?? "undefined"),
+      `id ${String(bad)}`,
+    );
+  }
+  assert.throws(() => kit.registerView({ id: "half", title: "Half" }), /view half needs a string title, a boolean multi and a mount function/);
+  assert.equal(kit.view("half"), undefined);
+});
+
+test("view registry: the shell page registers the multi-instance terminal view once and refuses a second one", () => {
+  const { context } = runShell("#/tree");
+  const ids = runInContext("PaneKit.views().map((v) => v.id + ':' + v.multi)", context) as string[];
+  assert.deepEqual([...ids], ["terminal:true"]);
+  assert.throws(
+    () => runInContext('PaneKit.registerView({ id: "terminal", title: "T", multi: true, mount() {} })', context),
+    /view terminal is already registered/,
+  );
+});
+
+test("terminal views: two instances for different agents mount into two roots without colliding", async () => {
+  const { sockets, terms, observers, doc, rootA, rootB, inRoot, titles } = mountTwo();
+  await flush();
+  assert.deepEqual(
+    sockets.map((s) => s.url),
+    ["ws://ui.test/v1/agents/a1/terminal", "ws://ui.test/v1/agents/b2/terminal"],
+  );
+  assert.equal(terms.length, 2);
+  // Identity checks via ok(): a failing equal() would try to diff two cyclic fake DOM trees.
+  assert.ok(terms[0]!.host === inRoot(rootA, "host"), "A's xterm opens in A's root");
+  assert.ok(terms[1]!.host === inRoot(rootB, "host"), "B's xterm opens in B's root");
+  assert.ok(inRoot(rootA, "host") !== inRoot(rootB, "host"));
+  assert.ok(observers[0]!.observed.length === 1 && observers[0]!.observed[0] === inRoot(rootA, "host"), "A's observer watches A's host");
+  assert.ok(observers[1]!.observed.length === 1 && observers[1]!.observed[0] === inRoot(rootB, "host"), "B's observer watches B's host");
+  assert.equal(inRoot(rootA, "title").textContent, "a1");
+  assert.equal(inRoot(rootB, "title").textContent, "b2");
+  assert.deepEqual(titles, ["A:Terminal \u00b7 a1", "B:Terminal \u00b7 b2"]);
+  sockets[0]!.open();
+  assert.equal(inRoot(rootA, "conn").textContent, "connected");
+  assert.equal(inRoot(rootB, "conn").textContent, "connecting", "B is not touched by A's socket");
+  const sentA = sockets[0]!.sent.length;
+  terms[1]!.handlers.data!("x");
+  assert.equal(sockets[0]!.sent.length, sentA, "input typed in B never reaches A's socket");
+  assert.deepEqual(
+    [...doc.byId.keys()].filter((k) => k.startsWith("term-")),
+    [],
+    "no document-level term-* id lookups",
+  );
+  assert.equal(inRoot(rootA, "keys").id !== inRoot(rootB, "keys").id, true, "generated ids differ between instances");
+});
+
+test("terminal views: unmounting one instance releases its resources and leaves the other running", async () => {
+  const { sockets, terms, observers, intervals, timeouts, resize, resizeListeners, rootA, rootB, a, inRoot } = mountTwo();
+  await flush();
+  sockets[0]!.open();
+  sockets[1]!.open();
+  assert.equal(resizeListeners.length, 2);
+  const before = timeouts.length;
+  resize();
+  const [fitA, fitB] = timeouts.slice(before) as [(typeof timeouts)[number], (typeof timeouts)[number]];
+  const pollers = intervals.filter((i) => i.ms === 5000);
+  assert.equal(pollers.length, 2);
+  a.unmount();
+  assert.equal(sockets[0]!.closed, true);
+  assert.equal(terms[0]!.disposed, true);
+  assert.equal(observers[0]!.disconnected, true);
+  assert.equal(resizeListeners.length, 1, "only B's window resize listener remains");
+  assert.equal(fitA.cleared, true);
+  assert.equal(pollers[0]!.cleared, true);
+  assert.equal(rootA.children.length, 0);
+  assert.equal(sockets[1]!.closed, false);
+  assert.equal(terms[1]!.disposed, false);
+  assert.equal(observers[1]!.disconnected, false);
+  assert.equal(fitB.cleared, false);
+  assert.equal(pollers[1]!.cleared, false);
+  assert.ok(rootB.children.length > 0);
+  sockets[0]!.drop(); // a late close from the unmounted instance must not schedule a reconnect
+  await flush();
+  assert.equal(sockets.length, 2);
+  terms[1]!.handlers.data!("y");
+  assert.equal(text(sockets[1]!.sent.at(-1)), "y", "B still relays input");
+  assert.equal(inRoot(rootB, "conn").textContent, "connected");
+  a.unmount(); // idempotent
+});
+
+test("terminal views: unmounting one instance leaves another instance's trace viewer open", async () => {
+  const r = mountTwo();
+  await flush();
+  clickEl(r.inRoot(r.rootB, "trace-view"));
+  await flush();
+  assert.equal(r.pageBody.children.length, 1);
+  r.a.unmount();
+  assert.equal(r.pageBody.children.length, 1, "A did not open the viewer, so unmounting A keeps it");
+  r.b.unmount();
+  assert.equal(r.pageBody.children.length, 0, "the owner's unmount dismisses it");
+});
+
+test("terminal views: the view never writes location.hash; navigation is the host's job", async () => {
+  const r = mountTwo();
+  await flush();
+  r.sockets[0]!.open();
+  clickEl(r.inRoot(r.rootA, "reconnect"));
+  r.a.unmount();
+  r.b.unmount();
+  assert.equal(r.location.hash, "#/tree");
+  assert.deepEqual(r.navs, []);
+  const viewBody = renderTerminalPane().split("const mountTerminal")[1]!.split("K.registerView")[0]!;
+  assert.ok(viewBody.length > 1000, "extracted the view body");
+  assert.ok(!/location\.hash\s*=[^=]/.test(viewBody), "no location.hash assignment in the view");
+  assert.ok(!viewBody.includes("hashchange"), "no hashchange listener in the view");
+});
+
+test("terminal views: the legacy single-section adapter mounts into the section, remounts on agent change and cleans up", async () => {
+  const { doc, sockets, navigate, observers } = runShell("#/terminal/a1", running);
+  await flush();
+  const section = doc.sections.find((s) => s.getAttribute("data-tab") === "terminal")!;
+  assert.equal(section.children.length, 1, "one mount root in the section");
+  navigate("#/terminal/b2");
+  await flush();
+  assert.equal(section.children.length, 1, "the old root is removed on remount");
+  assert.equal(sockets[0]!.closed, true);
+  assert.equal(observers[0]!.disconnected, true);
+  navigate("#/audit");
+  assert.equal(section.children.length, 0);
+  assert.equal(observers[1]!.disconnected, true);
+});
+
+test("terminal views: the vendored xterm libraries load once per page across instances", async () => {
+  const r = runShell("#/tree", twoAgents);
+  const { Terminal, FitAddon } = r.context as { Terminal: unknown; FitAddon: unknown };
+  runInContext("delete globalThis.Terminal; delete globalThis.FitAddon;", r.context);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  const host: ViewHost = { setTitle() {}, navigate() {} };
+  def.mount(fakeNode(), { agent: "a1" }, host);
+  def.mount(fakeNode(), { agent: "b2" }, host);
+  const loaded = () => r.headNodes.filter((n) => n.tagName === "script").map((n) => (n as unknown as { src: string }).src);
+  assert.deepEqual(loaded(), ["/ui/vendor/xterm.js"]);
+  assert.equal(r.headNodes.filter((n) => n.tagName === "link").length, 1, "one stylesheet");
+  for (const name of ["xterm.js", "addon-fit.js", "addon-webgl.js"]) {
+    await flush();
+    const el = r.headNodes.filter((n) => n.tagName === "script").at(-1) as unknown as { src: string; onload(): void };
+    assert.equal(el.src, "/ui/vendor/" + name);
+    if (name === "xterm.js") Object.assign(r.context, { Terminal });
+    if (name === "addon-fit.js") Object.assign(r.context, { FitAddon });
+    el.onload();
+  }
+  await flush();
+  assert.equal(r.terms.length, 2, "both instances mounted xterm once the shared load finished");
+  assert.equal(loaded().length, 3);
 });

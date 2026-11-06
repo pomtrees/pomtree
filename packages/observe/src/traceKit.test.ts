@@ -207,8 +207,8 @@ test("download builds a markdown blob link and revokes the URL", () => {
 test("terminal pane exposes Copy trace, short copy, options (children/raw warning/download)", async () => {
   const { renderTerminalPane } = await import("./tabs.ts");
   const html = renderTerminalPane();
-  for (const id of ["term-trace", "term-trace-short", "term-trace-opt", "term-trace-children", "term-trace-raw", "term-trace-dl", "term-trace-chip"])
-    assert.ok(html.includes(`id="${id}"`), id);
+  for (const role of ["trace", "trace-short", "trace-opt", "trace-children", "trace-raw", "trace-dl", "trace-chip"])
+    assert.ok(html.includes(`data-role="${role}"`), role);
   assert.match(html, /Copy trace/);
   assert.match(html, /no redaction/);
   assert.match(html, /const T = /);
@@ -378,9 +378,9 @@ test("in-viewer Copy writes the shown text through the clipboard helper and repo
 test("terminal pane has a View trace button next to Copy trace and the viewer logic is inlined", async () => {
   const { renderTerminalPane } = await import("./tabs.ts");
   const html = renderTerminalPane();
-  assert.match(html, /id="term-trace-view"[^>]*>View trace</);
-  assert.ok(html.indexOf('id="term-trace"') < html.indexOf('id="term-trace-view"'));
-  assert.ok(html.indexOf('id="term-trace-view"') < html.indexOf('id="term-trace-short"'));
+  assert.match(html, /data-role="trace-view"[^>]*>View trace</);
+  assert.ok(html.indexOf('data-role="trace"') < html.indexOf('data-role="trace-view"'));
+  assert.ok(html.indexOf('data-role="trace-view"') < html.indexOf('data-role="trace-short"'));
   assert.match(html, /TODO\(trace-view-autorefresh\)/);
 });
 
