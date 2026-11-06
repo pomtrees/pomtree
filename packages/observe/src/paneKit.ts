@@ -66,6 +66,7 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
   };
   // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi,
   // mount(root, { agent? }, host) -> { unmount(), fit?() } }, host = { setTitle(text), navigate(hash) }.
+  // TODO(ui-extension-view-types): the registry is internal; extensions cannot declare view types. Trigger: the first public view-type API (docs/ui-vision.md, Open questions).
   const viewTypes = new Map();
   const registerView = (def) => {
     const id = def && def.id;

@@ -119,6 +119,7 @@ const theme = () => TermKit.themeFor(isDark(), cssVar);
 
 // The vendored libraries load once per page and are shared by every terminal instance.
 let loading = null;
+let cssLink = null; // created once: a retry after a failed load must not append another stylesheet
 const loadScript = (src) => new Promise((resolve, reject) => {
   const s = document.createElement("script");
   s.src = src;
@@ -129,10 +130,12 @@ const loadScript = (src) => new Promise((resolve, reject) => {
 const libs = () => {
   if (globalThis.Terminal && globalThis.FitAddon) return Promise.resolve();
   if (!loading) {
-    const css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = vendor + "/xterm.css";
-    document.head.appendChild(css);
+    if (!cssLink) {
+      cssLink = document.createElement("link");
+      cssLink.rel = "stylesheet";
+      cssLink.href = vendor + "/xterm.css";
+      document.head.appendChild(cssLink);
+    }
     loading = loadScript(vendor + "/xterm.js").then(() => loadScript(vendor + "/addon-fit.js"))
       .then(() => loadScript(vendor + "/addon-webgl.js").catch(() => {}))
       .catch((e) => { loading = null; throw e; });
@@ -143,13 +146,16 @@ const libs = () => {
 // The trace helper T keeps one viewer at a time page-wide; viewerOwner records which instance opened it, so one
 // terminal unmounting never dismisses another's viewer.
 let viewerOwner = null;
+let viewerObj = null;
 let instances = 0;
 
 // One terminal instance: clones the template into root and owns all of its state. Every element lookup is scoped to
 // root by data-role, and unmount() releases the socket, observer, listeners, timers and xterm.
-const mountTerminal = (root, params, hostApi) => {
+const mountTerminalInstance = (root, params, hostApi) => {
   const self = {};
-  root.appendChild(document.querySelector('template[data-view-template="terminal"]').content.cloneNode(true));
+  const tpl = document.querySelector('template[data-view-template="terminal"]');
+  if (!tpl) throw new Error("terminal view: its template is missing from the page, so the terminal cannot open; reload the page and report this if it persists");
+  root.appendChild(tpl.content.cloneNode(true));
   const $ = (role) => root.querySelector('[data-role="' + role + '"]');
   const host = $("host");
   const titleEl = $("title");
@@ -330,7 +336,7 @@ const mountTerminal = (root, params, hostApi) => {
   const unmount = () => {
     if (!active) return;
     active = false;
-    if (viewerOwner === self) { T.dismissLive(); viewerOwner = null; }
+    if (viewerOwner === self) { T.dismissLive(); viewerOwner = null; viewerObj = null; }
     gen++;
     clearRetry();
     if (fitTimer !== null) { clearTimeout(fitTimer); fitTimer = null; }
@@ -413,6 +419,7 @@ const mountTerminal = (root, params, hostApi) => {
     if (!agentId) return;
     traceSay("Collecting trace…", false);
     T.copyTrace(traceDeps(), base, agentId, traceOpts(short)).then((r) => {
+      if (!active) return; // unmounted while the copy was in flight: do not open a modal on a gone view
       if (r.ok) { traceSay(r.chip, false); return; }
       traceSay(r.error, true);
       if (typeof r.text === "string") T.modal(document, r.text, r.error);
@@ -420,7 +427,12 @@ const mountTerminal = (root, params, hostApi) => {
   };
   $("trace").addEventListener("click", () => runTrace(false));
   $("trace-short").addEventListener("click", () => runTrace(true));
-  traceView.addEventListener("click", () => { if (agentId) { viewerOwner = self; T.viewer(traceDeps(), base, agentId, traceOpts(false), traceView); } });
+  traceView.addEventListener("click", () => {
+    if (!agentId) return;
+    // T.viewer reuses a live viewer: only the instance that created it owns it (and dismisses it on unmount).
+    const v = T.viewer(traceDeps(), base, agentId, traceOpts(false), traceView);
+    if (v !== viewerObj) { viewerObj = v; viewerOwner = self; }
+  });
   traceOpt.addEventListener("click", () => { traceMenu.hidden = !traceMenu.hidden; traceOpt.setAttribute("aria-expanded", traceMenu.hidden ? "false" : "true"); });
   const rawConfirm = $("trace-confirm");
   const rawOk = $("trace-confirm-ok");
@@ -462,31 +474,14 @@ const mountTerminal = (root, params, hostApi) => {
   }
   return { unmount, fit: scheduleFit };
 };
+// A mount that throws after cloning the template would leave its half-built markup in root (the host drops the tile
+// but not what the view put there), so setup failures clear root and rethrow for the host's failed-view placeholder.
+const mountTerminal = (root, params, hostApi) => {
+  try { return mountTerminalInstance(root, params, hostApi); }
+  catch (e) { root.replaceChildren(); throw e; }
+};
 
 K.registerView({ id: "terminal", title: "Terminal", multi: true, mount: mountTerminal });
-
-// TODO(ui-wm-shell): the tiling shell replaces this single-section adapter. Current behavior: the one
-// <section data-tab="terminal"> mounts a single terminal view for the agent in the hash (#/terminal/<id>) when the
-// tab activates, unmounts it on deactivation, and re-mounts it when the hash names a different agent.
-{
-  const view = K.view("terminal");
-  const section = document.querySelector('section[data-tab="terminal"]') || document.body;
-  const hostApi = { setTitle() {}, navigate: (hash) => { location.hash = hash; } };
-  let tabActive = false, inst = null, instRoot = null, instAgent = "";
-  const close = () => {
-    if (inst) { inst.unmount(); inst = null; }
-    if (instRoot) { instRoot.remove(); instRoot = null; }
-  };
-  const open = () => {
-    close();
-    instAgent = TermKit.routeId(location.hash);
-    instRoot = document.createElement("div");
-    section.appendChild(instRoot);
-    inst = view.mount(instRoot, { agent: instAgent }, hostApi);
-  };
-  addEventListener("hashchange", () => { if (tabActive && location.hash.startsWith("#/terminal") && TermKit.routeId(location.hash) !== instAgent) open(); });
-  K.onActivate("terminal", () => { tabActive = true; open(); }, () => { tabActive = false; close(); });
-}
 })();
 </script>`;
 }

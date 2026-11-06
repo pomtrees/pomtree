@@ -6,6 +6,9 @@ import { MD_CSS } from "./mdKit.ts";
 import { TERM_CSS } from "./termKit.ts";
 import { TRACE_CSS } from "./traceKit.ts";
 import { PANE_CSS } from "./paneKit.ts";
+import { LAYOUT_LOGIC_JS } from "./layout.ts";
+import { LAYOUT_CSS } from "./layoutCss.ts";
+import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
 import { escapeHtml, scriptJson } from "./web.ts";
 
 export interface UiTabCtx {
@@ -108,7 +111,7 @@ main { box-sizing: border-box; width: min(100% - 2 * var(--pad), 80rem); margin:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
-${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}`;
+${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}`;
 
 export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; title?: string }): string {
   const title = escapeHtml(opts.title ?? "pomtree");
@@ -130,7 +133,7 @@ export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; tit
   const bottom = opts.tabs.map((t) => navLink(t, true)).join("");
   const sections = opts.tabs.map((t) => `<section data-tab="${escapeHtml(t.id)}" hidden>${t.render(ctx)}</section>`).join("");
 
-  const defaultId = scriptJson(opts.tabs[0]?.id ?? "");
+  const tabsMeta = scriptJson(opts.tabs.map((t) => ({ id: t.id, title: t.title })));
 
   return `<!doctype html>
 <html lang="en">
@@ -143,64 +146,42 @@ export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; tit
 <script>
 ${AUTH_GUARD_SCRIPT}
 installAuthGuard(globalThis, () => location.reload(), "/v1/placement");
+// Several views can be active at once: each tile hosting a singleton view activates it, and closing or changing
+// that tile deactivates it. A view registering after it was activated (a late script) is activated on registration.
 const UI = {
   fns: {},
-  deactivators: [],
-  active: null,
+  live: {},
   register(id, activate, deactivate) {
     this.fns[id] = { activate, deactivate };
+    if (this.live[id] && activate) activate();
   },
-  show(id, target) {
-    if (id === this.active) return;
-    while (this.deactivators.length) {
-      const deactivate = this.deactivators.pop();
-      if (deactivate) deactivate();
-    }
-    for (const s of document.querySelectorAll("section[data-tab]")) s.hidden = s !== target;
-    for (const a of document.querySelectorAll("nav a[data-nav]")) a.classList.toggle("active", a.getAttribute("data-nav") === id);
-    this.active = id;
-    const next = this.fns[id];
-    if (next) {
-      if (next.deactivate) this.deactivators.push(next.deactivate);
-      if (next.activate) next.activate();
-    }
+  activate(id) {
+    if (this.live[id]) return;
+    this.live[id] = true;
+    const f = this.fns[id];
+    if (f && f.activate) f.activate();
+  },
+  deactivate(id) {
+    if (!this.live[id]) return;
+    delete this.live[id];
+    const f = this.fns[id];
+    if (f && f.deactivate) f.deactivate();
   },
 };
 </script>
 </head>
-<body>
-<nav class="top">${top}<button id="signout" type="button">Sign out</button></nav>
-<main>${sections}</main>
+<body class="wm">
+<nav class="top">${top}<span class="wm-actions"><button id="wm-export" type="button">Export layout</button><button id="wm-import" type="button">Import layout</button><button id="wm-reset" type="button">Reset layout</button><input id="wm-file" type="file" accept="application/json,.json" hidden></span><button id="signout" type="button">Sign out</button></nav>
+<div id="wm-notices" class="wm-notices" aria-live="polite"></div>
+<main class="wm"><div id="wm-root" class="wm-root"></div><div id="wm-stash" hidden>${sections}</div></main>
 <nav class="bottom">${bottom}</nav>
 <script>
-const idFromHash = () => {
-  const h = location.hash;
-  if (!h.startsWith("#/")) return ${defaultId};
-  let id = h.slice(2);
-  for (const sep of ["/", "?", "#"]) {
-    const i = id.indexOf(sep);
-    if (i !== -1) id = id.slice(0, i);
-  }
-  return id || ${defaultId};
-};
-const showFromHash = () => {
-  let id = idFromHash();
-  let target = null;
-  for (const s of document.querySelectorAll("section[data-tab]")) {
-    if (s.getAttribute("data-tab") === id) { target = s; break; }
-  }
-  if (!target && id === "escalations") {
-    for (const s of document.querySelectorAll("section[data-tab]")) {
-      if (s.getAttribute("data-tab") === "inbox") { target = s; id = "inbox"; break; }
-    }
-  }
-  UI.show(id, target);
-};
+${LAYOUT_LOGIC_JS}
+${LAYOUT_SHELL_JS}
 document.getElementById("signout").addEventListener("click", () => {
   fetch("/ui/logout", { method: "POST" }).finally(() => location.reload());
 });
-addEventListener("hashchange", showFromHash);
-showFromHash();
+createWindowManager(${tabsMeta}, ${scriptJson(LAYOUT_STORAGE_KEY)});
 </script>
 </body>
 </html>

@@ -258,6 +258,7 @@ function fakeDocument(tabIds: readonly string[]): FakeDoc {
   const sections = tabIds.map((id) => {
     const s = fakeNode();
     s.tagName = "section";
+    s.hidden = true; // the markup ships every section hidden; the tiling shell un-hides the ones it hosts
     s.setAttribute("data-tab", id);
     return s;
   });
@@ -485,12 +486,20 @@ function runShell(
   const templateHtml = /<template data-view-template="terminal">([\s\S]*?)<\/template>/.exec(html)![1]!;
   const templateNode = Object.assign(fakeNode(), { tagName: "template", content: { cloneNode: () => parseHtml(templateHtml) } });
   templateNode.setAttribute("data-view-template", "terminal");
+  // matchMedia fake: change listeners per query, so tests can assert a view removed the ones it added.
+  const mqListeners = new Map<string, Set<Listener>>();
+  const matchMedia = (query: string) => {
+    const set = mqListeners.get(query) ?? new Set<Listener>();
+    mqListeners.set(query, set);
+    return { matches: false, addEventListener: (_t: string, fn: Listener) => set.add(fn), removeEventListener: (_t: string, fn: Listener) => set.delete(fn) };
+  };
   const sandbox: Context = {
+    matchMedia,
     document: {
       body: pageBody,
       head: { appendChild: (n: FakeNode) => headNodes.push(n) },
-      addEventListener: (type: string, fn: Listener) => {
-        if (type === "keydown") docKeys.push(fn);
+      addEventListener: (type: string, fn: Listener, capture?: boolean) => {
+        if (type === "keydown" && !capture) docKeys.push(fn); // docKeys tracks the views' listeners, not the shell's capture-phase focus chord
       },
       removeEventListener: (type: string, fn: Listener) => {
         const i = docKeys.indexOf(fn);
@@ -507,6 +516,11 @@ function runShell(
       querySelectorAll: doc.querySelectorAll,
     },
     location,
+    history: {
+      replaceState: (_s: unknown, _t: string, url: string) => {
+        location.hash = url;
+      },
+    },
     navigator: { clipboard: { writeText: async () => {} } },
     Blob,
     URL,
@@ -523,6 +537,7 @@ function runShell(
     FitAddon,
     TextEncoder,
     Uint8Array,
+    requestAnimationFrame: () => 1, // the shell's post-layout fit is covered in layoutShell.test.ts; here it must not add timers
     setTimeout: (fn: () => void, ms: number) => {
       timeouts.push({ fn, ms, cleared: false });
       return timeouts.length;
@@ -599,11 +614,13 @@ function runShell(
     context,
     resizeListeners,
     hashListeners,
+    mqListeners,
   };
 }
 
-// A terminal-view element by data-role, inside the legacy single-section adapter's mount.
-const role = (doc: FakeDoc, r: string): FakeNode => doc.sections.find((s) => s.getAttribute("data-tab") === "terminal")!.querySelector(`[data-role="${r}"]`)!;
+// A terminal-view element by data-role, inside the first terminal mounted in a tile of the tiling shell.
+const role = (doc: FakeDoc, r: string): FakeNode => doc.getElementById("wm-root")!.querySelector(`[data-role="${r}"]`)!;
+const countMounts = (n: FakeNode): number => (n.className === "wm-mount" ? 1 : 0) + n.children.reduce((a, c) => a + countMounts(c), 0);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const shownTab = (doc: FakeDoc) => doc.sections.filter((s) => !s.hidden).map((s) => s.getAttribute("data-tab"));
 
@@ -622,9 +639,14 @@ test("every pane's script executes together without a top-level const redeclarat
   assert.equal(doc.getElementById("tree-rows")!.children.length, 0);
 });
 
-test("the hash router shows the terminal section for #/terminal/<id> and does not blank the page", () => {
+// Changed: the terminal is a registry view mounted in a tile, so its section is no longer shown; the tile is the proof.
+test("the hash router mounts a terminal tile for #/terminal/<id> and does not blank the page", () => {
   const { doc } = runShell("#/terminal/agent-7");
-  assert.deepEqual(shownTab(doc), ["terminal"]);
+  assert.deepEqual(shownTab(doc), []);
+  assert.equal(countMounts(doc.getElementById("wm-root")!), 1);
+  assert.equal(role(doc, "title").textContent, "agent-7");
+  const tree = runShell("#/tree");
+  assert.deepEqual(shownTab(tree.doc), ["tree"]);
 });
 
 const running = { "/v1/agents/a1": { body: { state: "running" } } };
@@ -1650,7 +1672,7 @@ const twoAgents = {
   "/v1/agents/a1": { body: { state: "running" } },
   "/v1/agents/b2": { body: { state: "running" } },
 };
-// A page whose terminal tab is not active (so the legacy adapter mounts nothing), with the registered view mounted twice.
+// A page whose single tile shows the tree (so no terminal is mounted by the shell), with the registered view mounted twice by hand.
 function mountTwo() {
   const r = runShell("#/tree", twoAgents);
   const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
@@ -1795,18 +1817,31 @@ test("terminal views: the view never writes location.hash; navigation is the hos
   assert.ok(!viewBody.includes("hashchange"), "no hashchange listener in the view");
 });
 
-test("terminal views: the legacy single-section adapter mounts into the section, remounts on agent change and cleans up", async () => {
+test("terminal views: a mount that throws during setup clears what it put in the root and rethrows", () => {
+  const r = mountTwo();
+  const root = fakeNode();
+  // A host without setTitle makes the mount throw after the template was cloned into root.
+  assert.throws(() => r.def.mount(root, { agent: "a1" }, {} as ViewHost), /setTitle/);
+  assert.equal(root.children.length, 0, "the cloned template is removed again");
+  const normal = fakeNode();
+  r.def.mount(normal, { agent: "a1" }, { setTitle() {}, navigate() {} }).unmount();
+  assert.equal(normal.children.length, 0, "a normal unmount still clears the root");
+});
+
+// Changed from the legacy single-section adapter test: the tiling shell mounts the terminal per tile, remounts when the
+// focused tile's agent changes, and unmounts when the tile's view changes.
+test("terminal views: the tiling shell mounts one terminal per tile, remounts on agent change and cleans up", async () => {
   const { doc, sockets, navigate, observers } = runShell("#/terminal/a1", running);
   await flush();
-  const section = doc.sections.find((s) => s.getAttribute("data-tab") === "terminal")!;
-  assert.equal(section.children.length, 1, "one mount root in the section");
+  const wm = doc.getElementById("wm-root")!;
+  assert.equal(countMounts(wm), 1, "one mount root in the tile");
   navigate("#/terminal/b2");
   await flush();
-  assert.equal(section.children.length, 1, "the old root is removed on remount");
+  assert.equal(countMounts(wm), 1, "the old root is removed on remount");
   assert.equal(sockets[0]!.closed, true);
   assert.equal(observers[0]!.disconnected, true);
   navigate("#/audit");
-  assert.equal(section.children.length, 0);
+  assert.equal(countMounts(wm), 0);
   assert.equal(observers[1]!.disconnected, true);
 });
 
@@ -1832,4 +1867,86 @@ test("terminal views: the vendored xterm libraries load once per page across ins
   await flush();
   assert.equal(r.terms.length, 2, "both instances mounted xterm once the shared load finished");
   assert.equal(loaded().length, 3);
+});
+
+// Terminal review follow-ups.
+test("terminal: unmounting removes its colour-scheme change listener and clears retry and tick timers mid-backoff", async () => {
+  const r = runShell("#/terminal/a1", running);
+  await flush();
+  const dark = "(prefers-color-scheme: dark)";
+  assert.equal(r.mqListeners.get(dark)!.size, 1, "the view listens while mounted");
+  r.sockets[0]!.open();
+  r.sockets[0]!.drop();
+  await flush();
+  assert.ok(
+    r.timeouts.some((x) => !x.cleared && x.ms !== 120),
+    "a retry timer is pending during backoff",
+  );
+  assert.ok(
+    r.intervals.some((i) => !i.cleared),
+    "the countdown tick is running during backoff",
+  );
+  r.navigate("#/audit");
+  assert.equal(r.mqListeners.get(dark)!.size, 0, "the listener is removed on unmount");
+  assert.ok(
+    r.timeouts.filter((x) => x.ms !== 120).every((x) => x.cleared),
+    "retry timer cleared",
+  );
+  assert.ok(
+    r.intervals.every((i) => i.cleared),
+    "tick cleared",
+  );
+});
+
+test("terminal: the trace viewer belongs to the instance that opened it; A opens, B clicks, A unmounts", async () => {
+  const r = mountTwo();
+  await flush();
+  clickEl(r.inRoot(r.rootA, "trace-view"));
+  await flush();
+  assert.equal(r.pageBody.children.length, 1);
+  clickEl(r.inRoot(r.rootB, "trace-view")); // reuses A's viewer and must not take it over
+  assert.equal(r.pageBody.children.length, 1);
+  r.a.unmount();
+  assert.equal(r.pageBody.children.length, 0, "A's unmount dismissed the viewer it created");
+  clickEl(r.inRoot(r.rootB, "trace-view")); // B opens a fresh one and owns it
+  await flush();
+  assert.equal(r.pageBody.children.length, 1);
+  r.b.unmount();
+  assert.equal(r.pageBody.children.length, 0);
+});
+
+test("terminal: a missing template fails with a cause and an action instead of a TypeError", () => {
+  const r = mountTwo();
+  (r.context as { document: { querySelector: unknown } }).document.querySelector = () => null;
+  assert.throws(() => r.def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {} }), /template is missing from the page.*reload the page/);
+});
+
+test("terminal: a copy still in flight when the view unmounts opens no manual-copy modal", async () => {
+  const r = mountTwo();
+  await flush();
+  Object.assign(r.context, { navigator: { clipboard: { writeText: () => Promise.reject(new Error("denied")) } } });
+  clickEl(r.inRoot(r.rootA, "trace"));
+  r.a.unmount(); // before the fetch and clipboard promises settle
+  await flush();
+  await flush();
+  assert.equal(r.pageBody.children.length, 0);
+  // negative control: the same click on a mounted view does open the modal
+  clickEl(r.inRoot(r.rootB, "trace"));
+  await flush();
+  await flush();
+  assert.equal(r.pageBody.children.length, 1, "the modal opens when the view is still mounted");
+});
+
+test("terminal: a failed library load then a retry appends the stylesheet link once", async () => {
+  const r = runShell("#/tree", twoAgents);
+  runInContext("delete globalThis.Terminal; delete globalThis.FitAddon;", r.context);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {} });
+  await flush();
+  const first = r.headNodes.filter((n) => n.tagName === "script").at(-1) as unknown as { onerror(): void };
+  first.onerror();
+  await flush();
+  def.mount(fakeNode(), { agent: "b2" }, { setTitle() {}, navigate() {} });
+  await flush();
+  assert.equal(r.headNodes.filter((n) => n.tagName === "link").length, 1, "one stylesheet across the retry");
 });

@@ -1,27 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInNewContext } from "node:vm";
 import { TabRegistry, renderShell } from "./shell.ts";
 import type { UiTabCtx } from "./shell.ts";
 import { renderTreePane, renderReportsPane, scriptJson } from "./web.ts";
-
-test("an #/escalations route activates the Inbox tab when no separate escalations tab is registered", () => {
-  for (const hasEscalations of [false, true]) {
-    const ids = ["tree", "inbox", ...(hasEscalations ? ["escalations"] : [])];
-    const sections = ids.map((id) => ({ getAttribute: () => id }));
-    const html = renderShell({ tabs: ids.map((id) => ({ id, title: id, render: () => "" })) });
-    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)![1]!;
-    const shown: { id: string; target: unknown }[] = [];
-    runInNewContext(script, {
-      location: { hash: "#/escalations/e1" },
-      document: { querySelectorAll: () => sections, getElementById: () => ({ addEventListener: () => {} }) },
-      addEventListener: () => {},
-      UI: { show: (id: string, target: unknown) => shown.push({ id, target }) },
-    });
-    assert.equal(shown[0]!.id, hasEscalations ? "escalations" : "inbox");
-    assert.equal(shown[0]!.target, sections.at(-1));
-  }
-});
 
 test("renderShell emits the nav, the hidden sections, and the UI runtime", () => {
   const html = renderShell({
@@ -38,12 +19,19 @@ test("renderShell emits the nav, the hidden sections, and the UI runtime", () =>
   assert.ok(html.includes('href="#/reports"'));
   assert.ok(html.includes('<section data-tab="live" hidden>'));
   assert.ok(html.includes('<section data-tab="reports" hidden>'));
+  // Tiling shell: tile host, notice area, a stash holding the sections, layout controls and the activation runtime.
+  assert.ok(html.includes('<body class="wm">'));
+  assert.ok(html.includes('id="wm-root"'));
+  assert.ok(html.includes('id="wm-notices"'));
+  assert.ok(html.includes('<div id="wm-stash" hidden><section data-tab="live" hidden>'));
+  for (const id of ["wm-export", "wm-import", "wm-reset", "wm-file"]) assert.ok(html.includes(`id="${id}"`), id);
   assert.ok(html.includes("const UI = {"));
-  assert.ok(html.includes("fns"));
-  assert.ok(html.includes("deactivators"));
-  assert.ok(html.includes("active"));
   assert.ok(html.includes("register(id, activate, deactivate)"));
-  assert.ok(html.includes("show(id, target)"));
+  assert.ok(html.includes("activate(id)"));
+  assert.ok(html.includes("deactivate(id)"));
+  assert.ok(!html.includes("show(id, target)"), "UI.show is gone: several views can be active at once");
+  assert.ok(html.includes("const LayoutKit"));
+  assert.ok(html.includes("createWindowManager("));
   assert.ok(html.includes("hashchange"));
   assert.ok(html.includes("@media (max-width: 640px)"));
   // The short title only labels the bottom (narrow) nav.

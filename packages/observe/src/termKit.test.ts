@@ -41,7 +41,6 @@ const K = runInContext(
   clampFont(n: unknown): number;
   isCopyChord(ev: unknown, hasSelection: boolean): boolean;
   themeFor(dark: boolean, read: (n: string) => string): Record<string, string>;
-  routeId(h: string): string;
 };
 
 test("the websocket path is the locked route template", () => {
@@ -193,13 +192,6 @@ test("themeFor follows the page tokens and falls back per scheme", () => {
   assert.equal(light.background, "#ffffff");
   assert.notEqual(light.red, t.red);
   assert.equal(K.themeFor(false, () => "rgb(1,2,3)").background, "#ffffff"); // non-hex tokens are not trusted
-});
-
-test("routeId extracts the agent id from #/terminal/<id>", () => {
-  assert.equal(K.routeId("#/terminal/a1"), "a1");
-  assert.equal(K.routeId("#/terminal/a%2Fb?x=1"), "a/b");
-  assert.equal(K.routeId("#/terminal/"), "");
-  assert.equal(K.routeId("#/tree"), "");
 });
 
 test("named key table: exact bytes", () => {

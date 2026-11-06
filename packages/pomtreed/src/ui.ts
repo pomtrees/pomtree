@@ -19,7 +19,8 @@ import type { UiTab } from "@pomtree/observe";
 export const UI_COOKIE_TTL_MS = 24 * 60 * 60 * 1000;
 
 // The operator UI shell: tree, reports, audit (journal), hosts (placement), terminal, and the inbox (messages and open requests).
-// The tree pane reuses the existing /live/events SSE path; the terminal pane deep-links at #/terminal/<id>.
+// Each tab is a view the tiling shell can show in a tile (several at once); the tab order is the view selector order.
+// The tree pane reuses the existing /live/events SSE path; the terminal view deep-links at #/terminal/<id>.
 export function renderUiShell(): string {
   const tabs: UiTab[] = [
     { id: "tree", title: "Tree", render: () => renderTreePane({ eventsPath: "/live/events" }) },

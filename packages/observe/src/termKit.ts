@@ -210,14 +210,9 @@ const TermKit = globalThis.TermKit || (globalThis.TermKit = (() => {
     };
   };
 
-  // "#/terminal/<id>" -> id ("" when not a terminal route).
-  const routeId = (hash) => hash.startsWith("#/terminal/")
-    ? decodeURIComponent(hash.slice("#/terminal/".length).split(/[/?#]/)[0])
-    : "";
-
   return { TERMINAL_STATES, isTerminalState, wsUrl, RESIZE_DEBOUNCE_MS, resizeFrame, nextResize, parseServerText,
     BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ATTEMPTS, STABLE_MS, backoffMs, nextAttempt, describe, decide, keyBarSeq, NAMED_KEYS, namedKey, ctrlify, altify, toggleMod, applyMods, barSend, keyDecision, isPasteChord, FONT_MIN, FONT_MAX, FONT_DEFAULT,
-    clampFont, isCopyChord, themeFor, routeId };
+    clampFont, isCopyChord, themeFor };
 })());
 `;
 

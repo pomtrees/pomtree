@@ -63,7 +63,7 @@ A port in `packages/core/src/ports.ts` is a clean TypeScript interface, but the 
 | `Orchestrator` | `LocalOrchestrator` (constructed in `main.ts`) | The port stays, but there is no second implementation and no selector |
 | `ModelGateway` and model proxy | `ProxyCredentialGateway`, `ModelProxy` | Internal; the debit and revocation store is shared with the proxy server |
 | `ExtensionGateway` | `createExtGateway` | Fixed set of agent tools (`web_search`, `web_fetch`) |
-| Operator UI | `renderUiShell` in `packages/pomtreed/src/ui.ts` | A fixed set of tabs is hardcoded against `@pomtree/observe`; there is no pane API, and an extension can only serve its own route |
+| Operator UI | `renderUiShell` in `packages/pomtreed/src/ui.ts` | A fixed set of views (one tab each, shown in resizable tiles) is hardcoded against `@pomtree/observe`; the view registry (`PaneKit.registerView`) is internal, there is no pane API, and an extension can only serve its own route |
 
 `@pomtree/testing` holds shared contract bodies (`packages/testing/src/port-contracts.ts`, plus `merge-contract.ts`) for several ports: registry, journal, quota counters, capture index, template store, model gateway, harness, placement, watchdog, session and state stores, and merge store. They run against the fakes and, for the store ports, against real SQLite. They are not packaged as a suite a third-party implementation is required to pass, and the `Sandbox` contract (`sandboxContractBody`) runs against the fake always and against `DockerSandbox` in `packages/sandbox-docker/src/sandbox-contract.test.ts` only when `PTREE_DOCKER_TESTS=1` (Docker-gated, so skipped in `pnpm test:lite`). There is no equivalent shared contract for `Workspace`, `RepoStore` or `Orchestrator`.
 

@@ -68,6 +68,10 @@ test("GET /ui serves the shell with all tabs wired", async () => {
       assert.ok(html.body.includes(`data-nav="${tab}"`), `missing nav ${tab}`);
     }
     assert.ok(!html.body.includes('data-nav="escalations"'));
+    // The tiling shell: sections wait in the stash until a tile hosts them, and the layout controls are present.
+    assert.ok(html.body.includes('<div id="wm-stash" hidden><section data-tab="tree" hidden>'));
+    for (const id of ["wm-root", "wm-notices", "wm-export", "wm-import", "wm-reset"]) assert.ok(html.body.includes(`id="${id}"`), id);
+    assert.ok(html.body.includes("createWindowManager("));
     assert.ok(html.body.includes('K.stream("/live/events"'));
     assert.ok(html.body.includes('"/v1/journal"'));
     assert.ok(html.body.includes('"/v1/placement"'));

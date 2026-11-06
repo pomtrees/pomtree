@@ -4,6 +4,7 @@
 // reference) so callers can detect a no-op. No DOM, storage, clock or randomness here; tested in layout.test.ts.
 // Stored data is only view ids and agent ids. Plain JS, no backticks and no template interpolation (it is a
 // template literal, so it must also contain no backslashes).
+// TODO(ui-floating-windows): windows tile only; there are no floating or overlapping windows. Trigger: an operator asks for floating windows or overlays.
 
 export type ViewId = string;
 export interface LeafParams {
