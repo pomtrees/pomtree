@@ -2,7 +2,8 @@
 // overflow and the 640px one-view fallback. Colour comes only from token references with neutral fallbacks
 // (--chrome-bg, --chrome-fg, --chrome-border, --chrome-accent and --chrome-accent-fg are optional tokens a theme may
 // set; the fallbacks apply otherwise), and borders use longhands so a theme's border-color is never reset. Composed
-// last into UI_CSS (shell.ts).
+// last into UI_CSS (shell.ts). The `.splitter:hover, .splitter:focus-visible` rule (opacity 0.5) is the unthemed cue;
+// THEME_CSS (themeCss.ts) sets opacity 1 on the themed hover, active and focus-visible splitter states.
 export const LAYOUT_CSS = `
 body.wm { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
 body.wm > nav.top { position: static; flex: 0 0 auto; }

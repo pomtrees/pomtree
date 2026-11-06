@@ -190,8 +190,10 @@ const TermKit = globalThis.TermKit || (globalThis.TermKit = (() => {
     return !!hasSelection;
   };
 
-  const ANSI_DARK = ["#1c2025", "#ff7b72", "#4ade80", "#f5b942", "#6d9bff", "#d2a8ff", "#4cc9d9", "#e6e9ee",
-    "#626b78", "#ffa198", "#7ee787", "#f8d27a", "#9bbcff", "#e0c3ff", "#7ddde8", "#ffffff"];
+  // Dark ANSI palette for the black-and-orange scheme (terminal paints on dark --surface #0e0e0e). Yellow is dark --warn;
+  // green, cyan are --ok, --info; red keeps its coral (the rose --err reads pink); blue stays blue, apart from the orange accent and cyan.
+  const ANSI_DARK = ["#2e2e2e", "#ff7b72", "#4ade80", "#d6e84a", "#5c9cff", "#d2a8ff", "#4cc9d9", "#d4d4d4",
+    "#8a8a8a", "#ffa198", "#7ee787", "#e6f27c", "#92bcff", "#e6ccff", "#7ddde8", "#ffffff"];
   const ANSI_LIGHT = ["#1c2025", "#c62828", "#17803d", "#a76100", "#2557d6", "#8250df", "#0b7a8a", "#626b78",
     "#4b5563", "#e5484d", "#2da44e", "#bf8700", "#4a78e8", "#a475f9", "#1b9aa8", "#8a94a3"];
   const hex = (v) => /^#[0-9a-f]{6}$/i.test(String(v).trim()) ? String(v).trim() : null;
@@ -199,9 +201,9 @@ const TermKit = globalThis.TermKit || (globalThis.TermKit = (() => {
   // ANSI palette per colour scheme, so the terminal follows the page's light/dark mode.
   const themeFor = (dark, read) => {
     const pick = (name, fallback) => hex(read(name)) || fallback;
-    const bg = pick("--surface", dark ? "#171b21" : "#ffffff");
-    const fg = pick("--text", dark ? "#e6e9ee" : "#1c2025");
-    const accent = pick("--accent", dark ? "#6d9bff" : "#2557d6");
+    const bg = pick("--surface", dark ? "#0e0e0e" : "#ffffff");
+    const fg = pick("--text", dark ? "#f2f2f2" : "#1c2025");
+    const accent = pick("--accent", dark ? "#ff8c1a" : "#2557d6");
     const p = dark ? ANSI_DARK : ANSI_LIGHT;
     return {
       background: bg, foreground: fg, cursor: accent, cursorAccent: bg, selectionBackground: accent + "55",

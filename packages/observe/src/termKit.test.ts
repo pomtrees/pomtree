@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
+import { UI_CSS } from "./shell.ts";
 import { TERM_LOGIC_JS, TERMINAL_WS_PATH } from "./termKit.ts";
+import { THEME_CSS } from "./themeCss.ts";
 
 interface Mods {
   ctrl: boolean;
@@ -182,12 +184,12 @@ test("isCopyChord: only keydown Ctrl/Cmd+C with a selection (plain Ctrl+C still 
 });
 
 test("themeFor follows the page tokens and falls back per scheme", () => {
-  const tokens: Record<string, string> = { "--surface": "#171b21", "--text": "#e6e9ee", "--accent": "#6d9bff" };
+  const tokens: Record<string, string> = { "--surface": "#0e0e0e", "--text": "#f2f2f2", "--accent": "#ff8c1a" };
   const t = K.themeFor(true, (n) => tokens[n] ?? "");
-  assert.equal(t.background, "#171b21");
-  assert.equal(t.foreground, "#e6e9ee");
-  assert.equal(t.cursor, "#6d9bff");
-  assert.equal(t.selectionBackground, "#6d9bff55");
+  assert.equal(t.background, "#0e0e0e");
+  assert.equal(t.foreground, "#f2f2f2");
+  assert.equal(t.cursor, "#ff8c1a");
+  assert.equal(t.selectionBackground, "#ff8c1a55");
   const light = K.themeFor(false, () => "");
   assert.equal(light.background, "#ffffff");
   assert.notEqual(light.red, t.red);
@@ -319,4 +321,66 @@ test("terminal states match the daemon's finished states", () => {
   assert.equal(K.isTerminalState("pending"), false);
   assert.equal(K.isTerminalState("exited"), true);
   assert.equal(K.isTerminalState(undefined), false);
+});
+
+// The dark ANSI palette, read through themeFor like the page does. The terminal paints on --surface (termhost).
+const ANSI_NAMES = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+const ANSI_KEYS = [...ANSI_NAMES, ...ANSI_NAMES.map((n) => `bright${n[0]?.toUpperCase()}${n.slice(1)}`)];
+const darkTheme = (K as unknown as { themeFor(dark: boolean, read: (n: string) => string): Record<string, string> }).themeFor(true, () => "");
+const ansiDark = ANSI_KEYS.map((k) => darkTheme[k] as string);
+// Dark token values: the dark :root block of the shipped stylesheets (THEME_CSS overrides UI_CSS).
+const darkToken = (name: string): string => {
+  let found = "";
+  for (const css of [UI_CSS, THEME_CSS]) {
+    const i = css.indexOf("@media (prefers-color-scheme: dark) {");
+    const block = css.slice(css.indexOf("{", css.indexOf(":root", i)) + 1, css.indexOf("}", css.indexOf(":root", i)));
+    found = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`).exec(block)?.[1] ?? found;
+  }
+  assert.ok(found, `${name} has a dark value`);
+  return found;
+};
+const rgbOf = (h: string): number[] => [1, 3, 5].map((i) => Number.parseInt(h.slice(i, i + 2), 16));
+const lum = (h: string): number => {
+  const [r, g, b] = rgbOf(h).map((v) => {
+    const c = (v as number) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  }) as [number, number, number];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const wcag = (a: string, b: string): number => {
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+test("dark ANSI palette is readable on the dark --surface: 1-15 >= 4.5:1, black >= 1.3:1", () => {
+  const bg = darkToken("--surface");
+  assert.equal(darkTheme.background, bg, "themeFor's dark fallback background is the real dark --surface");
+  ansiDark.forEach((c, i) => {
+    // Index 0 is a fill colour (dark-on-dark by design), so it only has to stay visible against the surface.
+    const min = i === 0 ? 1.3 : 4.5;
+    assert.ok(wcag(c, bg) >= min, `ANSI ${i} ${c} on ${bg} is ${wcag(c, bg).toFixed(2)}:1, needs >= ${min}`);
+  });
+});
+
+test("dark ANSI yellow follows the dark --warn token; bright yellow is a lighter tint of it", () => {
+  const warn = darkToken("--warn");
+  assert.equal(ansiDark[3], warn);
+  assert.ok(lum(ansiDark[11] as string) > lum(warn));
+});
+
+test("dark ANSI blue is blue and red is red (hue semantics survive the retheme)", () => {
+  const [r, g, b] = rgbOf(ansiDark[4] as string) as [number, number, number];
+  assert.ok(b > r && b > g, "blue channel dominates");
+  const [r1, g1, b1] = rgbOf(ansiDark[1] as string) as [number, number, number];
+  assert.ok(r1 > g1 && r1 > b1, "red channel dominates");
+});
+
+test("the 16 dark ANSI colours are pairwise distinct (RGB distance >= 40 of 441)", () => {
+  for (let i = 0; i < 16; i++)
+    for (let j = i + 1; j < 16; j++) {
+      const a = rgbOf(ansiDark[i] as string);
+      const b = rgbOf(ansiDark[j] as string);
+      const d = Math.hypot(...a.map((v, k) => v - (b[k] as number)));
+      assert.ok(d >= 40, `ANSI ${i} ${ansiDark[i]} and ${j} ${ansiDark[j]} are ${d.toFixed(1)} apart`);
+    }
 });

@@ -9,6 +9,7 @@ import { PANE_CSS } from "./paneKit.ts";
 import { LAYOUT_LOGIC_JS } from "./layout.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
+import { THEME_CSS } from "./themeCss.ts";
 import { escapeHtml, scriptJson } from "./web.ts";
 
 export interface UiTabCtx {
@@ -76,12 +77,12 @@ export const UI_CSS = `
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1216; --surface: #171b21; --surface-2: #1d222a; --hover: #222833; --code-bg: #12161b;
-    --border: #272d37; --border-strong: #38404c;
-    --text: #e6e9ee; --muted: #9099a7;
-    --accent: #6d9bff; --accent-hover: #86adff; --accent-fg: #0b1220; --focus: rgb(109 155 255 / 0.35);
-    --ok: #4ade80; --warn: #f5b942; --err: #ff7b72; --info: #4cc9d9;
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+    --bg: #050505; --surface: #0e0e0e; --surface-2: #161616; --hover: #221a12; --code-bg: #0a0a0a;
+    --border: #2b2b2b; --border-strong: #606060;
+    --text: #f2f2f2; --muted: #a6a6a6;
+    --accent: #ff8c1a; --accent-hover: #ffa647; --accent-fg: #000000; --focus: rgb(255 140 26 / 0.4);
+    --ok: #4ade80; --warn: #d6e84a; --err: #ff5c8a; --info: #4cc9d9;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.6);
   }
 }
 html { font-size: clamp(100%, 0.875rem + 0.25vw, 1.25rem); -webkit-text-size-adjust: 100%; }
@@ -111,7 +112,7 @@ main { box-sizing: border-box; width: min(100% - 2 * var(--pad), 80rem); margin:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
-${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}`;
+${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${THEME_CSS}`;
 
 export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; title?: string }): string {
   const title = escapeHtml(opts.title ?? "pomtree");
