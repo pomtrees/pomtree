@@ -10,11 +10,17 @@
 //
 // Scope: no extensions (permessage-deflate), no subprotocol negotiation
 // beyond echoing a chosen one. The upgrade route is wired in terminal-route.ts and server.ts.
+//
+// Client mode (role "client", used by cdp-relay.ts to talk to a server we dial): outgoing frames are
+// masked with a fresh random key, incoming frames must be unmasked, and the handshake is built and
+// verified by clientHandshakeRequest / parseHandshakeResponse. Server behaviour is the default.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 export const DEFAULT_MAX_MESSAGE = 1024 * 1024;
+/** Most frames one fragmented message may span. The byte cap alone cannot bound empty continuation frames, each of which still costs a retained part. */
+export const MAX_FRAGMENTS = 1024;
 
 export const Opcode = {
   continuation: 0x0,
@@ -96,36 +102,45 @@ export function originAllowed(origin: string | string[] | undefined, allowed: (o
   return allowed(origin);
 }
 
-// ---- encoder (server -> client, unmasked) ----
+// ---- encoder (server -> client, unmasked; client -> server when a mask key is given) ----
 
-export function encodeFrame(opcode: number, payload: Uint8Array = new Uint8Array(0), fin = true): Buffer {
+/** `mask` (4 bytes) makes this a client frame: the mask bit is set and the payload XORed with the key. */
+export function encodeFrame(opcode: number, payload: Uint8Array = new Uint8Array(0), fin = true, mask?: Uint8Array): Buffer {
+  if (mask && mask.length !== 4) throw new RangeError("mask key must be 4 bytes");
   const n = payload.length;
   const head = n < 126 ? Buffer.alloc(2) : n <= 0xffff ? Buffer.alloc(4) : Buffer.alloc(10);
   head[0] = (fin ? 0x80 : 0) | opcode;
-  if (n < 126) head[1] = n;
+  const m = mask ? 0x80 : 0;
+  if (n < 126) head[1] = m | n;
   else if (n <= 0xffff) {
-    head[1] = 126;
+    head[1] = m | 126;
     head.writeUInt16BE(n, 2);
   } else {
-    head[1] = 127;
+    head[1] = m | 127;
     head.writeBigUInt64BE(BigInt(n), 2);
   }
-  return Buffer.concat([head, payload]);
+  if (!mask) return Buffer.concat([head, payload]);
+  const body = Buffer.from(payload); // copy: never mutate the caller's bytes
+  for (let i = 0; i < body.length; i++) body[i] = body[i]! ^ mask[i & 3]!;
+  return Buffer.concat([head, mask, body]);
 }
+
+/** A client frame with a fresh random mask key (RFC 6455 section 5.3). */
+export const encodeMasked = (opcode: number, payload: Uint8Array = new Uint8Array(0), fin = true): Buffer => encodeFrame(opcode, payload, fin, randomBytes(4));
 
 export const encodeText = (s: string): Buffer => encodeFrame(Opcode.text, Buffer.from(s, "utf8"));
 export const encodeBinary = (b: Uint8Array): Buffer => encodeFrame(Opcode.binary, b);
 
-function control(opcode: number, payload: Uint8Array): Buffer {
+function control(opcode: number, payload: Uint8Array, masked = false): Buffer {
   if (payload.length > 125) throw new RangeError("control frame payload exceeds 125 bytes");
-  return encodeFrame(opcode, payload);
+  return masked ? encodeMasked(opcode, payload) : encodeFrame(opcode, payload);
 }
 export const encodePing = (p: Uint8Array = new Uint8Array(0)): Buffer => control(Opcode.ping, p);
 export const encodePong = (p: Uint8Array = new Uint8Array(0)): Buffer => control(Opcode.pong, p);
 
 /** Close frame; reason is truncated at a char boundary to fit 123 bytes. No code -> empty body. */
-export function encodeClose(code?: number, reason = ""): Buffer {
-  if (code === undefined) return control(Opcode.close, new Uint8Array(0));
+export function encodeClose(code?: number, reason = "", masked = false): Buffer {
+  if (code === undefined) return control(Opcode.close, new Uint8Array(0), masked);
   let r = Buffer.from(reason, "utf8");
   if (r.length > 123) {
     let end = 123;
@@ -135,7 +150,52 @@ export function encodeClose(code?: number, reason = ""): Buffer {
   const body = Buffer.alloc(2 + r.length);
   body.writeUInt16BE(code, 0);
   r.copy(body, 2);
-  return control(Opcode.close, body);
+  return control(Opcode.close, body, masked);
+}
+
+/** Client-side text message (masked). */
+export const encodeClientText = (s: string): Buffer => encodeMasked(Opcode.text, Buffer.from(s, "utf8"));
+
+// ---- client handshake ----
+
+export const MAX_HANDSHAKE_HEAD = 8 * 1024;
+
+/** The upgrade request a client sends. No Origin header is ever sent. */
+export function clientHandshakeRequest(opts: { path: string; host: string; key?: string }): { request: string; key: string } {
+  if (/[\r\n ]/.test(opts.path) || /[\r\n]/.test(opts.host)) throw new RangeError("handshake path/host must not contain whitespace or CR/LF");
+  const key = opts.key ?? randomBytes(16).toString("base64");
+  const request = [
+    `GET ${opts.path} HTTP/1.1`,
+    `Host: ${opts.host}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Key: ${key}`,
+    "Sec-WebSocket-Version: 13",
+  ].join("\r\n");
+  return { request: request + "\r\n\r\n", key };
+}
+
+export type HandshakeReply = { state: "need-more" } | { state: "ok"; rest: Buffer } | { state: "bad"; reason: string };
+
+/** Parse and verify a server's 101 reply to `clientHandshakeRequest`; `rest` is any websocket bytes that followed the head. */
+export function parseHandshakeResponse(buf: Uint8Array, key: string): HandshakeReply {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  const end = b.indexOf("\r\n\r\n");
+  if (end < 0) {
+    return b.length > MAX_HANDSHAKE_HEAD ? { state: "bad", reason: "handshake response head too large" } : { state: "need-more" };
+  }
+  if (end > MAX_HANDSHAKE_HEAD) return { state: "bad", reason: "handshake response head too large" };
+  const lines = b.subarray(0, end).toString("latin1").split("\r\n");
+  if (!/^HTTP\/1\.1 101(?: |$)/.test(lines[0]!)) return { state: "bad", reason: `expected 101 Switching Protocols, got "${lines[0]!.slice(0, 80)}"` };
+  const h: Record<string, string> = {};
+  for (const l of lines.slice(1)) {
+    const i = l.indexOf(":");
+    if (i > 0) h[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
+  }
+  if (!tokens(h.upgrade).includes("websocket") || !tokens(h.connection).includes("upgrade"))
+    return { state: "bad", reason: "response is not a websocket upgrade" };
+  if (h["sec-websocket-accept"] !== acceptKey(key)) return { state: "bad", reason: "Sec-WebSocket-Accept does not match the key" };
+  return { state: "ok", rest: Buffer.from(b.subarray(end + 4)) };
 }
 
 // ---- decoder (client -> server, masked) ----
@@ -162,7 +222,7 @@ function decodeUtf8(b: Uint8Array): string | null {
 interface Pending {
   fin: boolean;
   opcode: number;
-  mask: Buffer;
+  mask: Buffer | null;
   payload: Buffer;
   filled: number;
 }
@@ -175,13 +235,16 @@ interface Pending {
  */
 export class FrameDecoder {
   readonly maxMessage: number;
+  readonly #expectMasked: boolean;
   #head: Buffer = Buffer.alloc(0);
   #cur: Pending | null = null;
   #frag: { binary: boolean; parts: Buffer[]; size: number } | null = null;
   #dead = false;
 
-  constructor(opts: { maxMessage?: number } = {}) {
+  /** `role` is the side this decoder runs on: a "server" requires masked input (the default), a "client" requires unmasked. */
+  constructor(opts: { maxMessage?: number; role?: "server" | "client" } = {}) {
     this.maxMessage = opts.maxMessage ?? DEFAULT_MAX_MESSAGE;
+    this.#expectMasked = (opts.role ?? "server") === "server";
   }
 
   get dead(): boolean {
@@ -235,7 +298,8 @@ export class FrameDecoder {
     const opcode = b0 & 0x0f;
     if ((b0 & 0x70) !== 0) return this.#failH(events, 1002, "reserved bits set");
     if (![0, 1, 2, 8, 9, 10].includes(opcode)) return this.#failH(events, 1002, `bad opcode ${opcode}`);
-    if ((b1 & 0x80) === 0) return this.#failH(events, 1002, "client frame not masked");
+    const masked = (b1 & 0x80) !== 0;
+    if (masked !== this.#expectMasked) return this.#failH(events, 1002, masked ? "server frame masked" : "client frame not masked");
     const l7 = b1 & 0x7f;
     const isControl = opcode >= 8;
     if (isControl && (!fin || l7 > 125)) return this.#failH(events, 1002, "bad control frame");
@@ -264,9 +328,12 @@ export class FrameDecoder {
         return this.#failH(events, 1009, "message too big");
       }
     }
-    if (b.length < off + 4) return -1;
-    const mask = Buffer.from(b.subarray(off, off + 4));
-    off += 4;
+    let mask: Buffer | null = null;
+    if (masked) {
+      if (b.length < off + 4) return -1;
+      mask = Buffer.from(b.subarray(off, off + 4));
+      off += 4;
+    }
     this.#cur = { fin, opcode, mask, payload: Buffer.alloc(len), filled: 0 };
     return off;
   }
@@ -278,7 +345,8 @@ export class FrameDecoder {
 
   #complete(f: Pending, events: WsEvent[]): void {
     const p = f.payload;
-    for (let i = 0; i < p.length; i++) p[i] = p[i]! ^ f.mask[i & 3]!;
+    const mask = f.mask;
+    if (mask) for (let i = 0; i < p.length; i++) p[i] = p[i]! ^ mask[i & 3]!;
     switch (f.opcode) {
       case Opcode.ping:
         events.push({ type: "ping", data: p });
@@ -314,6 +382,10 @@ export class FrameDecoder {
       this.#frag = { binary: f.opcode === Opcode.binary, parts: [], size: 0 };
     }
     const frag = this.#frag!;
+    if (frag.parts.length >= MAX_FRAGMENTS) {
+      this.#fail(events, 1009, "message has too many fragments");
+      return;
+    }
     frag.parts.push(p);
     frag.size += p.length;
     if (!f.fin) return;
@@ -350,11 +422,14 @@ export interface ReceiveResult {
  */
 export class WsConnection {
   readonly decoder: FrameDecoder;
+  readonly #masked: boolean;
   #closeSent = false;
   #ended = false;
 
-  constructor(opts: { maxMessage?: number } = {}) {
+  /** `role: "client"` masks every outgoing frame and expects unmasked input; the default is the server side. */
+  constructor(opts: { maxMessage?: number; role?: "server" | "client" } = {}) {
     this.decoder = new FrameDecoder(opts);
+    this.#masked = opts.role === "client";
   }
 
   get closeSent(): boolean {
@@ -371,11 +446,11 @@ export class WsConnection {
       if (this.#ended) break;
       switch (ev.type) {
         case "ping":
-          if (!this.#closeSent) res.out.push(encodePong(ev.data));
+          if (!this.#closeSent) res.out.push(this.#masked ? control(Opcode.pong, ev.data, true) : encodePong(ev.data));
           break;
         case "close":
           if (!this.#closeSent) {
-            res.out.push(encodeClose(ev.code ?? undefined, ""));
+            res.out.push(encodeClose(ev.code ?? undefined, "", this.#masked));
             this.#closeSent = true;
           }
           this.#ended = true;
@@ -383,7 +458,7 @@ export class WsConnection {
           break;
         case "error":
           if (!this.#closeSent) {
-            res.out.push(encodeClose(ev.code, ev.reason));
+            res.out.push(encodeClose(ev.code, ev.reason, this.#masked));
             this.#closeSent = true;
           }
           this.#ended = true;
@@ -405,7 +480,7 @@ export class WsConnection {
   close(code: number = CloseCode.normal, reason = ""): Buffer | null {
     if (this.#closeSent) return null;
     this.#closeSent = true;
-    return encodeClose(code, reason);
+    return encodeClose(code, reason, this.#masked);
   }
 
   /** Mark the transport gone (socket closed/errored) so later input is ignored. */

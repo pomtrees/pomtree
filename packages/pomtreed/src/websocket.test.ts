@@ -3,15 +3,20 @@ import { test } from "node:test";
 import {
   acceptKey,
   checkUpgrade,
+  clientHandshakeRequest,
   encodeBinary,
   encodeClose,
+  encodeClientText,
   encodeFrame,
+  encodeMasked,
   encodePing,
   encodePong,
   encodeText,
   FrameDecoder,
+  MAX_FRAGMENTS,
   handshakeResponse,
   originAllowed,
+  parseHandshakeResponse,
   Opcode,
   WsConnection,
   type WsEvent,
@@ -39,8 +44,18 @@ function client(opcode: number, payload: Uint8Array, fin = true, mask: Buffer | 
   return Buffer.concat([Buffer.from(head), body]);
 }
 
+/** Byte equality for possibly large buffers. Never deepEqual a failing Buffer: Node builds a diff whose memory grows superlinearly (4 KiB costs ~200 MB). The message reports lengths and the first differing index, never the bytes. */
+function sameBytes(actual: Uint8Array, expected: Uint8Array, msg = "bytes differ"): void {
+  const a = Buffer.from(actual.buffer, actual.byteOffset, actual.byteLength);
+  const e = Buffer.from(expected.buffer, expected.byteOffset, expected.byteLength);
+  if (Buffer.compare(a, e) === 0) return;
+  let i = 0;
+  while (i < a.length && i < e.length && a[i] === e[i]) i++;
+  assert.ok(false, `${msg}: actual length ${a.length}, expected length ${e.length}, first difference at index ${i}`);
+}
+
 const one = (events: WsEvent[]): WsEvent => {
-  assert.equal(events.length, 1, JSON.stringify(events));
+  assert.equal(events.length, 1, JSON.stringify(events.map((e) => e.type)));
   return events[0]!;
 };
 
@@ -306,3 +321,103 @@ test("WsConnection: server-initiated close, then peer reply ends without a secon
   );
   assert.equal(r.end, true);
 });
+
+// ---- client mode ----
+
+test("client frames: encodeFrame with the RFC 5.7 key reproduces the masked 'Hello' bytes", () => {
+  assert.deepEqual(encodeFrame(Opcode.text, Buffer.from("Hello"), true, MASK), Buffer.from([0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]));
+  assert.throws(() => encodeFrame(Opcode.text, Buffer.from("x"), true, Buffer.alloc(3)), /4 bytes/);
+});
+
+test("client frames: encodeMasked sets the mask bit, uses a random key, does not mutate the payload, and a server decoder reads it back", () => {
+  const payload = Buffer.from("hello world");
+  const a = encodeMasked(Opcode.text, payload);
+  const b = encodeMasked(Opcode.text, payload);
+  assert.equal(payload.toString(), "hello world");
+  assert.ok((a[1]! & 0x80) !== 0);
+  assert.notDeepEqual(a.subarray(2, 6), b.subarray(2, 6)); // 2^-32 flake bound
+  assert.deepEqual(one(new FrameDecoder().push(a)), { type: "text", text: "hello world" });
+  const big = Buffer.alloc(70_000, 7);
+  const bigEv = one(new FrameDecoder().push(encodeMasked(Opcode.binary, big)));
+  assert.equal(bigEv.type, "binary");
+  sameBytes((bigEv as { data: Buffer }).data, big, "masked binary payload");
+  assert.deepEqual(one(new FrameDecoder().push(encodeClientText("héllo"))), { type: "text", text: "héllo" });
+});
+
+test("client decoder accepts unmasked server frames and rejects masked ones; server decoder still rejects unmasked", () => {
+  assert.deepEqual(one(new FrameDecoder({ role: "client" }).push(encodeText("hi"))), { type: "text", text: "hi" });
+  const big = Buffer.alloc(300, 9);
+  const bigEv = one(new FrameDecoder({ role: "client" }).push(encodeBinary(big)));
+  assert.equal(bigEv.type, "binary");
+  sameBytes((bigEv as { data: Buffer }).data, big, "unmasked binary payload");
+  const bad = new FrameDecoder({ role: "client" }).push(encodeMasked(Opcode.text, Buffer.from("x")));
+  assert.deepEqual(one(bad), { type: "error", code: 1002, reason: "server frame masked" });
+  const srv = new FrameDecoder().push(encodeText("x"));
+  assert.deepEqual(one(srv), { type: "error", code: 1002, reason: "client frame not masked" });
+});
+
+test("client WsConnection answers ping with a masked pong and closes with masked frames", () => {
+  const c = new WsConnection({ role: "client" });
+  const r = c.receive(encodePing(Buffer.from("p")));
+  assert.equal(r.out.length, 1);
+  assert.ok((r.out[0]![1]! & 0x80) !== 0);
+  assert.deepEqual(one(new FrameDecoder().push(r.out[0]!)), { type: "pong", data: Buffer.from("p") });
+  const close = c.close(1000);
+  assert.ok(close && (close[1]! & 0x80) !== 0);
+  assert.deepEqual(one(new FrameDecoder().push(close)), { type: "close", code: 1000, reason: "" });
+  const e = new WsConnection({ role: "client" }).receive(encodeMasked(Opcode.text, Buffer.from("x")));
+  assert.equal(e.end, true);
+  assert.ok((e.out[0]![1]! & 0x80) !== 0); // the 1002 close is masked too
+});
+
+test("client handshake request carries the key and no Origin; rejects CR/LF injection", () => {
+  const { request, key } = clientHandshakeRequest({ path: "/devtools/page/AB12", host: "127.0.0.1:9222" });
+  assert.match(request, /^GET \/devtools\/page\/AB12 HTTP\/1\.1\r\nHost: 127\.0\.0\.1:9222\r\n/);
+  assert.ok(request.endsWith("\r\n\r\n"));
+  assert.ok(!/origin/i.test(request));
+  assert.match(request, new RegExp(`Sec-WebSocket-Key: ${key.replace(/[+/=]/g, "\\$&")}\r\n`));
+  assert.equal(Buffer.from(key, "base64").length, 16);
+  assert.throws(() => clientHandshakeRequest({ path: "/a\r\nX: y", host: "h" }), RangeError);
+  assert.throws(() => clientHandshakeRequest({ path: "/a b", host: "h" }), RangeError);
+});
+
+test("parseHandshakeResponse: verifies accept, splits trailing bytes, waits for more, rejects defects", () => {
+  const key = "dGhlIHNhbXBsZSBub25jZQ==";
+  const good = Buffer.concat([Buffer.from(handshakeResponse(key)), Buffer.from([0x81, 0x00])]);
+  const ok = parseHandshakeResponse(good, key);
+  assert.equal(ok.state, "ok");
+  if (ok.state === "ok") assert.deepEqual(ok.rest, Buffer.from([0x81, 0x00]));
+  assert.deepEqual(parseHandshakeResponse(good.subarray(0, 20), key), { state: "need-more" });
+  const other = parseHandshakeResponse(Buffer.from(handshakeResponse("AAAAAAAAAAAAAAAAAAAAAA==")), key);
+  assert.deepEqual(other, { state: "bad", reason: "Sec-WebSocket-Accept does not match the key" });
+  const notUpgrade = parseHandshakeResponse(Buffer.from("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"), key);
+  assert.equal(notUpgrade.state, "bad");
+  assert.equal(parseHandshakeResponse(Buffer.from("HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: x\r\n\r\n"), key).state, "bad");
+  assert.equal(parseHandshakeResponse(Buffer.alloc(9000, 97), key).state, "bad"); // unbounded head
+});
+
+/** A text message of `parts` frames: one text start, then empty continuations, the last with FIN. `fin` false leaves the last one open. */
+function fragmented(role: "server" | "client", parts: number, fin: boolean): Buffer[] {
+  const make = (opcode: number, f: boolean): Buffer => (role === "server" ? client(opcode, new Uint8Array(0), f) : encodeFrame(opcode, new Uint8Array(0), f));
+  const frames = [make(Opcode.text, false)];
+  for (let i = 1; i < parts; i++) frames.push(make(Opcode.continuation, i === parts - 1 ? fin : false));
+  return frames;
+}
+
+for (const role of ["server", "client"] as const) {
+  test(`fragment cap (${role}): more than MAX_FRAGMENTS empty parts yield 1009`, () => {
+    const d = new FrameDecoder({ role });
+    const events = fragmented(role, MAX_FRAGMENTS + 1, false).flatMap((f) => d.push(f));
+    const ev = one(events);
+    assert.equal(ev.type, "error");
+    assert.equal((ev as { code: number }).code, 1009);
+    assert.equal((ev as { reason: string }).reason, "message has too many fragments");
+    assert.equal(d.dead, true);
+  });
+
+  test(`fragment cap (${role}): exactly MAX_FRAGMENTS parts still decodes`, () => {
+    const d = new FrameDecoder({ role });
+    const events = fragmented(role, MAX_FRAGMENTS, true).flatMap((f) => d.push(f));
+    assert.deepEqual(one(events), { type: "text", text: "" });
+  });
+}
