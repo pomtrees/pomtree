@@ -73,6 +73,8 @@ import type {
   SandboxHandle,
   SandboxId,
   SandboxSpec,
+  ByteStream,
+  LoopbackPort,
   TerminalClose,
   TerminalSession,
   Schedule,
@@ -123,6 +125,7 @@ import type {
   StateWriter,
 } from "@pomtree/core";
 import {
+  LOOPBACK_PORTS,
   applyDecision,
   checkStateExpectRev,
   checkStateKey,
@@ -1360,6 +1363,66 @@ export class FakeTerminal implements TerminalSession {
   }
 }
 
+// A scripted ByteStream: records writes and closes; the test pushes the port's bytes with emit() and ends or breaks the stream
+// with end()/fail().
+export class FakeByteStream implements ByteStream {
+  writes: Uint8Array[] = [];
+  closes = 0;
+  readonly closed: Promise<TerminalClose>;
+  private settle!: (c: TerminalClose) => void;
+  private ended = false;
+  private failure: Error | undefined;
+  private queue: Uint8Array[] = [];
+  private wake: (() => void) | undefined;
+  constructor() {
+    this.closed = new Promise((r) => (this.settle = r));
+  }
+  // Test hook: push bytes from the port.
+  emit(data: Uint8Array | string) {
+    if (this.ended) return;
+    this.queue.push(typeof data === "string" ? new TextEncoder().encode(data) : data);
+    this.wake?.();
+  }
+  // Test hook: the remote side ended the stream (resolves "remote").
+  end() {
+    this.finish({ reason: "remote" });
+  }
+  // Test hook: the stream broke (resolves "error"; output() throws once drained).
+  fail(error: Error) {
+    this.finish({ reason: "error", error });
+  }
+  // Everything written so far, decoded as UTF-8.
+  get written(): string {
+    return new TextDecoder().decode(Buffer.concat(this.writes));
+  }
+  private finish(c: TerminalClose) {
+    if (this.ended) return;
+    this.ended = true;
+    this.failure = c.error;
+    this.settle(c);
+    this.wake?.();
+  }
+  async write(data: Uint8Array): Promise<void> {
+    if (this.ended) throw new Error("byte stream closed");
+    this.writes.push(data);
+  }
+  async *output(): AsyncGenerator<Uint8Array> {
+    while (true) {
+      const next = this.queue.shift();
+      if (next) yield next;
+      else if (this.ended) {
+        if (this.failure) throw this.failure;
+        return;
+      } else await new Promise<void>((r) => (this.wake = r));
+    }
+  }
+  close() {
+    this.closes++;
+    this.queue.length = 0;
+    this.finish({ reason: "local" });
+  }
+}
+
 export class FakeSandbox implements Sandbox {
   resultWorkResults: ({ dirty: boolean; fingerprint: string; bundle?: AsyncIterable<Uint8Array> } | Error)[] = [];
   // Every resultWork call in order, with a copy of its opts (maxBytes included), recorded before the availability check.
@@ -1398,6 +1461,13 @@ export class FakeSandbox implements Sandbox {
   waitErrors = new Map<SandboxId, Error>();
   // Terminals opened via openTerminal, per sandbox id, in open order. They end ("remote") when the sandbox exits.
   terminals = new Map<SandboxId, FakeTerminal[]>();
+  // Loopback streams opened via openLoopbackStream, per sandbox id, in open order. They end ("remote") when the sandbox exits.
+  loopbackStreams = new Map<SandboxId, FakeByteStream[]>();
+  // Every openLoopbackStream call in order, recorded before any check.
+  loopbackCalls: { id: SandboxId; port: number }[] = [];
+  // Scripted openLoopbackStream failures, consumed in order (one per call that passed the port and availability checks); an
+  // entry of null lets that call succeed.
+  loopbackErrors: (Error | null)[] = [];
   private n = 0;
   private startKeys = new Map<string, SandboxHandle>();
   constructor(exitCodes: number[] = [], stopPolicy: SandboxStop = "graceful") {
@@ -1459,6 +1529,20 @@ export class FakeSandbox implements Sandbox {
     this.terminals.set(id, [...(this.terminals.get(id) ?? []), t]);
     void s.done.then(() => t.end());
     return t;
+  }
+  async openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream> {
+    this.loopbackCalls.push({ id, port });
+    if (!(LOOPBACK_PORTS as readonly number[]).includes(port)) throw new RangeError(`loopback port ${port} is not in LOOPBACK_PORTS`);
+    const s = this.running.get(id);
+    if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
+    if (this.loopbackErrors.length > 0) {
+      const err = this.loopbackErrors.shift();
+      if (err) throw err;
+    }
+    const b = new FakeByteStream();
+    this.loopbackStreams.set(id, [...(this.loopbackStreams.get(id) ?? []), b]);
+    void s.done.then(() => b.end());
+    return b;
   }
   // Test hook: end a sandbox that has no scripted exit code; oomKilled marks an OOM exit.
   exit(id: SandboxId, code: number, oomKilled = false) {
@@ -3044,6 +3128,8 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
   assert.ok((await s.resolveImageDigest(image)).length > 0);
   await assert.rejects(() => s.attach("no-such-id", "a"), SandboxUnavailableError);
   await assert.rejects(() => s.openTerminal("no-such-id"), SandboxUnavailableError);
+  await assert.rejects(() => s.openLoopbackStream("no-such-id", LOOPBACK_PORTS[0]), SandboxUnavailableError);
+  await assert.rejects(() => s.openLoopbackStream(h.id, 1 as LoopbackPort), RangeError);
   await s.kill(h.id);
   assert.deepEqual(await h.wait(), { exitCode: 137 });
   // Exited (and, after an observed exit, removed) sandboxes report "exited", which the memory gate does not count.

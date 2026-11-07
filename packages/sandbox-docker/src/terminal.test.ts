@@ -234,3 +234,37 @@ test("start with tty: runs -i -t and sizes the pty; a resize failure does not fa
   assert.ok(sandboxRun?.includes("-t"));
   assert.match(e.requests[0]!.path, /resize\?h=30&w=100/);
 });
+
+// --- DockerSandbox.openLoopbackStream over an injected engine ---
+function loopbackEngine() {
+  const f = fakeSocket();
+  const requests: EngineRequest[] = [];
+  const upgrades: EngineRequest[] = [];
+  const api: EngineApi = {
+    request: async (r) => (requests.push(r), { status: 201, body: '{"Id":"ex1"}' }),
+    upgrade: async (r) => (upgrades.push(r), { socket: f.sock as TerminalSocket, head: Buffer.from([1, 0, 0, 0, 0, 0, 0, 2, 0x68, 0x69]) }),
+  };
+  return { api, f, requests, upgrades };
+}
+
+test("openLoopbackStream: execs the bridge on the CDP port by container name and streams demuxed bytes", async () => {
+  const e = loopbackEngine();
+  const s = await new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).openLoopbackStream("sid", 9222);
+  assert.match(e.requests[0]!.path, /^\/containers\/pomtree-[^/]*\/exec$/);
+  assert.deepEqual(JSON.parse(e.requests[0]!.body!).Cmd, ["/usr/local/bin/node", "/opt/pomtree/loopback-bridge.ts", "9222"]);
+  assert.equal(e.upgrades[0]!.path, "/exec/ex1/start");
+  assert.equal(Buffer.from((await s.output()[Symbol.asyncIterator]().next()).value).toString(), "hi");
+  await s.write(Buffer.from("x"));
+  assert.equal(Buffer.concat(e.f.sent).toString(), "x");
+  s.close();
+});
+
+test("openLoopbackStream: a port outside LOOPBACK_PORTS is a RangeError and touches nothing; a stopped container is unavailable", async () => {
+  const e = loopbackEngine();
+  const d = new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api });
+  await assert.rejects(d.openLoopbackStream("sid", 22 as 9222), RangeError);
+  assert.equal(e.requests.length, 0);
+  const stopped = new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(false), engine: e.api });
+  await assert.rejects(stopped.openLoopbackStream("sid", 9222), SandboxUnavailableError);
+  assert.equal(e.requests.length, 0);
+});

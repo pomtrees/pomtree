@@ -4,7 +4,7 @@
 
 // The digest of what this image is built against (delivered keys' bounds, the env name, the cap and the facts). The daemon
 // writes its own digest into the document; a mismatch means the image and the daemon are from different revisions.
-export const CONTAINER_CONTRACT = "9a11322ace26b4e9";
+export const CONTAINER_CONTRACT = "b7662eae994a2b1d";
 export const CONTAINER_CONFIG_ENV = "PTREE_CONFIG_JSON";
 export const CONTAINER_CONFIG_MAX_BYTES = 16384;
 
@@ -13,6 +13,8 @@ export const FIXED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sb
 export const CLI_POMTREE_MAIN = "/opt/pomtree/pomtree/src/main.ts";
 export const PROXY_ENV_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY"] as const;
 export const CDP_PORT = 9222;
+export const LOOPBACK_BRIDGE_MAIN = "/opt/pomtree/loopback-bridge.ts";
+export const LOOPBACK_PORTS = [9222] as const;
 export const CLI_POMTREE_TIMEOUT_MS = 10000;
 export const EGRESS_PROXY_PORT = 3128;
 export const EGRESS_SOCKET_DIR = "/run/pomtree-egress";

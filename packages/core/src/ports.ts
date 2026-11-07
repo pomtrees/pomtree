@@ -58,6 +58,7 @@ import type {
   WaitCondition,
   WatchdogState,
 } from "./types.ts";
+import type { LOOPBACK_PORTS } from "./config/image-facts.ts";
 import type {
   CheckResult,
   MergeId,
@@ -402,6 +403,23 @@ export interface TerminalSession {
   closed: Promise<TerminalClose>;
 }
 
+// A bidirectional raw byte stream to a TCP port on a sandbox's own loopback, carried over the container runtime's exec channel
+// (no port is published). Closing ends only this stream; the container keeps running. Several streams may be open on one sandbox.
+export interface ByteStream {
+  // Resolves once the bytes are accepted by the transport (waits for drain under backpressure);
+  // rejects if the stream is closed.
+  write(data: Uint8Array): Promise<void>;
+  // Bytes from the port, bounded by transport backpressure (never dropped). Single consumer: calls share one queue. Ends when
+  // the stream closes; throws if it broke.
+  output(): AsyncIterable<Uint8Array>;
+  // Close this stream. Idempotent.
+  close(): void;
+  closed: Promise<TerminalClose>;
+}
+
+// The loopback ports Sandbox.openLoopbackStream may open: the image's LOOPBACK_PORTS.
+export type LoopbackPort = (typeof LOOPBACK_PORTS)[number];
+
 export interface Sandbox {
   // Inspect or, only after explicit approval, commit remaining workspace changes and return a
   // bundle for the controller's normal quarantined ingest. Git runs inside the sandbox only.
@@ -424,6 +442,9 @@ export interface Sandbox {
   // SandboxUnavailableError when the sandbox is not running (or the engine is unreachable).
   // `size` resizes the pty right after attaching (and seeds redraw()).
   openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession>;
+  // Open a byte stream to `port` on the running sandbox's loopback. Throws SandboxUnavailableError when the sandbox is not
+  // running (or the engine is unreachable) and RangeError for a port outside LOOPBACK_PORTS, also at run time.
+  openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream>;
   stop(id: SandboxId, graceMs: number): Promise<void>;
   kill(id: SandboxId): Promise<void>;
   // `status` (optional) is the container runtime's own state string (Docker: created, running, paused, restarting, removing,

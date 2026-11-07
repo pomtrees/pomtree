@@ -11,6 +11,8 @@ import {
   SandboxStartError,
   SandboxUnavailableError,
   type AgentId,
+  type ByteStream,
+  type LoopbackPort,
   type MountProvider,
   type ResolvedMount,
   type Sandbox,
@@ -31,6 +33,8 @@ import {
   stopTimeoutSeconds,
   userLabelArgs,
 } from "./args.ts";
+import { LOOPBACK_BRIDGE_MAIN, LOOPBACK_PORTS, NODE_BIN } from "./container-contract.gen.ts";
+import { openExecStream } from "./exec-stream.ts";
 import { buildAttachRequest, buildResizeRequest, createTerminalSession, engineCall, realEngineApi, type EngineApi } from "./terminal.ts";
 import { collectResultWork } from "./result-work.ts";
 import {
@@ -500,6 +504,14 @@ export class DockerSandbox implements Sandbox {
       }
     }
     return session;
+  }
+
+  async openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream> {
+    if (!(LOOPBACK_PORTS as readonly number[]).includes(port))
+      throw new RangeError(`loopback port ${port} is not one of ${LOOPBACK_PORTS.join(", ")}; open only a port listed in LOOPBACK_PORTS`);
+    const state = await this.readState(id);
+    if (!state || !state.running) throw new SandboxUnavailableError();
+    return openExecStream(this.engine(), name(id), [NODE_BIN, LOOPBACK_BRIDGE_MAIN, String(port)]);
   }
 
   // Stand up the per-sandbox socket volume + UDS-only proxy, failing closed: any failure here
