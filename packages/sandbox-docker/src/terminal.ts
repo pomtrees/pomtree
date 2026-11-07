@@ -15,6 +15,8 @@ export interface EngineRequest {
   method: "POST";
   path: string;
   headers: Record<string, string>;
+  // Optional request body (JSON text); sent with a Content-Length. Absent for the terminal's body-less calls.
+  body?: string;
 }
 
 // The slice of a duplex the session needs; a fake Duplex satisfies it in tests.
@@ -165,23 +167,26 @@ const asUnavailable = (e: unknown): Error =>
 const statusError = (req: EngineRequest, status: number, body: string) =>
   new Error(`docker api ${req.path.split("?")[0]} -> ${status}${status === 404 ? " no such container" : ""}: ${body.trim().slice(0, 200)}`);
 
+const withLength = (req: EngineRequest): Record<string, string | number> =>
+  req.body === undefined ? req.headers : { ...req.headers, "Content-Length": Buffer.byteLength(req.body) };
+
 // Real transport: node:http over the Engine API unix socket.
 export function realEngineApi(socketPath: string = engineSocketPath()): EngineApi {
   return {
     request: (req) =>
       new Promise((resolve, reject) => {
-        const r = http.request({ socketPath, method: req.method, path: req.path, headers: req.headers }, (res) => {
+        const r = http.request({ socketPath, method: req.method, path: req.path, headers: withLength(req) }, (res) => {
           const parts: Buffer[] = [];
           res.on("data", (c: Buffer) => parts.push(c));
           res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(parts).toString("utf8") }));
           res.on("error", reject);
         });
         r.on("error", (e) => reject(asUnavailable(e)));
-        r.end();
+        r.end(req.body);
       }),
     upgrade: (req) =>
       new Promise((resolve, reject) => {
-        const r = http.request({ socketPath, method: req.method, path: req.path, headers: req.headers, agent: false });
+        const r = http.request({ socketPath, method: req.method, path: req.path, headers: withLength(req), agent: false });
         r.on("upgrade", (_res, socket, head) => resolve({ socket, head }));
         r.on("response", (res) => {
           const parts: Buffer[] = [];
@@ -190,7 +195,7 @@ export function realEngineApi(socketPath: string = engineSocketPath()): EngineAp
           res.on("error", reject);
         });
         r.on("error", (e) => reject(asUnavailable(e)));
-        r.end();
+        r.end(req.body);
       }),
   };
 }
