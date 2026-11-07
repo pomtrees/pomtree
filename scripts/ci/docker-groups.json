@@ -62,7 +62,8 @@
       ],
       "required": [
         "real Docker, no model: scripted root spawns two children, waits, reaps, reports",
-        "cli lifecycle REC-8: drain refuses the next spawn, the busy agent's container survives the SIGTERM restart, is adopted and finishes once"
+        "cli lifecycle REC-8: drain refuses the next spawn, the busy agent's container survives the SIGTERM restart, is adopted and finishes once",
+        "docker browser stream: the operator websocket delivers a live JPEG frame and the container publishes no port"
       ]
     }
   }
