@@ -3,16 +3,15 @@
 // the server sends one text frame {"type":"closed","reason":"local|remote|error"} just before closing.
 
 import type { IncomingMessage } from "node:http";
-import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { SandboxCapabilityError, SandboxUnavailableError, need } from "@pomtree/core";
 import type { Daemon } from "./daemon.ts";
 import type { ReqCtx } from "./server.ts";
-import { verifyToken, verifyUiCookie } from "./auth.ts";
-import { CloseCode, WsConnection, checkUpgrade, encodeBinary, encodePing, encodeText, handshakeResponse, originAllowed } from "./websocket.ts";
+import { CloseCode, WsConnection, encodeBinary, encodeText } from "./websocket.ts";
 import type { WsEvent } from "./websocket.ts";
 import { DEFAULT_TERMINAL_SIZE, TerminalHub, clampSize } from "./terminal-hub.ts";
 import type { TerminalCloseReason, TerminalLease } from "./terminal-hub.ts";
+import { authorizeUpgrade, closeThenDestroy, completeHandshake, startKeepalive, writeFrames as guardWriteFrames } from "./upgrade-guard.ts";
 
 const PATH = /^\/v1\/agents\/([^/]+)\/terminal$/;
 
@@ -65,22 +64,6 @@ export function closeTerminals(daemon: Daemon): void {
   for (const c of [...s.conns]) c.shutdown();
 }
 
-function reject(socket: Duplex, status: number, message: string, extra: Record<string, unknown> = {}): void {
-  const text =
-    {
-      400: "Bad Request",
-      401: "Unauthorized",
-      403: "Forbidden",
-      404: "Not Found",
-      405: "Method Not Allowed",
-      409: "Conflict",
-      426: "Upgrade Required",
-      500: "Internal Server Error",
-    }[status] ?? "Error";
-  const body = JSON.stringify({ error: message, ...extra });
-  socket.end(`HTTP/1.1 ${status} ${text}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n\r\n${body}`);
-}
-
 /** The 409 text for an agent with no live terminal; the UI shows its own label from the `state` field, API clients get this. */
 export function noTerminalMessage(id: string, state: string): string {
   if (state === "yielded") return `agent ${id} is yielded: it is waiting and has no live terminal; it resumes on its wait condition`;
@@ -98,41 +81,9 @@ export async function handleTerminalUpgrade(
   head: Buffer,
   ctx: ReqCtx,
 ): Promise<number> {
-  socket.on("error", () => {}); // a reset mid-handshake must not crash the process
-  // Resolves to the status for the access line (101 on handshake), recording the refusal reason, credential and principal in ctx.
-  const refuse = (status: number, message: string, extra: Record<string, unknown> = {}): number => {
-    ctx.error = message;
-    reject(socket, status, message, extra);
-    return status;
-  };
-  const m = PATH.exec(new URL(req.url ?? "/", "http://pomtreed").pathname);
-  if (restricted || !m) return refuse(404, "not found");
-  const up = checkUpgrade(req.headers, req.method);
-  if (!up.ok) return refuse(up.status, up.reason);
-
-  // Same credentials as handleRequest: Bearer token or UI session cookie; a terminal is shell-equivalent, so operator only.
-  const auth = req.headers.authorization;
-  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
-  ctx.hadCredential = token !== undefined || req.headers.cookie !== undefined;
-  let principal = token ? verifyToken(daemon.deps.secret, token) : null;
-  if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie)) principal = { scope: "operator" };
-  ctx.principal = principal;
-  if (!principal) return refuse(401, "missing or invalid token");
-  if (principal.scope !== "operator") return refuse(403, "operator scope required");
-  // Browsers always send Origin on a WebSocket handshake and cookies ride along cross-site, so it must match Host.
-  const hostOk = (o: string) => {
-    try {
-      return new URL(o).host === req.headers.host;
-    } catch {
-      return false;
-    }
-  };
-  if (!originAllowed(req.headers.origin, hostOk)) return refuse(403, "origin not allowed");
-
-  const id = decodeURIComponent(m[1]!);
-  const rec = await daemon.get(id);
-  if (!rec) return refuse(404, `no such agent: ${id}`);
-  if (rec.state !== "running" || !rec.sandbox) return refuse(409, noTerminalMessage(id, rec.state), { state: rec.state });
+  const g = await authorizeUpgrade(daemon, PATH, noTerminalMessage, restricted, req, socket, ctx);
+  if (!g.ok) return g.status;
+  const { id, rec, refuse } = g;
 
   const st = stateFor(daemon, opts);
   let gone = socket.destroyed;
@@ -156,9 +107,7 @@ export async function handleTerminalUpgrade(
   }
 
   const conn = new WsConnection({ maxMessage: opts.maxMessage });
-  (socket as Partial<Pick<Socket, "setTimeout" | "setNoDelay">>).setTimeout?.(0);
-  (socket as Partial<Pick<Socket, "setTimeout" | "setNoDelay">>).setNoDelay?.(true);
-  socket.write(handshakeResponse(up.key));
+  completeHandshake(socket, g.key);
 
   let lastSeen = Date.now();
   let pendingInput = 0;
@@ -167,16 +116,11 @@ export async function handleTerminalUpgrade(
   let done = false;
   const closeWait = opts.closeWaitMs ?? 2000;
 
-  const writeFrames = (frames: Buffer[]) => {
-    for (const f of frames) if (!socket.destroyed) socket.write(f);
-  };
+  const writeFrames = (frames: Buffer[]) => guardWriteFrames(socket, frames);
   // Server-initiated close: the "closed" text frame, then a close frame; give the peer closeWait to answer.
   const finish = (reason: TerminalCloseReason, wait = st.closing ? 500 : closeWait) => {
     if (done || conn.closeSent) return;
-    const close = conn.close(CloseCode.normal);
-    writeFrames([encodeText(JSON.stringify({ type: "closed", reason })), ...(close ? [close] : [])]);
-    closeTimer = setTimeout(() => socket.destroy(), wait);
-    closeTimer.unref();
+    closeTimer = closeThenDestroy(socket, conn, wait, [encodeText(JSON.stringify({ type: "closed", reason }))]);
   };
   const cleanup = () => {
     if (done) return;
@@ -190,16 +134,7 @@ export async function handleTerminalUpgrade(
   const handle: Conn = { shutdown: () => finish("local", 500) };
   st.conns.add(handle);
 
-  const ping = setInterval(() => {
-    if (pendingInput === 0 && Date.now() - lastSeen > (opts.idleMs ?? 75_000)) {
-      writeFrames([conn.close(CloseCode.goingAway, "idle timeout") ?? Buffer.alloc(0)]);
-      socket.end();
-      setTimeout(() => socket.destroy(), 500).unref();
-      return;
-    }
-    writeFrames([encodePing()]);
-  }, opts.pingMs ?? 25_000);
-  ping.unref();
+  const ping = startKeepalive(socket, conn, { pingMs: opts.pingMs, idleMs: opts.idleMs, lastSeen: () => lastSeen, busy: () => pendingInput !== 0 });
 
   const control = (text: string) => {
     let msg: unknown;
