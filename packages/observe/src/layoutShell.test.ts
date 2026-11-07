@@ -278,6 +278,7 @@ function boot(o: Opts = {}) {
     stash: byId.get("wm-stash")!,
     byId,
     docListeners,
+    winListeners,
     rafs,
     mq,
     mqListeners,
@@ -763,4 +764,40 @@ test("changing a tile's view to one shown elsewhere renders once when focus chan
   sel.fire("change");
   assert.equal(sets, 1, "render runs because commit reported no change");
   assert.equal(val, "reports");
+});
+
+test("a view focusing itself (xterm's hidden textarea after a socket opens) does not steal the tile focus; tabbing in and clicking do", () => {
+  const s = boot();
+  s.btn(s.tiles()[0]!, "Split right").click(); // t2 = second tile, focused
+  const sel = s
+    .tileOf("t2")
+    .all()
+    .find((n) => n.tagName === "select")!;
+  sel.value = "terminal";
+  sel.fire("change");
+  s.tileOf("t1").fire("pointerdown"); // operator puts focus on t1
+  assert.equal(s.tileOf("t1").className, "tile tile-focused");
+  s.tileOf("t2").fire("focusin"); // programmatic focus inside the terminal tile, no operator input
+  assert.equal(s.tileOf("t1").className, "tile tile-focused", "a view's own focus() leaves the recorded focus alone");
+  assert.equal(s.tileOf("t2").className, "tile");
+  const key = s.docListeners.get("keydown")![0]!;
+  key.fn({ key: "Tab" }); // tabbing: keydown, then focusin on the next tile
+  s.tileOf("t2").fire("focusin");
+  assert.equal(s.tileOf("t2").className, "tile tile-focused", "keyboard focus moves the tile focus");
+  s.tileOf("t1").fire("pointerdown");
+  assert.equal(s.tileOf("t1").className, "tile tile-focused", "a click focuses the tile");
+  s.docListeners.get("keyup")![0]!.fn({ key: "Tab" });
+  s.tileOf("t2").fire("focusin");
+  assert.equal(s.tileOf("t1").className, "tile tile-focused", "after the key is released, programmatic focus is ignored again");
+});
+
+test("window blur clears the held-key flag, so a keyup lost to Alt+Tab does not let a view steal the tile focus", () => {
+  const s = boot();
+  s.btn(s.tiles()[0]!, "Split right").click(); // t2 = second tile, focused
+  s.tileOf("t1").fire("pointerdown"); // operator puts focus on t1
+  s.docListeners.get("keydown")![0]!.fn({ key: "Alt" }); // Alt+Tab: keydown seen, keyup goes to the other window
+  for (const fn of s.winListeners.get("blur") ?? []) fn({});
+  s.tileOf("t2").fire("focusin"); // programmatic focus after the window regains focus
+  assert.equal(s.tileOf("t1").className, "tile tile-focused", "blur released the held key");
+  assert.equal(s.tileOf("t2").className, "tile");
 });

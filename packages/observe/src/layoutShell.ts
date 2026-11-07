@@ -188,6 +188,7 @@ function createWindowManager(tabs, storageKey) {
     for (const id of order) if (kindOf(id) === "section" && !shown.has(id)) return id;
     return regDef("terminal") ? "terminal" : defaultView;
   };
+  let keyDown = false;
   const focusLeaf = (id) => { commit(LK.focus(layout(), id)); };
   const splitLeaf = (id, dir) => {
     const next = LK.split(layout(), id, dir, pickNewView());
@@ -238,7 +239,9 @@ function createWindowManager(tabs, storageKey) {
     el.appendChild(bar);
     el.appendChild(body);
     el.addEventListener("pointerdown", () => focusLeaf(lf.id), true);
-    el.addEventListener("focusin", () => focusLeaf(lf.id));
+    // only focus the operator caused counts: a view calling focus() on its own (xterm's hidden textarea once its socket opens) must not move the layout's focus
+    // TODO(tile-focus-source): this key-held heuristic has two limits. (1) A key held down while a terminal's socket opens still counts as operator focus and moves the tile focus. (2) Focus that moves with no key or pointer press (screen-reader virtual cursor, voice control) no longer updates the focused tile. Preferred fix: stop the view stealing focus at the source (tabs.ts term.focus() after socket open skipped when its tile is not the focused one, e.g. via a host-provided focus-if-focused hook), then delete keyDown.
+    el.addEventListener("focusin", () => { if (keyDown) focusLeaf(lf.id); });
     Object.assign(rec, { el, title, sel, bClose, body });
 
     const note = (text) => {
@@ -419,7 +422,10 @@ function createWindowManager(tabs, storageKey) {
     const t = hashTarget(location.hash);
     if (t) commit(openTarget(layout(), t));
   });
+  document.addEventListener("keyup", () => { keyDown = false; }, true);
+  addEventListener("blur", () => { keyDown = false; });
   document.addEventListener("keydown", (ev) => {
+    keyDown = true;
     if (!ev.altKey || !ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
     const dir = DIRS[ev.key];
     if (!dir || narrow) return;

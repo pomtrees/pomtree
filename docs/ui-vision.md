@@ -33,9 +33,12 @@ Built:
 - the pure layout module (`packages/observe/src/layout.ts`);
 - the tiling shell with persistence, import, export and the narrow-width fallback (`packages/observe/src/layoutShell.ts`);
 - a terminal pane that can be mounted more than once per page, and an internal view registry (`registerView` in `packages/observe/src/paneKit.ts`);
-- the black-and-orange dark scheme with window chrome (`packages/observe/src/themeCss.ts`), and its polish: a dark terminal palette (`packages/observe/src/termKit.ts`), a resting splitter grip, an accent fill on a keyboard-focused splitter, forced-colors (high-contrast mode) handling, and a chrome border pinned at 3:1 contrast or more by `themeCss.test.ts`.
+- the black-and-orange dark scheme with window chrome (`packages/observe/src/themeCss.ts`), and its polish: a dark terminal palette (`packages/observe/src/termKit.ts`), a resting splitter grip, an accent fill on a keyboard-focused splitter, forced-colors (high-contrast mode) handling, and a chrome border pinned at 3:1 contrast or more by `themeCss.test.ts`;
+- the terminal-focus fix: a terminal mounting no longer moves the tile focus (`packages/observe/src/layoutShell.ts`).
 
 The registry is internal. In the dark scheme the warning colour is now a yellow-green and the error colour a rose; the light scheme is unchanged and its warning colour is still a brown-orange.
+
+The terminal-focus fix is a heuristic: only focus that follows a key or pointer press counts as the operator's. It has two limits, tracked by `TODO(tile-focus-source)` in `layoutShell.ts`. A key held down while a terminal's socket opens still moves the tile focus, and focus that moves with no key or pointer press (a screen-reader cursor, voice control) no longer updates the focused tile.
 
 Not built yet: the live browser view, which this document describes as intent.
 
