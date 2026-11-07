@@ -28,6 +28,8 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .tile-body .wm-mount .pane { box-sizing: border-box; padding: 0.75rem; }
 .tile-body .wm-mount .pane button, .tile-body .wm-mount .pane a.btn { padding: 0.125rem 0.5rem; font-size: 0.8125rem; }
 .tile-body .term.pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.tile-body .pane.browser { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.tile-body .pane.browser canvas { flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .tile-body .termwrap { flex: 1 1 auto; min-height: 0; }
 .tile-body .termhost { height: 100%; min-height: 0; }
 .tile-body .termnote:empty { min-height: 0; margin: 0; padding: 0; }

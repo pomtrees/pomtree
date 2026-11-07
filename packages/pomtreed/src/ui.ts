@@ -4,6 +4,7 @@
 
 import {
   renderAuditPane,
+  renderBrowserView,
   renderHostsPane,
   renderInboxPane,
   renderNewAgentPane,
@@ -29,7 +30,8 @@ export function renderUiShell(): string {
     { id: "new", title: "+ New agent", render: () => renderNewAgentPane() },
     { id: "schedules", title: "Schedules", render: () => renderSchedulesPane() },
     { id: "hosts", title: "Hosts", render: () => renderHostsPane() },
-    { id: "terminal", title: "Terminal", render: () => renderTerminalPane() },
+    // The browser view has no tab of its own (a view script only ships inside a tab section), so it ships with the terminal's.
+    { id: "terminal", title: "Terminal", render: () => renderTerminalPane() + renderBrowserView() },
     { id: "inbox", title: "Inbox", render: () => renderInboxPane() },
   ];
   return renderShell({ tabs, prefix: "/", title: "pomtree" });

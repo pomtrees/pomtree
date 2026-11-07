@@ -68,6 +68,9 @@ test("GET /ui serves the shell with all tabs wired", async () => {
       assert.ok(html.body.includes(`data-nav="${tab}"`), `missing nav ${tab}`);
     }
     assert.ok(!html.body.includes('data-nav="escalations"'));
+    // The browser view ships its script with the terminal tab and adds no tab or nav entry of its own.
+    assert.ok(html.body.includes('K.registerView({ id: "browser"'));
+    assert.ok(!html.body.includes('data-tab="browser"') && !html.body.includes('data-nav="browser"'));
     // The tiling shell: sections wait in the stash until a tile hosts them, and the layout controls are present.
     assert.ok(html.body.includes('<div id="wm-stash" hidden><section data-tab="tree" hidden>'));
     for (const id of ["wm-root", "wm-notices", "wm-export", "wm-import", "wm-reset"]) assert.ok(html.body.includes(`id="${id}"`), id);

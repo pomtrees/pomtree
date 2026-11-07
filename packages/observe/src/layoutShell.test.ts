@@ -646,6 +646,24 @@ test("layoutCss: mounted panes inside a tile get the section padding and compact
   assert.doesNotMatch(pad[1]! + btn[1]!, /color|background/, "colours stay with the theme tokens");
 });
 
+test("layoutCss: a browser pane fills its tile and its canvas takes the remaining height, with no colour", () => {
+  const pane = /\.tile-body \.pane\.browser \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(pane, "a .tile-body .pane.browser rule");
+  assert.match(pane[1]!, /display: flex/);
+  assert.match(pane[1]!, /flex-direction: column/);
+  assert.match(pane[1]!, /height: 100%/);
+  assert.match(pane[1]!, /min-height: 0/);
+  const canvas = /\.tile-body \.pane\.browser canvas \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(canvas, "a .tile-body .pane.browser canvas rule");
+  assert.match(canvas[1]!, /flex: 1 1 auto/);
+  assert.match(canvas[1]!, /min-height: 0/);
+  assert.match(canvas[1]!, /width: 100%/);
+  assert.match(canvas[1]!, /height: 100%/);
+  assert.match(canvas[1]!, /object-fit: contain/, "the frame keeps its aspect ratio instead of stretching");
+  assert.match(canvas[1]!, /display: block/);
+  assert.doesNotMatch(pane[1]! + canvas[1]!, /color|background|border/, "geometry only");
+});
+
 test("tiles put .tile-focused on the .tile element and splitters carry aria-orientation by split direction", () => {
   const s = boot();
   s.btn(s.tiles()[0]!, "Split right").click();
