@@ -272,3 +272,37 @@ test("end() with an explicit reason reaches viewers once", () => {
   hub.end("a1", "ended");
   assert.deepEqual(v.viewer.closed, ["error"]);
 });
+
+test("status backpressure: a backed-up viewer gets no status writes, then only the latest on drain, ahead of the pending frame", () => {
+  const { hub, relays } = make();
+  const slow = join(hub);
+  const fast = join(hub);
+  slow.viewer.queued = FRAME_BACKLOG_LIMIT;
+  const before = slow.viewer.statuses.length;
+  relays[0]!.listener.frame(img(5));
+  for (let i = 1; i <= 50; i++) relays[0]!.listener.status({ state: "live", width: i, height: i });
+  assert.equal(slow.viewer.statuses.length, before); // nothing written while backed up
+  assert.equal(fast.viewer.statuses.length, before + 50); // negative control: others unaffected
+  slow.viewer.queued = 0;
+  slow.lease.drained();
+  assert.equal(slow.viewer.statuses.length, before + 1);
+  assert.deepEqual(slow.viewer.statuses.at(-1), { state: "live", width: 50, height: 50 });
+  assert.deepEqual(slow.viewer.log.slice(-2), ["status:live", "frame:5"]); // status first, then the frame
+  slow.lease.drained();
+  assert.equal(slow.viewer.statuses.length, before + 1); // nothing pending any more
+});
+
+test("viewer cap holds across a replaced entry: old viewers still draining count until released", () => {
+  const { hub } = make();
+  const old = Array.from({ length: MAX_BROWSER_VIEWERS }, () => join(hub));
+  hub.end("a1"); // entry ends; its viewers are told "ended" but have not detached yet
+  assert.equal(old[0]!.viewer.closed[0], "ended");
+  assert.equal(hub.acquire("a1"), null); // 8 draining viewers still fill the cap
+  assert.equal(hub.viewers("a1"), MAX_BROWSER_VIEWERS);
+  old[0]!.lease.detach();
+  const fresh = hub.acquire("a1");
+  assert.ok(fresh); // one released, one admitted
+  assert.equal(hub.acquire("a1"), null); // and the cap is full again
+  assert.equal(hub.viewers("a1"), MAX_BROWSER_VIEWERS);
+  assert.ok(hub.acquire("other")); // per agent
+});

@@ -48,6 +48,7 @@ export interface BrowserHubOpts {
 interface Slot {
   viewer: BrowserViewer;
   pending: Uint8Array | null;
+  pendingStatus: RelayStatus | null; // newest status withheld while the viewer was backed up
 }
 
 interface Entry {
@@ -72,6 +73,8 @@ const realTimers: RelayTimers = {
 // TODO(browser-controller-role): the hub shares one stream among up to MAX_BROWSER_VIEWERS read-only viewers; there is no writer role. Trigger: after browser-input-relay; one controller at a time, the others view-only, released when the agent ends.
 export class BrowserHub {
   #entries = new Map<string, Entry>();
+  // Attached viewers per agent across live and ended entries: a viewer that is still draining after its entry ended counts until it detaches.
+  #held = new Map<string, number>();
   readonly #opts: BrowserHubOpts;
 
   constructor(opts: BrowserHubOpts) {
@@ -85,11 +88,12 @@ export class BrowserHub {
 
   /** Attached (acquired, not yet detached) viewers for the agent. */
   viewers(agent: string): number {
-    return this.#entries.get(agent)?.leases ?? 0;
+    return this.#held.get(agent) ?? 0;
   }
 
   /** Reuses the agent's relay or starts one. Returns null when the agent already has the maximum number of viewers. */
   acquire(agent: string): BrowserLease | null {
+    if ((this.#held.get(agent) ?? 0) >= (this.#opts.maxViewers ?? MAX_BROWSER_VIEWERS)) return null;
     let e = this.#entries.get(agent);
     if (!e) {
       e = { relay: null, slots: new Map(), leases: 0, status: null, frame: null, ended: null, aliveTimer: undefined };
@@ -99,7 +103,7 @@ export class BrowserHub {
       entry.relay = this.#opts.relay(agent, {
         status: (s) => {
           entry.status = s;
-          for (const slot of [...entry.slots.values()]) this.#safe(agent, "status", () => slot.viewer.status(s));
+          for (const slot of [...entry.slots.values()]) this.#deliverStatus(agent, slot, s);
         },
         frame: (f) => {
           entry.frame = f;
@@ -108,10 +112,8 @@ export class BrowserHub {
       });
       this.#watchAlive(agent, entry);
     }
-    if (e.leases >= (this.#opts.maxViewers ?? MAX_BROWSER_VIEWERS)) {
-      return null;
-    }
     e.leases++;
+    this.#held.set(agent, (this.#held.get(agent) ?? 0) + 1);
     return this.#lease(agent, e);
   }
 
@@ -134,20 +136,33 @@ export class BrowserHub {
     }
   }
 
-  // Latest-frame-wins per viewer: write when the viewer's socket has room, otherwise keep only the newest frame.
-  #deliver(agent: string, slot: Slot, frame: Uint8Array): void {
-    const limit = this.#opts.frameBacklogLimit ?? FRAME_BACKLOG_LIMIT;
-    let room: boolean;
+  #hasRoom(agent: string, slot: Slot): boolean {
     try {
-      room = slot.viewer.backlog() < limit;
+      return slot.viewer.backlog() < (this.#opts.frameBacklogLimit ?? FRAME_BACKLOG_LIMIT);
     } catch (err) {
       this.#opts.onError?.(agent, "backlog", err);
-      room = false;
+      return false;
     }
-    if (!room) {
+  }
+
+  // Latest-wins per viewer, like frames: write when the socket has room, otherwise keep only the newest status.
+  #deliverStatus(agent: string, slot: Slot, s: RelayStatus): void {
+    if (!this.#hasRoom(agent, slot)) {
+      slot.pendingStatus = s;
+      return;
+    }
+    slot.pendingStatus = null;
+    this.#safe(agent, "status", () => slot.viewer.status(s));
+  }
+
+  // Latest-frame-wins per viewer: write when the viewer's socket has room, otherwise keep only the newest frame.
+  #deliver(agent: string, slot: Slot, frame: Uint8Array): void {
+    if (!this.#hasRoom(agent, slot)) {
       slot.pending = frame;
       return;
     }
+    // A withheld status goes out ahead of the frame it describes.
+    if (slot.pendingStatus) this.#deliverStatus(agent, slot, slot.pendingStatus);
     slot.pending = null;
     this.#safe(agent, "frame", () => slot.viewer.frame(frame));
   }
@@ -194,25 +209,25 @@ export class BrowserHub {
     return {
       start: (viewer) => {
         if (released || slot) return;
-        slot = { viewer, pending: null };
+        slot = { viewer, pending: null, pendingStatus: null };
         if (e.ended) return void this.#safe(agent, "close", () => viewer.close(e.ended!));
         e.slots.set(viewer, slot);
         const s = slot;
-        if (e.status) {
-          const st = e.status;
-          this.#safe(agent, "status", () => viewer.status(st));
-        }
+        if (e.status) this.#deliverStatus(agent, s, e.status);
         if (e.frame) this.#deliver(agent, s, e.frame);
       },
       drained: () => {
-        if (!slot?.pending || e.ended) return;
-        const f = slot.pending;
-        this.#deliver(agent, slot, f);
+        if (!slot || e.ended) return;
+        if (slot.pendingStatus) this.#deliverStatus(agent, slot, slot.pendingStatus);
+        if (slot.pending) this.#deliver(agent, slot, slot.pending);
       },
       detach: () => {
         if (released) return;
         released = true;
         if (slot) e.slots.delete(slot.viewer);
+        const held = (this.#held.get(agent) ?? 1) - 1;
+        if (held <= 0) this.#held.delete(agent);
+        else this.#held.set(agent, held);
         if (--e.leases <= 0 && !e.ended) this.#end(agent, e, "local"); // stop the relay; the agent keeps running
       },
     };

@@ -21,6 +21,8 @@ import { egressAuditReport, evaluateReadiness } from "./health.ts";
 import type { EgressAuditStatusLike, Readiness } from "./health.ts";
 import { closeTerminals, handleTerminalUpgrade } from "./terminal-route.ts";
 import type { TerminalRouteOpts } from "./terminal-route.ts";
+import { closeBrowsers, handleBrowserUpgrade, isBrowserPath } from "./browser-route.ts";
+import type { BrowserRouteOpts } from "./browser-route.ts";
 import { VENDOR_URL_PREFIX, readInboxScript, readVendorAsset } from "./terminal-assets.ts";
 
 // Every JSON body, /v1/state/* included. A state document PUT always fits because the configurable per-document maximum
@@ -604,6 +606,7 @@ export function makeServer(
     listener?: ListenerKind;
     accessLog?: { mode: AccessLogMode; sink: AccessSink };
     terminal?: TerminalRouteOpts;
+    browser?: BrowserRouteOpts;
     vendorDir?: string;
     /** /readyz stays 200 while Docker is down (an explicit operator choice; readyz.allowSandboxDown). */
     readyzAllowSandboxDown?: boolean;
@@ -634,14 +637,19 @@ export function makeServer(
     }
   });
 
-  // Terminal websocket (GET /v1/agents/:id/terminal): one access line per attempt (101 on success, the refusal status otherwise). Upgraded sockets leave
+  // Terminal and browser-view websockets (GET /v1/agents/:id/terminal and /browser): one access line per attempt (101 on success, the refusal status otherwise). Upgraded sockets leave
   // node's http connection tracking, so closeAllConnections (the shutdown path) is extended to close them too.
   server.on("upgrade", (req, socket, head) => {
     const t0 = Date.now();
     const ctx: ReqCtx = { listener, startTime: t0, principal: null, hadCredential: false };
     ctxs.set(req, ctx);
     const emit = accessEmitter(opts.accessLog ?? defaultAccess, listener, req, ctx, t0);
-    void handleTerminalUpgrade(daemon, opts.terminal ?? {}, agentOnly || opts.hostOnly === true, req, socket, head, ctx)
+    const restricted = agentOnly || opts.hostOnly === true;
+    void (
+      isBrowserPath(req.url)
+        ? handleBrowserUpgrade(daemon, opts.browser ?? {}, restricted, req, socket, head, ctx)
+        : handleTerminalUpgrade(daemon, opts.terminal ?? {}, restricted, req, socket, head, ctx)
+    )
       .then(emit)
       .catch((e) => {
         logRequestError(agentOnly, e, req);
@@ -653,6 +661,7 @@ export function makeServer(
   const closeAll = server.closeAllConnections.bind(server);
   server.closeAllConnections = () => {
     closeTerminals(daemon);
+    closeBrowsers(daemon);
     closeAll();
   };
 
