@@ -117,7 +117,7 @@ test("the demo image carries no browser, fonts, toolchain, Python or pi-browser;
   const installed = [...slim.matchAll(/apt-get install[^\n]*/g)].map((m) => m[0]).join("\n");
   assert.ok(installed.length > 0);
   assert.doesNotMatch(installed, /\b(?:chromium|fonts-\S+|cargo|build-essential|python3\S*)\b/);
-  assert.doesNotMatch(slim, /pi-browser|browser-run\.ts|browser-capture\.ts|capture-worker\.ts|cdp-recorder\.ts|app-browser/);
+  assert.doesNotMatch(slim, /pi-browser|browser-run\.ts|browser-capture\.ts|capture-worker\.ts|cdp-recorder\.ts|loopback-bridge|app-browser/);
   const fullAll = `${full}${appBrowser}`;
   for (const re of [/\bchromium\b/, /\bcargo\b/, /\bbuild-essential\b/, /\bpython3-pip\b/, /pi-browser/, /capture-worker\.ts/, /browser-run\.ts/])
     assert.match(fullAll, re);

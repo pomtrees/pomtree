@@ -86,6 +86,8 @@ COPY packages/agent-image/src/main-content.ts /opt/pomtree/main-content.ts
 # The model-free capture worker: run as `/usr/local/bin/node /opt/pomtree/capture-worker.ts`, no Pi.
 # It imports browser-run.ts, browser-capture.ts and main-content.ts above, the CDP recorder, and the pure WARC/WACZ format modules.
 COPY packages/agent-image/src/capture-worker.ts packages/agent-image/src/cdp-recorder.ts packages/agent-image/src/capture-types.ts packages/agent-image/src/warc.ts packages/agent-image/src/cdxj.ts packages/agent-image/src/zip.ts packages/agent-image/src/wacz.ts /opt/pomtree/
+# The daemon's loopback bridge (`node /opt/pomtree/loopback-bridge.ts <port>`): raw stdin/stdout to Chromium's DevTools port on container loopback.
+COPY packages/agent-image/src/loopback-bridge.ts packages/agent-image/src/loopback-bridge-core.ts /opt/pomtree/
 
 # The slim demo image (docs/demo.md, 'The slim image'): Pi, pomtree, git, the egress sidecar and the extension loadout, nothing browser- or toolchain-related.
 FROM system AS demo

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CLI_POMTREE_MAIN } from "./container-contract.gen.ts";
+import { CLI_POMTREE_MAIN, LOOPBACK_BRIDGE_MAIN } from "./container-contract.gen.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dockerfile = readFileSync(resolve(here, "..", "Dockerfile"), "utf8");
@@ -100,6 +100,14 @@ test("the model-free capture worker and its modules are COPYed flat beside the b
     instructions,
     /^COPY packages\/agent-image\/src\/capture-worker\.ts packages\/agent-image\/src\/cdp-recorder\.ts packages\/agent-image\/src\/capture-types\.ts packages\/agent-image\/src\/warc\.ts packages\/agent-image\/src\/cdxj\.ts packages\/agent-image\/src\/zip\.ts packages\/agent-image\/src\/wacz\.ts \/opt\/pomtree\/$/m,
   );
+});
+
+test("the loopback bridge and its core are COPYed flat into the browser stage only, at the generated main path", () => {
+  const copy = /^COPY packages\/agent-image\/src\/loopback-bridge\.ts packages\/agent-image\/src\/loopback-bridge-core\.ts \/opt\/pomtree\/$/m;
+  assert.match(instructions, copy);
+  assert.equal(LOOPBACK_BRIDGE_MAIN, "/opt/pomtree/loopback-bridge.ts");
+  const [, , appBrowser] = instructions.split(/^FROM .*$/m).slice(1);
+  assert.match(appBrowser ?? "", copy);
 });
 
 test("no shipped browser file re-declares an image fact or a delivered bound (negative guard against new hand copies)", () => {
