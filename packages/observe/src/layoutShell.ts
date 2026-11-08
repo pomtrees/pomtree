@@ -546,6 +546,7 @@ function createWindowManager(tabs, storageKey) {
       if (rec && rec.el.focus) rec.el.focus();
     }
   }, true);
+  const subjectArgs = (view, p) => { const need = subjectOf(view); return need ? itemParams(p.agent, need === "report" ? p.report : "") : {}; };
   const api = {
     state: () => {
       const l = layout();
@@ -569,6 +570,35 @@ function createWindowManager(tabs, storageKey) {
     exportLayout: doExport,
     importFile: doImport,
     resetLayout: doReset,
+    notify: (key, text) => notify(key, text),
+    dismiss: (key) => dismiss(key),
+    // UI commands (uiDriver.ts): act on the tile showing a subject, never on a view that is not shown.
+    // Params are normalised as openView does: a browsing view has no subject, a non-report view ignores a report.
+    focusSubject: (view, params) => {
+      const at = LK.find(layout(), view, subjectArgs(view, params), multiOf(view));
+      if (!at) return false;
+      focusLeaf(at);
+      return true;
+    },
+    closeSubject: (view, params) => {
+      const at = LK.find(layout(), view, subjectArgs(view, params), multiOf(view));
+      if (!at) return false;
+      commit(LK.close(layout(), at));
+      return true;
+    },
+    focusDirection: (dir) => {
+      if (narrow) { notify("focus", "Focus direction is ignored on narrow screens (one window at a time). Make the window wider than 640px to move focus between tiles."); return false; }
+      if (!commit(LK.focusDir(desktop, dir))) { notify("focus", "No window to focus " + dir + " of the current one."); return false; }
+      const rec = tiles.get(desktop.focus);
+      if (rec && rec.el.focus) rec.el.focus();
+      return true;
+    },
+    arrange: (preset) => {
+      if (narrow) { notify("arrange", "Arrange is ignored on narrow screens (one window at a time). Make the window wider than 640px to arrange tiles."); return false; }
+      const next = UiCommandKit.tile(desktop, preset);
+      if (!next) { notify("arrange", "Nothing to arrange: no windows are open. Open a window first."); return false; }
+      return commit(next);
+    },
     onChange: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
   };
   return { layout, tiles, api };

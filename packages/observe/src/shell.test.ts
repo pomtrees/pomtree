@@ -172,6 +172,21 @@ test("auth guard fires once on a 401 fetch and probes on EventSource error", asy
   assert.equal(fired, 1);
 });
 
+test("renderShell inlines the UI command kit and driver and starts the driver on the stream path in its own script block", () => {
+  const html = renderShell({ tabs: [{ id: "live", title: "Live", render: () => "" }] });
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+  const wiring = scripts.find((x) => x.includes("createUiDriver(wm, {"));
+  assert.ok(wiring, "driver wiring block present");
+  assert.ok(wiring!.includes('"/live/ui"'));
+  assert.ok(!wiring!.includes("createLauncherBar("));
+  assert.doesNotThrow(() => new Function(wiring!), "driver wiring parses");
+  const main = scripts.find((x) => x.includes("createWindowManager("))!;
+  assert.ok(main.includes("const UiCommandKit") && main.includes("function createUiDriver("));
+  assert.ok(main.indexOf("const LayoutKit") < main.indexOf("const UiCommandKit"), "the kit comes after LayoutKit");
+  assert.ok(scripts.indexOf(wiring!) > scripts.findIndex((x) => x.includes("createLauncherBar(wm, ")), "after the launcher bar");
+  for (const x of scripts) assert.doesNotThrow(() => new Function(x), "every inline script parses");
+});
+
 test("tree and reports panes ship the shared skeleton and declare their window sections", () => {
   const html = renderShell({
     tabs: [

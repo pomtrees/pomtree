@@ -9,6 +9,7 @@ import { LAYOUT_SHELL_JS } from "./layoutShell.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { WINDOW_CHROME_JS } from "./windowChrome.ts";
 import { CHROME_CSS } from "./chromeCss.ts";
+import { UI_DRIVER_JS } from "./uiDriver.ts";
 
 // A small fake DOM: just what the window manager touches. innerHTML/outerHTML/insertAdjacentHTML throw so any use
 // of them on agent data fails a test.
@@ -134,6 +135,12 @@ interface WmApi {
   exportLayout(): void;
   importFile(file: { text(): Promise<string> } | undefined): void;
   resetLayout(): void;
+  notify(key: string, text: string): void;
+  dismiss(key: string): void;
+  focusSubject(view: string, params: { agent?: string; report?: string }): boolean;
+  closeSubject(view: string, params: { agent?: string; report?: string }): boolean;
+  focusDirection(dir: "left" | "right" | "up" | "down"): boolean;
+  arrange(preset: "single" | "columns" | "rows" | "grid"): boolean;
   onChange(fn: () => void): () => void;
 }
 
@@ -1632,4 +1639,137 @@ test("imported repeats of one subject get the defensive note; another report of 
   assert.equal(s.mounts.length, 2);
   assert.equal(s.mounts[0]!.unmounted, true);
   assert.equal(s.mounts[1]!.params.report, "r2");
+});
+
+// The driver tests use a fake api, so a member the driver calls that the real shell lacks would pass them and fail only in the page.
+test("the real shell api has every member the ui driver calls (negative control: a made-up member is absent)", () => {
+  const s = boot();
+  const real = s.api as unknown as Record<string, unknown>;
+  const used = new Set([...UI_DRIVER_JS.matchAll(/\bapi\.(\w+)\(/g)].map((m) => m[1]!));
+  assert.ok(used.has("openView") && used.has("notify"), "the scan finds the driver's calls");
+  const missing = [...used].filter((name) => typeof real[name] !== "function");
+  assert.deepEqual(missing, []);
+  assert.equal(typeof real.noSuchMember, "undefined");
+});
+
+test("api.notify shows a notice through textContent", () => {
+  const s = boot();
+  s.api.notify("ui-command", "<b>hi</b>");
+  assert.ok(s.noticeTexts().some((t) => t.startsWith("<b>hi</b>")));
+});
+
+test("api.focusSubject focuses the tile showing that subject and returns false when none shows it", () => {
+  const s = boot();
+  s.api.openView("terminal", "a1");
+  s.api.openView("terminal", "a2");
+  const a2 = s.api.state().leaves.find((l) => l.params.agent === "a2")!;
+  assert.equal(s.api.state().focus, a2.id);
+  assert.equal(s.api.focusSubject("terminal", { agent: "a1" }), true);
+  const a1 = s.api.state().leaves.find((l) => l.params.agent === "a1")!;
+  assert.equal(s.api.state().focus, a1.id);
+  assert.equal(s.api.focusSubject("terminal", { agent: "zz" }), false);
+  assert.equal(s.api.state().focus, a1.id);
+  assert.equal(s.api.focusSubject("report", { agent: "a1", report: "r1" }), false);
+});
+
+test("api.closeSubject closes that tile once, then returns false", () => {
+  const s = boot();
+  s.api.openView("terminal", "a1");
+  const before = s.api.state().leaves.length;
+  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), true);
+  assert.equal(s.api.state().leaves.length, before - 1);
+  assert.equal(
+    s.api.state().leaves.some((l) => l.params.agent === "a1"),
+    false,
+  );
+  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), false);
+});
+
+test("api.closeSubject may close the last tile into the empty state", () => {
+  const s = boot({ store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "terminal", { agent: "a1" }) }) } });
+  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), true);
+  assert.equal(s.api.state().leaves.length, 0);
+});
+
+test("api.focusDirection moves focus to the neighbour and returns false at the edge", () => {
+  const s = boot({
+    store: {
+      "pomtree.layout": JSON.stringify({
+        version: 1,
+        next: 4,
+        focus: "t1",
+        root: { kind: "split", id: "s1", dir: "row", ratio: 0.5, children: [lf("t1", "tree"), lf("t2", "terminal", { agent: "a1" })] },
+      }),
+    },
+  });
+  assert.equal(s.api.focusDirection("right"), true);
+  assert.equal(s.api.state().focus, "t2");
+  assert.equal(s.api.focusDirection("right"), false);
+  assert.equal(s.api.focusDirection("left"), true);
+  assert.equal(s.api.state().focus, "t1");
+});
+
+test("api.arrange grid keeps four tiles and a narrow screen shows a notice and changes nothing", () => {
+  const s = boot();
+  for (const a of ["a1", "a2", "a3"]) s.api.openView("terminal", a);
+  const n = s.api.state().leaves.length;
+  assert.ok(n >= 3);
+  while (s.api.state().leaves.length < 4) s.api.openView("report", "a1", "r" + s.api.state().leaves.length);
+  assert.equal(s.api.arrange("grid"), true);
+  assert.equal(s.api.state().leaves.length, 4);
+  assert.equal(s.tiles().length, 4);
+  const narrow = boot({ narrow: true });
+  const before = narrow.api
+    .state()
+    .leaves.map((l) => l.id)
+    .join();
+  assert.equal(narrow.api.arrange("grid"), false);
+  assert.match(narrow.noticeTexts().join("|"), /arrange is ignored on narrow screens.*wider/i);
+  assert.equal(
+    narrow.api
+      .state()
+      .leaves.map((l) => l.id)
+      .join(),
+    before,
+  );
+});
+
+test("api.dismiss removes a notice by key", () => {
+  const s = boot();
+  s.api.notify("k", "hello");
+  assert.equal(s.noticeTexts().length, 1);
+  s.api.dismiss("k");
+  assert.equal(s.noticeTexts().length, 0);
+});
+
+test("api.arrange on an empty layout shows a nothing-to-arrange notice", () => {
+  const s = boot({ store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "", root: null }) } });
+  assert.equal(s.api.state().leaves.length, 0);
+  assert.equal(s.api.arrange("grid"), false);
+  assert.match(s.noticeTexts().join("|"), /Nothing to arrange: no windows are open\. Open a window first\./);
+});
+
+test("api.focusDirection on a narrow screen shows the narrow notice, not a no-window one", () => {
+  const s = boot({ narrow: true });
+  assert.equal(s.api.focusDirection("left"), false);
+  const t = s.noticeTexts().join("|");
+  assert.match(t, /ignored on narrow screens.*wider/i);
+  assert.doesNotMatch(t, /No window to focus/);
+});
+
+test("api.focusDirection at the edge says there is no window that way", () => {
+  const s = boot();
+  assert.equal(s.api.focusDirection("left"), false);
+  assert.match(s.noticeTexts().join("|"), /No window to focus left/);
+});
+
+test("focus and close normalise params like open: a browsing view with an agent, a terminal with a stray report", () => {
+  const s = boot();
+  s.api.openView("tree", "a1");
+  s.api.openView("terminal", "a1", "r9");
+  assert.equal(s.api.focusSubject("tree", { agent: "a1" }), true);
+  assert.equal(s.api.focusSubject("terminal", { agent: "a1", report: "r9" }), true);
+  assert.equal(s.api.closeSubject("terminal", { agent: "a1", report: "r9" }), true);
+  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), false);
+  assert.equal(s.api.closeSubject("tree", { agent: "a1" }), true);
 });

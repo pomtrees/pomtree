@@ -11,6 +11,8 @@ import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
 import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
+import { UI_COMMAND_JS, UI_STREAM_PATH } from "./uiCommand.ts";
+import { UI_DRIVER_JS } from "./uiDriver.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { WINDOW_CHROME_JS } from "./windowChrome.ts";
 import { CHROME_CSS } from "./chromeCss.ts";
@@ -159,12 +161,17 @@ ${LAYOUT_LOGIC_JS}
 ${MENU_NAV_JS}
 ${WINDOW_CHROME_JS}
 ${LAYOUT_SHELL_JS}
+${UI_COMMAND_JS}
+${UI_DRIVER_JS}
 const wm = createWindowManager(${tabsMeta}, ${scriptJson(LAYOUT_STORAGE_KEY)});
 </script>
 <script>
 ${LAUNCHER_LOGIC_JS}
 ${LAUNCHER_SHELL_JS}
 createLauncherBar(wm, ${launcherCfg});
+</script>
+<script>
+createUiDriver(wm, ${scriptJson({ path: UI_STREAM_PATH })});
 </script>
 </body>
 </html>
