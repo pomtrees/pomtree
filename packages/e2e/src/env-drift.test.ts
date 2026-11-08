@@ -23,8 +23,8 @@ const GAPS: Record<string, string> = {
   PTREE_CAPTURE_JOB: "capture-broker",
 };
 
-// POMTREE_* names that are operator or test seams, not daemon-injected: a documenting comment is enough (POMTREE_LIVE_* are the scripts/live operator overrides, documented in stack.sh).
-const SEAMS = new Set(["POMTREE_REVISION_FILE", "POMTREE_LIVE_MODEL", "POMTREE_LIVE_REPO", "POMTREE_LIVE_TMP"]);
+// POMTREE_* names that are operator or test seams, not daemon-injected: a documenting comment is enough (POMTREE_LIVE_* are the scripts/live operator overrides, documented in stack.sh; POMTREE_RUN_* are the scripts/run-capped.sh cap overrides, documented in its header and CONTRIBUTING.md).
+const SEAMS = new Set(["POMTREE_REVISION_FILE", "POMTREE_LIVE_MODEL", "POMTREE_LIVE_REPO", "POMTREE_LIVE_TMP", "POMTREE_RUN_MEM", "POMTREE_RUN_TIMEOUT"]);
 
 test("classify: assignments and env-literal keys are set sites, everything else is a read (negative variants included)", () => {
   assert.equal(classify("process.env.POMTREE_X = 'a';", "POMTREE_X"), "set");
@@ -36,6 +36,9 @@ test("classify: assignments and env-literal keys are set sites, everything else 
   assert.equal(classify('if (env.POMTREE_X === "a") {}', "POMTREE_X"), "read");
   assert.equal(classify('envInt(env, "POMTREE_X", 1)', "POMTREE_X"), "read");
   assert.equal(classify("const t = c ? POMTREE_X : 1;", "POMTREE_X"), "read");
+  assert.equal(classify('if [ "${POMTREE_X:-}" = 1 ]; then', "POMTREE_X"), "read");
+  assert.equal(classify("MEM=${POMTREE_X:-8G}", "POMTREE_X"), "read");
+  assert.equal(classify("echo ${POMTREE_X}", "POMTREE_X"), "read");
 });
 
 // POMTREE_* names are injected by the daemon into agent containers: a comment is not enough, they need a real set site.

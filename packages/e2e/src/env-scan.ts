@@ -37,6 +37,8 @@ export type Site = "set" | "read" | "doc";
 // (`NAME:` / `"NAME":` inside an env literal). Everything else that mentions it in code is a read.
 export function classify(line: string, name: string): "set" | "read" {
   const n = name.replace(/[$]/g, "\\$&");
+  // A shell parameter expansion (`${NAME}`, `${NAME:-default}`) reads the variable; the `:` after it is not an object key.
+  if (new RegExp(`\\$\\{${n}(?:[:}+?-])`).test(line)) return "read";
   if (new RegExp(`\\.${n}\\s*=(?!=)|\\[["']${n}["']\\]\\s*=(?!=)`).test(line)) return "set";
   if (new RegExp(`(^\\s*|[^\\w.?\\s]\\s*|,\\s*|{\\s*)["']?${n}["']?\\s*:(?!:)\\s*[^\\s)]`).test(line)) return "set";
   if (new RegExp(`(^|[\\s"'\`,;(])${n}=`).test(line)) return "set";

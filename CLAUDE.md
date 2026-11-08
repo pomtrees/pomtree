@@ -15,6 +15,7 @@ Rules for AI agents working in this repo. The standards for any change (what a c
 
 - `pnpm check:lite` is the gate: Biome format check, Biome lint, TypeScript typecheck and every package's tests with Docker-gated suites skipped. `pnpm check` also runs the Docker-gated suites.
 - Per package: `pnpm exec biome format <paths>`, `pnpm exec biome lint <paths>`, `npx tsc -p packages/<name>` and `pnpm --filter @pomtree/<name> test`. Zero lint errors are allowed.
+- The root test scripts run under `scripts/run-capped.sh` (memory cap and timeout; see CONTRIBUTING.md); wrap a single package run in it yourself.
 - Run Docker, end-to-end and other heavy suites one at a time. Reproduce a suspected flake several times alone before calling it flaky.
 - A change to the configuration keys or their exclusions runs `pnpm gen:config` in the same commit; a change to the onboarding steps runs `pnpm gen:getting-started`.
 

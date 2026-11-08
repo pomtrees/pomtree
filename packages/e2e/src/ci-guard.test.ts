@@ -119,8 +119,16 @@ test("the CI image job builds and caches the image, and each docker group loads 
   for (const job of [image, docker]) assert.ok(!/fetch-depth|ref:/.test(job), "both checkouts stay at GITHUB_SHA, the revision build.ts labels the image with");
   // PTREE_DOCKER_TESTS=1 comes from the root scripts, not the workflow; test:full stays the local umbrella that runs everything.
   const scripts = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
-  assert.match(scripts["test:full"] ?? "", /^PTREE_DOCKER_TESTS=1 /);
-  assert.match(scripts["test:full"] ?? "", /; PTREE_DOCKER_TESTS=1 pnpm test:examples /, "the example smoke tests get the Docker gate variable too");
+  assert.match(
+    scripts["test:full"] ?? "",
+    /; PTREE_DOCKER_TESTS=1 scripts\/run-capped\.sh -- pnpm -r /,
+    "the package suites run capped with the Docker gate variable",
+  );
+  assert.match(
+    scripts["test:full"] ?? "",
+    /; PTREE_DOCKER_TESTS=1 scripts\/run-capped\.sh -- pnpm test:examples /,
+    "the example smoke tests get the Docker gate variable too",
+  );
   assert.ok(!yml.includes("pnpm test:full"), "CI runs the groups, not test:full, so test-lite's suites do not run twice");
 });
 
