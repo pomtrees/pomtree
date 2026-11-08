@@ -5,6 +5,8 @@ import { BROWSER_LOGIC_JS, BROWSER_WS_PATH, renderBrowserView } from "./browserV
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { renderTerminalPane } from "./tabs.ts";
 import { renderShell } from "./shell.ts";
+import { MENU_KIT_JS, type MenuKitApi } from "./menuModel.ts";
+import { BROWSER_DECLARATION } from "./viewMenus.ts";
 import { TERM_LOGIC_JS } from "./termKit.ts";
 
 // ---- BrowserKit: the pure logic ----------------------------------------------------------------------------------
@@ -20,9 +22,16 @@ const kit = (() => {
       const r = f(...a);
       return r === undefined ? r : JSON.parse(JSON.stringify(r));
     };
-  return { ...raw, parseServerText: plain(raw.parseServerText!), fitRect: plain(raw.fitRect!) } as unknown as {
+  return { ...raw, parseServerText: plain(raw.parseServerText!), fitRect: plain(raw.fitRect!), drawPlan: plain(raw.drawPlan!) } as unknown as {
     parseServerText(s: unknown): unknown;
     fitRect(a: unknown, b: unknown, c: unknown, d: unknown): { x: number; y: number; w: number; h: number } | null;
+    drawPlan(
+      mode: unknown,
+      a: unknown,
+      b: unknown,
+      c: unknown,
+      d: unknown,
+    ): { canvasW: number; canvasH: number; rect: { x: number; y: number; w: number; h: number } } | null;
     frameGate(): { offer(f: unknown): unknown; done(): unknown; reset(): void };
     stopLabel(d: unknown): string;
   };
@@ -84,6 +93,14 @@ test("fitRect scales to fit preserving aspect, centred; unusable sizes give null
   }
 });
 
+test("drawPlan: fit keeps today's aspect-preserving plan; actual size is natural pixels at the origin; bad sizes give null", () => {
+  assert.deepEqual(kit.drawPlan("fit", 1280, 720, 640, 640), { canvasW: 640, canvasH: 640, rect: { x: 0, y: 140, w: 640, h: 360 } });
+  assert.deepEqual(kit.drawPlan("actual", 1280, 720, 640, 640), { canvasW: 1280, canvasH: 720, rect: { x: 0, y: 0, w: 1280, h: 720 } });
+  assert.equal(kit.drawPlan("fit", 0, 720, 640, 640), null);
+  assert.equal(kit.drawPlan("actual", 1280, NaN, 640, 640), null);
+  assert.equal(kit.drawPlan("fit", 1280, 720, 0, 640), null);
+});
+
 test("frameGate decodes one frame at a time and keeps only the newest pending frame", () => {
   const g = kit.frameGate();
   assert.equal(g.offer("a"), "a");
@@ -110,6 +127,7 @@ interface Node_ {
   className: string;
   textContent: string;
   style: Record<string, string>;
+  hidden?: boolean;
   children: Node_[];
   attrs: Map<string, string>;
   clientWidth: number;
@@ -140,7 +158,7 @@ function walk(n: Node_, fn: (x: Node_) => void): void {
   for (const c of n.children) walk(c, fn);
 }
 
-function setup(opts: { agent?: string; responses?: Record<string, { status?: number; body: unknown }> } = {}) {
+function setup(opts: { agent?: string; clipboardFails?: boolean; responses?: Record<string, { status?: number; body: unknown }> } = {}) {
   const ctx2d: Ctx2d = {
     draws: [],
     clears: 0,
@@ -177,6 +195,10 @@ function setup(opts: { agent?: string; responses?: Record<string, { status?: num
     return n;
   };
   const sockets: FakeSocket[] = [];
+  const clipboard: string[] = [];
+  const statuses: { slot: string; text: string; tone?: string | null }[] = [];
+  const menuStates: { command: string; state: Record<string, unknown> }[] = [];
+  let onCommand: (command: string, arg?: unknown) => void = () => {};
   class FakeSocket {
     url: string;
     readyState = 0;
@@ -234,6 +256,15 @@ function setup(opts: { agent?: string; responses?: Record<string, { status?: num
   const responses = opts.responses ?? {};
   const sandbox = {
     document: { createElement: makeNode },
+    navigator: {
+      clipboard: {
+        writeText: (text: string) => {
+          if (opts.clipboardFails) return Promise.reject(new Error("denied"));
+          clipboard.push(text);
+          return Promise.resolve();
+        },
+      },
+    },
     location: { protocol: "http:", host: "ui.test" },
     WebSocket: FakeSocket,
     createImageBitmap,
@@ -270,9 +301,30 @@ function setup(opts: { agent?: string; responses?: Record<string, { status?: num
     views(): { id: string }[];
   };
   const titles: string[] = [];
+  const menuKit = runInContext(
+    `(() => { ${MENU_KIT_JS}; return MenuKit; })()`,
+    createContext({ globalThis: {}, JSON, Object, Array, Set, Map, String, Error, WeakSet }),
+  ) as MenuKitApi;
+  const windowModel = menuKit.createWindowModel(menuKit.declareView(BROWSER_DECLARATION));
   const root = makeNode("div");
   const def = kitK.view("browser")!;
-  const handle = def.mount(root, { agent: opts.agent ?? "agent-1" }, { setTitle: (t: string) => titles.push(t), navigate: () => {} });
+  const handle = def.mount(
+    root,
+    { agent: opts.agent ?? "agent-1" },
+    {
+      setTitle: (t: string) => titles.push(t),
+      navigate: () => {},
+      // The REAL status validator (the window model the chrome gives a view), so a bad tone fails the mount like in the browser.
+      setStatus: (slot: string, v: { text: string; tone?: string | null }) => {
+        windowModel.setStatus(slot, v as never);
+        statuses.push({ slot, ...v });
+      },
+      setMenuState: (command: string, state: Record<string, unknown>) => menuStates.push({ command, state }),
+      onCommand: (f: typeof onCommand) => {
+        onCommand = f;
+      },
+    },
+  );
   const find = (pred: (n: Node_) => boolean): Node_ | undefined => {
     let hit: Node_ | undefined;
     walk(root, (n) => {
@@ -283,11 +335,39 @@ function setup(opts: { agent?: string; responses?: Record<string, { status?: num
   const flush = async () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
   };
-  return { kitK, def, handle, root, sockets, decodes, bitmap, ctx2d, titles, timeouts, intervals, fetches, find, flush };
+  const last = (slot: string) => [...statuses].reverse().find((x) => x.slot === slot);
+  const lastState = (command: string) => {
+    const st = [...menuStates].reverse().find((x) => x.command === command)?.state;
+    return st && JSON.parse(JSON.stringify(st));
+  };
+  return {
+    statuses,
+    menuStates,
+    last,
+    lastState,
+    clipboard,
+    command: (c: string, a?: unknown) => onCommand(c, a),
+    kitK,
+    def,
+    handle,
+    root,
+    sockets,
+    decodes,
+    bitmap,
+    ctx2d,
+    titles,
+    timeouts,
+    intervals,
+    fetches,
+    find,
+    flush,
+  };
 }
 
 const live = { type: "status", state: "live", url: "https://example.test/page", title: "Example page", width: 1280, height: 720 };
-const stateText = (t: ReturnType<typeof setup>) => t.find((n) => n.className.startsWith("state"))!.textContent;
+// The "stream" footer slot: the state, optionally followed by " — detail".
+const streamText = (t: ReturnType<typeof setup>) => t.last("stream")!.text;
+const stateText = (t: ReturnType<typeof setup>) => streamText(t).split(" \u2014 ")[0]!;
 
 test("the view registers as 'browser' (multi), dials the browser route and titles the tile", () => {
   const t = setup({ agent: "agent-12345678-abcd" });
@@ -311,6 +391,16 @@ test("the view registers as 'browser' (multi), dials the browser route and title
     "fixed agent-controlled note",
   );
   assert.equal(stateText(t), "connecting");
+  assert.equal(
+    t.find((n) => n.className.startsWith("state")),
+    undefined,
+    "no in-pane status text: the footer owns it",
+  );
+  assert.equal(
+    t.find((n) => n.tagName === "strong"),
+    undefined,
+    "no in-pane title bar either",
+  );
 });
 
 test("a binary frame is decoded as image/jpeg and drawn scaled to fit the canvas", async () => {
@@ -371,12 +461,15 @@ test("status messages set the status line; url and title go in as textContent on
   const evil = { ...live, url: '<img src=x onerror="alert(1)">', title: "<script>alert(2)</script>" };
   ws.text(evil);
   assert.equal(stateText(t), "live");
-  const page = t.find((n) => n.textContent.includes("<script>alert(2)</script>"))!;
-  assert.equal(page.textContent, '<script>alert(2)</script> — <img src=x onerror="alert(1)">');
-  assert.equal(page.children.length, 0, "no element was parsed out of the text");
+  assert.equal(t.last("url")!.text, '<img src=x onerror="alert(1)">', "the footer gets the raw string for textContent");
+  assert.equal(
+    t.find((n) => n.textContent.includes("alert")),
+    undefined,
+    "nothing agent-controlled is painted inside the pane",
+  );
   ws.text({ type: "status", state: "no-browser" });
   assert.equal(stateText(t), "no browser running");
-  assert.equal(t.find((n) => n.className === "meta" && n.textContent.includes("alert"))?.textContent ?? "", "", "page url/title cleared");
+  assert.equal(t.last("url")!.text, "", "page url cleared");
   ws.text({ type: "status", state: "connecting" });
   assert.equal(stateText(t), "connecting");
 });
@@ -448,10 +541,10 @@ test("unknown and malformed text messages are ignored", () => {
   const ws = t.sockets[0]!;
   ws.open();
   ws.text(live);
-  const before = JSON.stringify([stateText(t), t.find((n) => n.textContent.includes("Example page"))?.textContent]);
+  const before = JSON.stringify([stateText(t), t.last("url")]);
   for (const junk of ["garbage", { type: "navigate", url: "https://evil.test" }, { type: "status", state: "bogus" }, { type: "closed", reason: "weird" }, "[]"])
     ws.text(junk);
-  assert.equal(JSON.stringify([stateText(t), t.find((n) => n.textContent.includes("Example page"))?.textContent]), before);
+  assert.equal(JSON.stringify([stateText(t), t.last("url")]), before);
   assert.equal(t.sockets.length, 1);
 });
 
@@ -488,7 +581,7 @@ test("a dropped socket for a running agent reconnects with backoff; a finished a
   assert.equal(stateText(t), "reconnecting");
   assert.equal(t.timeouts.length, 1);
   assert.ok(t.timeouts[0]!.ms >= 375 && t.timeouts[0]!.ms <= 625, "first backoff step 0.5s +-25%");
-  assert.ok(t.find((n) => /reconnecting \(attempt 1\) in \d+s/.test(n.textContent)));
+  assert.ok(/reconnecting \(attempt 1\) in \d+s/.test(streamText(t)));
   t.timeouts[0]!.fn();
   assert.equal(t.sockets.length, 2);
 
@@ -498,7 +591,7 @@ test("a dropped socket for a running agent reconnects with backoff; a finished a
   await done.flush();
   assert.equal(stateText(done), "ended");
   assert.equal(done.timeouts.length, 0, "no retry for a finished agent");
-  assert.ok(done.find((n) => n.textContent === "Stream closed: ended"));
+  assert.equal(streamText(done), "ended \u2014 Stream closed: ended");
 });
 
 test("an agent that is not running (socket closed before upgrade) takes the lookup-and-decide path", async () => {
@@ -568,7 +661,7 @@ test("no agent selected: no socket, a hint, and the plain title", () => {
   const t = setup({ agent: "" });
   assert.equal(t.sockets.length, 0);
   assert.equal(t.titles.join("|"), "Browser");
-  assert.ok(t.find((n) => n.textContent.startsWith("no agent selected")));
+  assert.ok(streamText(t).startsWith("no agent selected"));
   t.handle.unmount();
 });
 
@@ -591,4 +684,107 @@ test("agentsBase and browserPath are script-escaped and cannot close the script"
   const html = renderBrowserView({ agentsBase: "</script><script>alert(1)</script>", browserPath: "/x/:id/b" });
   assert.equal(html.match(/<\/script>/g)!.length, 1);
   assert.ok(html.includes('"/x/:id/b"'));
+});
+
+// ---- window chrome: menus, status slots, commands -----------------------------------------------------------------
+
+test("registers the declared menus and status slots, and tones the stream slot", () => {
+  const t = setup();
+  const decl = t.kitK as unknown as { declaration(id: string): { menus: { id: string }[]; status: { id: string }[] } };
+  assert.deepEqual([...decl.declaration("browser").menus.map((m) => m.id)], ["view", "help"]);
+  assert.deepEqual([...decl.declaration("browser").status.map((x) => x.id)], ["stream", "view-only", "url"]);
+  assert.deepEqual({ ...t.last("stream") }, { slot: "stream", text: "connecting", tone: "warn" });
+  t.sockets[0]!.open();
+  t.sockets[0]!.text(live);
+  assert.deepEqual({ ...t.last("stream") }, { slot: "stream", text: "live", tone: "ok" });
+  assert.equal(t.last("url")!.text, "https://example.test/page");
+  assert.deepEqual(t.lastState("browser.copy-url"), { enabled: true });
+});
+
+test("fit and actual size are mutually exclusive; actual draws at natural pixels in a scrollable pane", async () => {
+  const t = setup();
+  const ws = t.sockets[0]!;
+  ws.open();
+  ws.frame();
+  t.decodes[0]!.resolve(t.bitmap(t.decodes[0]!.blob, 1280, 720));
+  await t.flush();
+  const canvas = t.find((n) => n.tagName === "canvas")!;
+  assert.deepEqual([canvas.width, canvas.height], [800, 450]);
+  t.command("browser.actual-size", true);
+  assert.deepEqual(t.lastState("browser.actual-size"), { checked: true });
+  assert.deepEqual(t.lastState("browser.fit"), { checked: false });
+  assert.deepEqual([canvas.width, canvas.height], [1280, 720]);
+  assert.deepEqual([canvas.style.width, canvas.style.height], ["1280px", "720px"]);
+  const d = t.ctx2d.draws.at(-1)!;
+  assert.deepEqual([d.x, d.y, d.w, d.h], [0, 0, 1280, 720]);
+  assert.equal(t.root.children[0]!.style.overflow, "auto");
+  t.command("browser.fit", true);
+  assert.deepEqual(t.lastState("browser.fit"), { checked: true });
+  assert.deepEqual(t.lastState("browser.actual-size"), { checked: false });
+  assert.deepEqual([canvas.style.width, canvas.style.height], ["100%", "100%"]);
+  assert.deepEqual([canvas.width, canvas.height], [800, 450]);
+});
+
+test("copy URL writes the page URL; a blocked clipboard or no URL is reported in the stream slot with cause and action", async () => {
+  const t = setup();
+  t.sockets[0]!.text(live);
+  t.command("browser.copy-url");
+  assert.deepEqual(t.clipboard, ["https://example.test/page"]);
+
+  const none = setup();
+  none.command("browser.copy-url");
+  assert.deepEqual(none.clipboard, []);
+  assert.match(none.last("stream")!.text, /^Copy failed: no page URL yet; wait for the page to load/);
+  assert.equal(none.last("stream")!.tone, "err");
+
+  const blocked = setup({ clipboardFails: true });
+  blocked.sockets[0]!.text(live);
+  blocked.command("browser.copy-url");
+  await blocked.flush();
+  assert.match(blocked.last("stream")!.text, /^Copy failed: the clipboard is unavailable or blocked; select the URL/);
+  assert.equal(blocked.last("stream")!.tone, "err");
+  blocked.sockets[0]!.text({ type: "status", state: "live" });
+  assert.equal(stateText(blocked), "live", "the next state change replaces the failure note");
+});
+
+test("about toggles a textContent-only view-only note; the view still adds no input handling", () => {
+  const t = setup();
+  const about = t.find((n) => n.textContent.startsWith("This view is view-only"))!;
+  assert.equal(about.hidden, true);
+  assert.equal(about.children.length, 0);
+  t.command("browser.about");
+  assert.equal(about.hidden, false);
+  t.command("browser.about");
+  assert.equal(about.hidden, true);
+  assert.ok(
+    !/addEventListener|onkeydown|onclick|onmouse|onpointer/.test(renderBrowserView().split("const mountBrowserInstance")[1]!),
+    "view-only: no input handlers",
+  );
+});
+
+test("status path: every connection state pushes a validator-accepted tone and the view loads", async () => {
+  const t = setup();
+  const tones = () => t.statuses.filter((x) => x.slot === "stream").map((x) => x.tone ?? "none");
+  assert.equal(
+    t.statuses.some((x) => x.tone === ""),
+    false,
+    "no empty-string tone on mount",
+  );
+  t.sockets[0]!.open();
+  t.sockets[0]!.text(live);
+  await t.flush();
+  t.sockets[0]!.drop();
+  await t.flush();
+  for (const tone of tones()) assert.ok(["ok", "warn", "err", "info", "none"].includes(tone), "tone " + tone);
+  assert.equal(tones().includes("ok"), true);
+  assert.equal(tones().includes("warn"), true);
+});
+
+test("status path negative control: the real validator rejects an empty-string tone", () => {
+  const menuKit = runInContext(
+    `(() => { ${MENU_KIT_JS}; return MenuKit; })()`,
+    createContext({ globalThis: {}, JSON, Object, Array, Set, Map, String, Error, WeakSet }),
+  ) as MenuKitApi;
+  const w = menuKit.createWindowModel(menuKit.declareView(BROWSER_DECLARATION));
+  assert.throws(() => w.setStatus("stream", { text: "", tone: "" as never }), /tone "" is not one of ok, warn, err, info; use one of those or null to clear/);
 });

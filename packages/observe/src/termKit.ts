@@ -219,7 +219,6 @@ const TermKit = globalThis.TermKit || (globalThis.TermKit = (() => {
 `;
 
 export const TERM_CSS = `
-.pane .statusbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
 .pane .termhost { box-sizing: border-box; height: min(70vh, 48rem); min-height: 12rem; padding: 0.375rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; position: relative; }
 .pane .termhost .xterm { height: 100%; }
 .pane .termhost .xterm-viewport { background-color: transparent !important; }

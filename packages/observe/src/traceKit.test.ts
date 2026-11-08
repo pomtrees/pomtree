@@ -204,14 +204,23 @@ test("download builds a markdown blob link and revokes the URL", () => {
   assert.equal(a.attrs.download, "trace-a_1-short.md");
 });
 
-test("terminal pane exposes Copy trace, short copy, options (children/raw warning/download)", async () => {
+test("terminal declaration exposes Copy trace, Short, options (children/raw caution) and Download, wired to the trace logic", async () => {
+  const { TERMINAL_DECLARATION } = await import("./viewMenus.ts");
   const { renderTerminalPane } = await import("./tabs.ts");
+  const items = (TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).filter((i: any) => i.command?.startsWith("terminal.trace-"));
+  const byCmd = (c: string): any => items.find((i: any) => i.command === c);
+  assert.equal(byCmd("terminal.trace-copy")?.label, "Copy trace");
+  assert.equal(byCmd("terminal.trace-short")?.label, "Short");
+  assert.equal(byCmd("terminal.trace-download")?.label, "Download .md");
+  assert.equal(byCmd("terminal.trace-children")?.kind, "toggle");
+  const raw = byCmd("terminal.trace-raw");
+  assert.equal(raw?.kind, "toggle");
+  assert.match(raw.label, /no redaction/);
+  assert.match(raw.caution, /skips secret redaction/); // the raw-output warning
+  assert.equal(raw.checked, false); // raw is off until confirmed
   const html = renderTerminalPane();
-  for (const role of ["trace", "trace-short", "trace-opt", "trace-children", "trace-raw", "trace-dl", "trace-chip"])
-    assert.ok(html.includes(`data-role="${role}"`), role);
-  assert.match(html, /Copy trace/);
-  assert.match(html, /no redaction/);
-  assert.match(html, /const T = /);
+  assert.match(html, /const T = /); // trace logic is inlined into the pane script
+  for (const c of ["trace-copy", "trace-short", "trace-download", "trace-children", "trace-raw"]) assert.ok(html.includes(`"terminal.${c}":`), c); // each command is wired in the script
 });
 
 beforeEach(() => T.dismissLive()); // the viewer is a singleton; each test starts with none live
@@ -375,12 +384,15 @@ test("in-viewer Copy writes the shown text through the clipboard helper and repo
   assert.match(w.parts.status.textContent, /manually/);
 });
 
-test("terminal pane has a View trace button next to Copy trace and the viewer logic is inlined", async () => {
+test("terminal declaration has View trace between Copy trace and Short and the viewer logic is inlined", async () => {
+  const { TERMINAL_DECLARATION } = await import("./viewMenus.ts");
   const { renderTerminalPane } = await import("./tabs.ts");
+  const cmds = (TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).map((i: any) => i.command);
+  const view = cmds.indexOf("terminal.trace-view");
+  assert.ok(view > 0 && cmds.indexOf("terminal.trace-copy") < view && view < cmds.indexOf("terminal.trace-short"));
+  assert.equal((TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).find((i: any) => i.command === "terminal.trace-view").label, "View trace");
   const html = renderTerminalPane();
-  assert.match(html, /data-role="trace-view"[^>]*>View trace</);
-  assert.ok(html.indexOf('data-role="trace"') < html.indexOf('data-role="trace-view"'));
-  assert.ok(html.indexOf('data-role="trace-view"') < html.indexOf('data-role="trace-short"'));
+  assert.match(html, /"terminal\.trace-view": viewTrace/);
   assert.match(html, /TODO\(trace-view-autorefresh\)/);
 });
 

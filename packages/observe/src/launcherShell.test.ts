@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
 import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
+import { inspect } from "node:util";
 import { FakeDocument, Node_ } from "./launcherFakeDom.ts";
 
 interface Leaf {
@@ -138,6 +139,21 @@ async function up(o: Opts = {}) {
 type H = Awaited<ReturnType<typeof up>>;
 
 const openStart = (h: H) => h.start.click();
+
+test("launcher Node_ inspects as a short descriptor, not its parent/document/listener graph", () => {
+  const doc = new FakeDocument();
+  const parent = doc.createElement("div");
+  doc.body.appendChild(parent);
+  const el = doc.createElement("button");
+  el.id = "b";
+  parent.appendChild(el);
+  doc.byId.set("b", el);
+  el.listeners.set("click", [{ fn: () => doc, capture: false }]);
+  doc.addEventListener("click", () => el);
+  const out = inspect(el, { depth: null });
+  assert.ok(out.length < 500, out);
+  assert.ok(out.includes("button"), out);
+});
 
 test("a missing #lb-bar throws an error naming the element and the fix", () => {
   const t = boot({ noBar: true });

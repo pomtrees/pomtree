@@ -1,9 +1,13 @@
 import { test } from "node:test";
+import { inspect } from "node:util";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { renderShell } from "./shell.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS } from "./layoutShell.ts";
+import { MENU_NAV_JS } from "./menuNav.ts";
+import { WINDOW_CHROME_JS } from "./windowChrome.ts";
+import { CHROME_CSS } from "./chromeCss.ts";
 
 // A small fake DOM: just what the window manager touches. innerHTML/outerHTML/insertAdjacentHTML throw so any use
 // of them on agent data fails a test.
@@ -30,6 +34,10 @@ class Node_ {
   rect = { left: 0, top: 0, width: 1000, height: 600 };
   constructor(tag: string) {
     this.tagName = tag;
+  }
+  // Short descriptor so a failing assertion never inspects the parent/listener graph (it once exhausted memory).
+  [inspect.custom](): string {
+    return `<Node_ ${this.tagName} id=${this.attrs.get("id") ?? ""} class="${this.className}" children=${this.children.length}>`.slice(0, 119);
   }
   get textContent(): string {
     return this.text + this.children.map((c) => c.textContent).join("");
@@ -108,6 +116,9 @@ interface Opts {
   tabs?: string[];
   registry?: boolean;
   throwingView?: boolean;
+  menus?: boolean; // the terminal view (and the inbox section) declare menus and status
+  noChromeKit?: boolean; // ChromeKit is not loaded
+  badChrome?: "destroy-missing"; // deliberately wrong fake used to prove a check can fail
 }
 
 interface WmApi {
@@ -127,7 +138,10 @@ interface WmApi {
 function boot(o: Opts = {}) {
   const tabIds = o.tabs ?? ["tree", "reports", "hosts", "terminal"];
   const html = renderShell({ tabs: tabIds.map((id) => ({ id, title: id.toUpperCase(), render: () => "" })) });
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+  // the real ChromeKit (windowChrome.ts) is replaced by a fake in the sandbox so these tests do not depend on it
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!.replace(WINDOW_CHROME_JS, ""));
+  const chromes: { model: any; menus: Node_; overflow: Node_; footer: Node_; destroyed: number }[] = [];
+  const models: any[] = [];
   const ids = ["wm-root", "wm-notices", "wm-stash"];
   const byId = new Map(ids.map((i) => [i, new Node_("div")]));
   const sections = tabIds.map((id) => {
@@ -189,6 +203,7 @@ function boot(o: Opts = {}) {
       },
     });
   }
+  let sectionModelOf: any;
   const body = new Node_("body");
   const sandbox: Record<string, unknown> = {
     fetch: async () => ({ status: 200 }),
@@ -244,7 +259,52 @@ function boot(o: Opts = {}) {
     isFinite,
     decodeURIComponent,
     encodeURIComponent,
-    PaneKit: o.registry === false ? undefined : { view: (id: string) => registry.get(id), views: () => [...registry.values()] },
+    PaneKit:
+      o.registry === false
+        ? undefined
+        : {
+            view: (id: string) => registry.get(id),
+            views: () => [...registry.values()],
+            windowModel: (id: string) => {
+              const m = {
+                id,
+                declaration: {
+                  menus: o.menus && id === "terminal" ? [{ id: "view", items: [] }] : [],
+                  status: o.menus && id === "terminal" ? [{ id: "connection" }] : [],
+                },
+              };
+              models.push(m);
+              return m;
+            },
+            windowHost: (m: any, base: object) => ({ ...base, model: m, setMenuState() {}, setStatus() {}, onCommand() {} }),
+            sectionModel: (id: string) => {
+              if (!o.menus || id !== "hosts") return undefined;
+              if (!sectionModelOf) sectionModelOf = { id, declaration: { menus: [{ id: "view", items: [] }], status: [] } };
+              return sectionModelOf;
+            },
+          },
+    ChromeKit: o.noChromeKit
+      ? undefined
+      : {
+          createChrome: (model: any, deps: { document: { createElement(t: string): Node_ } }) => {
+            const mk = (tag: string, cls: string) => {
+              const n = deps.document.createElement(tag);
+              n.className = cls;
+              return n;
+            };
+            const c = {
+              model,
+              menus: mk("div", "tile-menus"),
+              overflow: mk("span", "tile-overflow"),
+              footer: mk("div", "tile-foot"),
+              destroyed: 0,
+              destroy: () => {},
+            };
+            c.destroy = o.badChrome === "destroy-missing" ? () => {} : () => c.destroyed++;
+            chromes.push(c);
+            return c;
+          },
+        },
   };
   // Capture anchors created for downloads.
   const origCreate = (sandbox.document as any).createElement;
@@ -303,11 +363,24 @@ function boot(o: Opts = {}) {
     downloads,
     api,
     body,
+    chromes,
+    models,
   };
 }
 
 const stored = (store: Record<string, string>) => JSON.parse(store["pomtree.layout"]!);
 const visibleSections = (s: ReturnType<typeof boot>) => s.sections.filter((x) => !x.hidden && x.parent !== s.stash).map((x) => x.getAttribute("data-tab"));
+
+test("Node_ inspects as a short descriptor, not its parent/listener graph", () => {
+  const parent = new Node_("section");
+  const el = new Node_("button");
+  el.className = "x";
+  parent.appendChild(el);
+  el.listeners.set("click", [{ fn: () => parent, capture: false }]);
+  const out = inspect(el, { depth: null });
+  assert.ok(out.length < 500, out);
+  assert.ok(out.includes("button"), out);
+});
 
 test("default layout is one tile of the view named by the hash, else tree, like today's one-tab shell", () => {
   const a = boot({ hash: "#/hosts" });
@@ -633,11 +706,20 @@ test("layoutCss: the six tile classes, the chrome tokens with fallbacks, longhan
   assert.ok(renderShell({ tabs: [] }).includes(".tile-focused"), "composed into UI_CSS");
 });
 
-test("layoutCss: the trace button group wraps inside a tile so a narrow tile never scrolls horizontally", () => {
-  const rule = /\.tile-body \.tracegrp \{([^}]*)\}/.exec(LAYOUT_CSS);
-  assert.ok(rule, "a .tile-body .tracegrp rule");
-  assert.match(rule[1]!, /flex-wrap: wrap/);
-  assert.match(rule[1]!, /max-width: 100%/);
+test("layoutCss: narrow modes hide the tile bar's other children but keep the window menus and overflow button", () => {
+  assert.doesNotMatch(LAYOUT_CSS, /\.tracegrp/);
+  assert.doesNotMatch(LAYOUT_CSS, /\.tile-bar(, \.splitter)? \{ display: none; \}/, "the whole bar must not be hidden");
+  assert.doesNotMatch(LAYOUT_CSS, /\.wm-narrow \.tile-bar, /);
+  const hideKids = LAYOUT_CSS.match(/\.tile-bar > :not\(\.tile-menus\):not\(\.tile-overflow\) \{ display: none; \}/g) ?? [];
+  assert.equal(hideKids.length, 2, "once under .wm-narrow and once in the 640px media query");
+  const hideEmpty = LAYOUT_CSS.match(/\.tile-bar:not\(:has\(\.tile-menus, \.tile-overflow\)\) \{ display: none; \}/g) ?? [];
+  assert.equal(hideEmpty.length, 2);
+  assert.match(LAYOUT_CSS, /\.wm-narrow \.splitter \{ display: none; \}/);
+  const pushRight = LAYOUT_CSS.match(/\.tile-bar > \.tile-overflow \{ margin-left: auto; \}/g) ?? [];
+  assert.equal(pushRight.length, 2, "with the title hidden the overflow button sits at the right so its right-anchored panel stays inside the tile");
+  for (const m of LAYOUT_CSS.matchAll(/^\s*([^{}\n@][^{}\n]*)\{([^}]*)\}/gm)) {
+    if (/display: none/.test(m[2]!)) assert.doesNotMatch(m[1]!, /^\s*[^:]*\.tile-(menus|overflow)\s*$/, "layout css never hides the chrome itself");
+  }
 });
 
 test("layoutCss: an empty terminal note takes no space inside a tile", () => {
@@ -968,4 +1050,97 @@ test("a throwing onChange listener shows one notice naming the cause and the act
   assert.equal(texts.length, 1, "one notice per key");
   assert.match(texts[0]!, /\(boom\)\. Reload the page; the layout is unaffected\./);
   assert.equal(s.tiles().length, 3);
+});
+
+// ---- tile chrome ----
+
+const barKinds = (t: Node_) => t.children.find((c) => c.className === "tile-bar")!.children.map((c) => c.className);
+
+test("shell page inlines MENU_NAV_JS, then WINDOW_CHROME_JS, then LAYOUT_SHELL_JS, and CHROME_CSS between LAYOUT_CSS and the theme", () => {
+  const html = renderShell({ tabs: [{ id: "tree", title: "Tree", render: () => "" }] });
+  const a = html.indexOf(MENU_NAV_JS);
+  const b = html.indexOf(WINDOW_CHROME_JS);
+  const c = html.indexOf(LAYOUT_SHELL_JS);
+  assert.ok(a > 0 && b > a && c > b, `order nav=${a} chrome=${b} shell=${c}`);
+  const css = html.indexOf(CHROME_CSS);
+  assert.ok(css > html.indexOf(LAYOUT_CSS) && css > 0);
+});
+
+test("a registry view with declared menus gets a per-tile model; menus and overflow sit between title and selector, the footer after the body", () => {
+  const s = boot({ hash: "#/terminal/a1", menus: true });
+  const t = s.tiles()[0]!;
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-menus", "tile-overflow", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(
+    t.children.map((c) => c.className),
+    ["tile-bar", "tile-body", "tile-foot"],
+  );
+  assert.equal(s.chromes.length, 1);
+  assert.equal((s.mounts[0]!.host as any).model, s.models[0]);
+  assert.equal(s.mounts[0]!.host.setTitle.length, 1); // setTitle stays
+});
+
+test("a view with no declared menus or status renders no menu strips and no footer", () => {
+  const s = boot({ hash: "#/terminal/a1" });
+  const t = s.tiles()[0]!;
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(
+    t.children.map((c) => c.className),
+    ["tile-bar", "tile-body"],
+  );
+  assert.equal(s.chromes.length, 0);
+});
+
+test("closing a terminal tile destroys its chrome; a second terminal tile gets its own model", () => {
+  const s = boot({ hash: "#/terminal/a1", menus: true });
+  s.btn(s.tiles()[0]!, "Split right").click();
+  const sel = s.tiles()[1]!.byClass("tile-view")[0]!;
+  sel.value = "terminal";
+  sel.fire("change");
+  assert.equal(s.chromes.length, 2);
+  assert.notEqual(s.models[1], s.models[0]);
+  assert.deepEqual(
+    s.chromes.map((c) => c.destroyed),
+    [0, 0],
+  );
+  s.btn(s.tiles()[0]!, "Close tile").click();
+  assert.deepEqual(
+    s.chromes.map((c) => c.destroyed),
+    [1, 0],
+  );
+});
+
+test("a section view with a section model gets chrome, the model persists across rebuilds and the chrome is destroyed on release", () => {
+  const s = boot({ hash: "#/hosts", menus: true });
+  assert.equal(s.tiles()[0]!.byClass("tile-menus").length, 1);
+  s.hashchange("#/tree");
+  assert.equal(s.chromes[0]!.destroyed, 1);
+  s.hashchange("#/hosts");
+  assert.equal(s.chromes.length, 2);
+  assert.equal(s.chromes[1]!.model, s.chromes[0]!.model);
+});
+
+test("missing ChromeKit shows a visible tile note naming cause and action, and the view still mounts", () => {
+  const s = boot({ hash: "#/terminal/a1", menus: true, noChromeKit: true });
+  const t = s.tiles()[0]!;
+  const note = t.byClass("tile-note")[0]!;
+  assert.match(note.textContent, /window menus could not be built \(ChromeKit is not loaded\)\. Reload the page/);
+  assert.equal(s.mounts.length, 1);
+  assert.equal(t.byClass("tile-menus").length, 0);
+});
+
+test("a ChromeKit that does not destroy is detected by the close check (negative control)", () => {
+  const run = (badChrome?: "destroy-missing") => {
+    const s = boot({ hash: "#/terminal/a1", menus: true, badChrome });
+    s.btn(s.tiles()[0]!, "Split right").click();
+    s.btn(s.tiles()[0]!, "Close tile").click();
+    return s.chromes[0]!.destroyed;
+  };
+  assert.equal(run(), 1);
+  assert.equal(run("destroy-missing"), 0);
+});
+
+test("narrow fallback still renders chrome for the one visible tile", () => {
+  const s = boot({ narrow: true, hash: "#/terminal/a1", menus: true });
+  assert.equal(s.tiles().length, 1);
+  assert.equal(s.tiles()[0]!.byClass("tile-menus").length, 1);
 });

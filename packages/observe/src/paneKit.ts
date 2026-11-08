@@ -96,7 +96,22 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     if (base === null || typeof base !== "object" || Array.isArray(base)) throw new Error("windowHost: base must be the host object the chrome gives a view; pass an object");
     return { ...base, setMenuState: model.setState, setStatus: model.setStatus, onCommand: model.onCommand };
   };
-  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views, declaration, windowModel, windowHost };
+  // Section views (a <section data-tab> such as inbox) are not registry views and live in at most one tile, so one persistent model each.
+  const sectionModels = new Map();
+  const declareSection = (decl) => {
+    const id = decl && decl.id;
+    if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id)) throw new Error("declareSection: invalid section id " + JSON.stringify(id) + "; use the lowercase data-tab id such as inbox");
+    if (sectionModels.has(id)) throw new Error("declareSection: section " + id + " is already declared; declare each section once");
+    const norm = MenuKit.declareView({ id, title: decl.title, multi: false, menus: decl.menus, status: decl.status });
+    sectionModels.set(id, MenuKit.createWindowModel(norm));
+  };
+  const sectionModel = (id) => sectionModels.get(id);
+  const sectionHost = (id) => {
+    const model = sectionModels.get(id);
+    if (!model) throw new Error("sectionHost: section " + JSON.stringify(id) + " is not declared; call declareSection first");
+    return windowHost(model, {});
+  };
+  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views, declaration, windowModel, windowHost, declareSection, sectionModel, sectionHost };
 })());
 `;
 

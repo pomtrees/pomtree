@@ -1,6 +1,7 @@
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { TERM_LOGIC_JS } from "./termKit.ts";
 import { scriptJson } from "./web.ts";
+import { BROWSER_DECLARATION } from "./viewMenus.ts";
 
 // The read-only "browser" view of the operator UI: a live JPEG screencast of the agent's Chromium, streamed by
 // pomtreed over GET /v1/agents/:id/browser (websocket). Wire protocol, server to client only: a binary message is
@@ -88,7 +89,18 @@ const BrowserKit = globalThis.BrowserKit || (globalThis.BrowserKit = (() => {
     return d.label;
   };
 
-  return { STATES, REASONS, parseServerText, fitRect, frameGate, stateLabel, closedLabel, stopLabel };
+  // How to paint a decoded frame in a view mode. "fit": the canvas fills the box and the frame is the largest
+  // aspect-preserving rectangle in it. "actual": the canvas takes the frame's natural pixel size (the pane scrolls)
+  // and the frame is drawn at 1:1. Returns { canvasW, canvasH, rect } or null when a size is unusable.
+  const drawPlan = (mode, srcW, srcH, boxW, boxH) => {
+    const ok = (n) => typeof n === "number" && isFinite(n) && n > 0;
+    if (!ok(srcW) || !ok(srcH)) return null;
+    if (mode === "actual") return { canvasW: srcW, canvasH: srcH, rect: { x: 0, y: 0, w: srcW, h: srcH } };
+    const rect = fitRect(srcW, srcH, boxW, boxH);
+    return rect ? { canvasW: boxW, canvasH: boxH, rect } : null;
+  };
+
+  return { STATES, REASONS, parseServerText, fitRect, drawPlan, frameGate, stateLabel, closedLabel, stopLabel };
 })());
 `;
 
@@ -117,23 +129,18 @@ const mountBrowserInstance = (root, params, hostApi) => {
     return n;
   };
   const wrap = el("div", "browser pane");
-  const bar = el("div", "statusbar");
-  const titleEl = el("strong");
-  const stateEl = el("span", "state");
-  bar.appendChild(titleEl);
-  bar.appendChild(stateEl);
   const noteEl = el("p", "meta", "Content controlled by the agent");
   noteEl.setAttribute("role", "note");
-  const pageEl = el("div", "meta");
-  const infoEl = el("div", "meta");
-  infoEl.setAttribute("role", "status");
-  infoEl.setAttribute("aria-live", "polite");
+  // Shown by the Help menu's "About view-only"; plain text, hidden until asked for.
+  const aboutEl = el("p", "meta", "This view is view-only: it shows the agent's browser and cannot click or type. The agent controls the page, and everything it shows is untrusted.");
+  aboutEl.setAttribute("role", "note");
+  aboutEl.hidden = true;
   const canvas = el("canvas");
   canvas.style.width = "100%";
   canvas.style.height = "100%";
   canvas.style.minHeight = "12rem";
   canvas.style.display = "block";
-  for (const n of [bar, noteEl, pageEl, infoEl, canvas]) wrap.appendChild(n);
+  for (const n of [noteEl, aboutEl, canvas]) wrap.appendChild(n);
   root.appendChild(wrap);
 
   const agentId = String(params && params.agent || "");
@@ -147,10 +154,28 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const gate = BrowserKit.frameGate();
   const g2d = () => { try { return canvas.getContext("2d"); } catch (e) { return null; } };
 
-  const setState = (text, cls) => { stateEl.textContent = text; stateEl.className = cls ? "state " + cls : "state"; };
-  const setInfo = (text, bad) => { infoEl.textContent = text; infoEl.className = bad ? "meta err" : "meta"; };
-  const setPage = (url, title) => {
-    pageEl.textContent = [title, url].filter((x) => x).join(" — ");
+  // Status goes to the tile footer: the "stream" slot carries the connection state plus any detail line (retry
+  // countdown, why the stream closed) and a transient copy failure; the "url" slot carries the page URL.
+  let stateText = "", stateTone = null, infoText = "", infoBad = false, copyNote = "";
+  let pageUrl = "";
+  let mode = "fit";
+  const pushStream = () => {
+    if (copyNote) { hostApi.setStatus("stream", { text: copyNote, tone: "err" }); return; }
+    const text = stateText && infoText ? stateText + " \u2014 " + infoText : stateText || infoText;
+    hostApi.setStatus("stream", { text, tone: infoBad ? "err" : stateTone });
+  };
+  const setState = (text, cls) => {
+    stateText = text;
+    stateTone = cls === "s-running" ? "ok" : cls === "s-pending" ? "warn" : cls === "s-exited" ? "err" : null; // null clears the tone: the status API rejects ""
+    copyNote = "";
+    pushStream();
+  };
+  const setInfo = (text, bad) => { infoText = text; infoBad = !!bad; copyNote = ""; pushStream(); };
+  const setPage = (url) => {
+    pageUrl = url;
+    // The page URL is agent-controlled text: the footer renders it with textContent as read-only mono text.
+    hostApi.setStatus("url", { text: url });
+    hostApi.setMenuState("browser.copy-url", { enabled: url !== "" });
   };
   const closeBitmap = () => { if (bmp) { try { bmp.close(); } catch (e) {} bmp = null; } };
   const clearCanvas = () => {
@@ -161,14 +186,37 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const draw = () => {
     const c = g2d();
     if (!c || !bmp) return;
-    const w = Math.round(canvas.clientWidth) || 640;
-    const h = Math.round(canvas.clientHeight) || 400;
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-    const r = BrowserKit.fitRect(bmp.width, bmp.height, w, h);
-    c.clearRect(0, 0, w, h);
-    if (r) c.drawImage(bmp, r.x, r.y, r.w, r.h);
+    const plan = BrowserKit.drawPlan(mode, bmp.width, bmp.height, Math.round(canvas.clientWidth) || 640, Math.round(canvas.clientHeight) || 400);
+    if (!plan) return;
+    if (canvas.width !== plan.canvasW) canvas.width = plan.canvasW;
+    if (canvas.height !== plan.canvasH) canvas.height = plan.canvasH;
+    c.clearRect(0, 0, plan.canvasW, plan.canvasH);
+    c.drawImage(bmp, plan.rect.x, plan.rect.y, plan.rect.w, plan.rect.h);
   };
+  // Fit: the canvas fills the pane (today's behaviour). Actual size: natural pixel size, the pane scrolls.
+  const applyMode = (next) => {
+    mode = next;
+    const actual = next === "actual";
+    wrap.style.overflow = actual ? "auto" : "";
+    canvas.style.width = actual && bmp ? bmp.width + "px" : "100%";
+    canvas.style.height = actual && bmp ? bmp.height + "px" : "100%";
+    hostApi.setMenuState("browser.fit", { checked: !actual });
+    hostApi.setMenuState("browser.actual-size", { checked: actual });
+    draw();
+  };
+  const copyUrl = () => {
+    const fail = (why) => { copyNote = "Copy failed: " + why; pushStream(); };
+    if (!pageUrl) { fail("no page URL yet; wait for the page to load, then try again"); return; }
+    let p;
+    try { p = navigator.clipboard.writeText(pageUrl); } catch (e) { p = Promise.reject(e); }
+    Promise.resolve(p).catch(() => fail("the clipboard is unavailable or blocked; select the URL in the footer and copy it by hand"));
+  };
+  hostApi.onCommand((command) => {
+    if (command === "browser.fit") applyMode("fit");
+    else if (command === "browser.actual-size") applyMode("actual");
+    else if (command === "browser.copy-url") copyUrl();
+    else if (command === "browser.about") aboutEl.hidden = !aboutEl.hidden;
+  });
   // One decode at a time: frames arriving meanwhile replace the single pending one (BrowserKit.frameGate).
   const decode = (buf) => {
     const e = epoch;
@@ -176,7 +224,8 @@ const mountBrowserInstance = (root, params, hostApi) => {
       if (!active || e !== epoch) { try { next.close(); } catch (err) {} return false; }
       closeBitmap();
       bmp = next;
-      draw();
+      if (mode === "actual") applyMode("actual");
+      else draw();
       return true;
     }).catch(() => e === epoch).then((current) => {
       // A stale decode must not call done(): gate.reset() already started a new generation and busy belongs to it.
@@ -244,7 +293,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
         if (!m) return;
         if (m.type === "closed") { closedReason = m.reason; return; }
         setState(BrowserKit.stateLabel(m.state), m.state === "live" ? "s-running" : "s-pending");
-        setPage(m.url || "", m.title || "");
+        setPage(m.url || "");
         if (m.state === "no-browser") { gate.reset(); epoch++; clearCanvas(); }
         return;
       }
@@ -268,7 +317,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
     root.replaceChildren();
   };
 
-  titleEl.textContent = agentId;
+  hostApi.setMenuState("browser.copy-url", { enabled: false });
   hostApi.setTitle(agentId ? "Browser · " + agentId.slice(0, 8) : "Browser");
   setState("", "");
   if (!agentId) setInfo("no agent selected — open #/browser/<id> or pick an agent in the Tree", false);
@@ -282,7 +331,7 @@ const mountBrowser = (root, params, hostApi) => {
   catch (e) { root.replaceChildren(); throw e; }
 };
 
-K.registerView({ id: "browser", title: "Browser", multi: true, mount: mountBrowser });
+K.registerView({ id: "browser", title: "Browser", multi: true, menus: ${scriptJson(BROWSER_DECLARATION.menus)}, status: ${scriptJson(BROWSER_DECLARATION.status)}, mount: mountBrowser });
 })();
 </script>`;
 }

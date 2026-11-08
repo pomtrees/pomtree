@@ -31,16 +31,21 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .tile-body .termwrap { flex: 1 1 auto; min-height: 0; }
 .tile-body .termhost { height: 100%; min-height: 0; }
 .tile-body .termnote:empty { min-height: 0; margin: 0; padding: 0; }
-.tile-body .tracegrp { flex-wrap: wrap; max-width: 100%; }
 .splitter { position: absolute; z-index: 5; touch-action: none; background: transparent; }
 .splitter[aria-orientation="vertical"] { width: 8px; margin-left: -4px; cursor: col-resize; }
 .splitter[aria-orientation="horizontal"] { height: 8px; margin-top: -4px; cursor: row-resize; }
 .splitter:hover, .splitter:focus-visible { background: var(--chrome-accent, var(--accent, currentColor)); opacity: 0.5; }
-.wm-narrow .tile-bar, .wm-narrow .splitter { display: none; }
+.wm-narrow .splitter { display: none; }
+.wm-narrow .tile-bar > :not(.tile-menus):not(.tile-overflow) { display: none; }
+.wm-narrow .tile-bar:not(:has(.tile-menus, .tile-overflow)) { display: none; }
+.wm-narrow .tile-bar > .tile-overflow { margin-left: auto; }
 @media (max-width: 640px) {
   .tile { border-width: 0; }
   .tile-focused { outline-style: none; }
-  .tile-bar, .splitter { display: none; }
+  .splitter { display: none; }
+  .tile-bar > :not(.tile-menus):not(.tile-overflow) { display: none; }
+  .tile-bar:not(:has(.tile-menus, .tile-overflow)) { display: none; }
+  .tile-bar > .tile-overflow { margin-left: auto; }
 }
 @media (pointer: coarse) {
   .tile-btn { min-width: 2.5rem; min-height: 2.5rem; }

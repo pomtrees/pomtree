@@ -5,6 +5,8 @@ import { renderAuditPane, renderEscalationsPane, renderHostsPane, renderSchedule
 import { NEW_AGENT_LOGIC_JS, renderNewAgentPane } from "./newAgent.ts";
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { renderShell } from "./shell.ts";
+import { MENU_KIT_JS, type MenuKitApi } from "./menuModel.ts";
+import { TERMINAL_DECLARATION } from "./viewMenus.ts";
 import { renderReportsPane, renderTreePane } from "./web.ts";
 
 test("audit pane is fully inline, fetches the journal path, and has filter and more controls", () => {
@@ -308,6 +310,51 @@ interface Es {
   onopen?: () => void;
 }
 
+// The window host the terminal drives: records every menu-state and status push (merged per key, as the model does)
+// and keeps the command handler so a test can invoke a menu command the way the chrome would.
+interface FakeHost {
+  api: {
+    setMenuState(c: string, s: Record<string, unknown>): void;
+    setStatus(id: string, s: Record<string, unknown>): void;
+    onCommand(fn: (c: string, a?: unknown) => void): void;
+  };
+  menu: Record<string, Record<string, unknown>>;
+  menuCalls: [string, Record<string, unknown>][];
+  status: Record<string, { text: string; tone?: string | null }>;
+  titles: string[];
+  run(command: string, arg?: unknown): void;
+}
+function fakeHost(): FakeHost {
+  // The REAL status validator: a bad tone throws as it does in the browser.
+  const kit = runInContext(
+    `(() => { ${MENU_KIT_JS}; return MenuKit; })()`,
+    createContext({ globalThis: {}, JSON, Object, Array, Set, Map, String, Error, WeakSet }),
+  ) as MenuKitApi;
+  const model = kit.createWindowModel(kit.declareView(TERMINAL_DECLARATION));
+  let handler: ((c: string, a?: unknown) => void) | undefined;
+  const h: FakeHost = {
+    api: {
+      setMenuState: (c, s) => {
+        h.menuCalls.push([c, { ...s }]);
+        h.menu[c] = { ...h.menu[c], ...s };
+      },
+      setStatus: (id, s) => {
+        model.setStatus(id, s as never);
+        h.status[id] = { ...h.status[id], ...s } as { text: string; tone?: string | null };
+      },
+      onCommand: (fn) => {
+        handler = fn;
+      },
+    },
+    menu: {},
+    menuCalls: [],
+    status: {},
+    titles: [],
+    run: (c, a) => handler!(c, a),
+  };
+  return h;
+}
+
 function runShell(
   hash: string,
   responses: Record<string, { ok?: boolean; status?: number; body: Json; fail?: boolean }> = {},
@@ -586,8 +633,30 @@ function runShell(
     },
   };
   const context = createContext(sandbox);
-  // The launcher bar script polls the API and has its own DOM fake tests (launcherShell); the pane harness leaves it out.
-  for (const src of scripts) if (!src.includes("createLauncherBar(")) runInContext(src, context, { filename: "inline.js" });
+  // Every terminal mounted (by the shell or by hand) gets a recording fake of the window host's menu and status hooks:
+  // the wrapper goes in right after the terminal script registers the view, before the shell script mounts anything.
+  const hosts: FakeHost[] = [];
+  const wrapTerminalMount = () => {
+    const termDef = runInContext('PaneKit.view("terminal")', context) as { mount: (root: unknown, params: unknown, base: object) => unknown };
+    const realMount = termDef.mount;
+    termDef.mount = (root: unknown, params: unknown, base: object) => {
+      const h = fakeHost();
+      hosts.push(h);
+      const baseTitle = (base as { setTitle?(t: string): void }).setTitle;
+      const setTitle = (t: string) => {
+        h.titles.push(t);
+        baseTitle?.(t);
+      };
+      // A host without setTitle stays without it (one test relies on the mount failing on that).
+      return realMount(root, params, Object.assign(base, h.api, baseTitle ? { setTitle } : {}));
+    };
+  };
+  for (const src of scripts) {
+    // The launcher bar script polls the API and has its own DOM fake tests (launcherShell); the pane harness leaves it out.
+    if (src.includes("createLauncherBar(")) continue;
+    runInContext(src, context, { filename: "inline.js" });
+    if (src.includes('K.registerView({ id: "terminal"')) wrapTerminalMount();
+  }
   const resize = () => {
     for (const fn of [...resizeListeners]) fn({});
   };
@@ -616,10 +685,15 @@ function runShell(
     resizeListeners,
     hashListeners,
     mqListeners,
+    hosts,
+    // The first terminal's host, resolved on use: the shell mounts the terminal after runShell returns.
+    host: new Proxy({} as FakeHost, { get: (_t, k) => hosts[0]![k as keyof FakeHost] }),
   };
 }
 
 // A terminal-view element by data-role, inside the first terminal mounted in a tile of the tiling shell.
+const statusText = (h: FakeHost, slot: string): string => h.status[slot]?.text ?? "";
+const reconnectOffered = (h: FakeHost): boolean => h.menu["terminal.reconnect"]?.visible === true;
 const role = (doc: FakeDoc, r: string): FakeNode => doc.getElementById("wm-root")!.querySelector(`[data-role="${r}"]`)!;
 const countMounts = (n: FakeNode): number => (n.className === "wm-mount" ? 1 : 0) + n.children.reduce((a, c) => a + countMounts(c), 0);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -642,10 +716,10 @@ test("every pane's script executes together without a top-level const redeclarat
 
 // Changed: the terminal is a registry view mounted in a tile, so its section is no longer shown; the tile is the proof.
 test("the hash router mounts a terminal tile for #/terminal/<id> and does not blank the page", () => {
-  const { doc } = runShell("#/terminal/agent-7");
+  const { doc, host } = runShell("#/terminal/agent-7");
   assert.deepEqual(shownTab(doc), []);
   assert.equal(countMounts(doc.getElementById("wm-root")!), 1);
-  assert.equal(role(doc, "title").textContent, "agent-7");
+  assert.equal(host.titles.at(-1), "Terminal \u00b7 agent-7");
   const tree = runShell("#/tree");
   assert.deepEqual(shownTab(tree.doc), ["tree"]);
 });
@@ -662,19 +736,19 @@ const keyBtn = (key: string) => {
 };
 
 test("terminal: connects to the per-agent websocket, resets, sends the fitted size, relays bytes both ways", async () => {
-  const { doc, sockets, terms } = runShell("#/terminal/a1", running);
+  const { sockets, terms, host } = runShell("#/terminal/a1", running);
   await flush();
   assert.equal(sockets.length, 1);
   const ws = sockets[0]!;
   assert.equal(ws.url, "ws://ui.test/v1/agents/a1/terminal");
   assert.equal(ws.binaryType, "arraybuffer");
-  assert.equal(role(doc, "conn")!.textContent, "connecting");
-  assert.equal(role(doc, "title")!.textContent, "a1");
+  assert.equal(statusText(host, "connection"), "connecting");
+  assert.equal(host.titles.at(-1), "Terminal \u00b7 a1");
   ws.open();
   const t = terms[0]!;
   assert.equal(t.resets, 1);
   assert.ok(t.focused >= 1);
-  assert.equal(role(doc, "conn")!.textContent, "connected");
+  assert.equal(statusText(host, "connection"), "connected");
   assert.deepEqual(ws.sent.map(String), ['{"type":"resize","cols":100,"rows":30}']); // fit on open -> one control frame
   ws.onmessage!({ data: new Uint8Array([104, 105]).buffer });
   assert.equal(text(t.writes[0]), "hi");
@@ -704,13 +778,13 @@ test("terminal: a resize storm re-arms one debounce timer and sends a single ded
 });
 
 test("terminal: a server 'closed' frame then a socket drop reconnects with backoff and resets the screen", async () => {
-  const { doc, sockets, terms, timeouts, intervals } = runShell("#/terminal/a1", running);
+  const { doc, sockets, terms, timeouts, intervals, host } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
   sockets[0]!.onmessage!({ data: '{"type":"closed","reason":"remote"}' });
   sockets[0]!.drop();
-  assert.equal(role(doc, "conn")!.textContent, "disconnected");
-  assert.equal(role(doc, "reconnect")!.hidden, false);
+  assert.equal(statusText(host, "connection"), "disconnected");
+  assert.equal(reconnectOffered(host), true);
   await flush();
   assert.match(role(doc, "note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\) in \d+s/);
   const retry = timeouts.filter((x) => !x.cleared && x.ms !== 120).pop()!;
@@ -720,49 +794,49 @@ test("terminal: a server 'closed' frame then a socket drop reconnects with backo
   assert.equal(sockets.length, 2);
   sockets[1]!.open();
   assert.equal(terms[0]!.resets, 2); // the daemon replays on connect, so the screen restarts clean
-  assert.equal(role(doc, "conn")!.textContent, "connected");
+  assert.equal(statusText(host, "connection"), "connected");
   assert.equal(role(doc, "note")!.textContent, "");
-  assert.equal(role(doc, "reconnect")!.hidden, true);
+  assert.equal(reconnectOffered(host), false);
 });
 
 test("terminal: a finished agent shows 'No live terminal: agent <state>' and does not loop; Reconnect retries by hand", async () => {
-  const { doc, sockets, timeouts } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "exited" } } });
+  const { doc, sockets, timeouts, host } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "exited" } } });
   await flush();
   sockets[0]!.open();
   sockets[0]!.drop();
   await flush();
   assert.match(role(doc, "note")!.textContent, /^No live terminal: agent exited \(the screen above is its last output\)$/);
-  assert.equal(role(doc, "conn")!.textContent, "frozen");
-  assert.equal(role(doc, "state")!.textContent, "exited");
+  assert.equal(statusText(host, "connection"), "frozen");
+  assert.equal(statusText(host, "state"), "exited");
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
   assert.equal(sockets.length, 1);
-  assert.equal(role(doc, "reconnect")!.hidden, false);
-  clickEl(role(doc, "reconnect")!);
+  assert.equal(reconnectOffered(host), true);
+  host.run("terminal.reconnect");
   assert.equal(sockets.length, 2);
 });
 
 test("terminal: a yielded agent that was never connected (409) is labelled Yielded and is not retried", async () => {
-  const { doc, sockets, timeouts, intervals } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
+  const { doc, sockets, timeouts, intervals, host } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
   await flush();
   sockets[0]!.drop(); // the handshake was refused with 409: no open
   await flush();
   assert.equal(role(doc, "note")!.textContent, "Yielded: this agent is waiting and has no live terminal; it resumes on its wait condition");
-  assert.equal(role(doc, "conn")!.textContent, "yielded");
-  assert.equal(role(doc, "state")!.textContent, "yielded");
+  assert.equal(statusText(host, "connection"), "yielded");
+  assert.equal(statusText(host, "state"), "yielded");
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
   assert.ok(intervals.every((i) => i.cleared || i.ms !== 1000)); // no countdown ticker (the 5s state poll stays)
   assert.equal(sockets.length, 1);
-  assert.equal(role(doc, "reconnect")!.hidden, false); // manual retry stays available
+  assert.equal(reconnectOffered(host), true); // manual retry stays available
 });
 
 test("terminal: a screen left by a connection that then yielded is kept and labelled frozen, never live", async () => {
-  const { doc, sockets, terms, timeouts } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
+  const { doc, sockets, terms, timeouts, host } = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
   await flush();
   sockets[0]!.open();
   sockets[0]!.drop();
   await flush();
   assert.match(role(doc, "note")!.textContent, /^frozen: agent yielded/);
-  assert.equal(role(doc, "conn")!.textContent, "frozen");
+  assert.equal(statusText(host, "connection"), "frozen");
   assert.equal(terms[0]!.disposed, false);
   assert.equal(terms[0]!.resets, 1); // not cleared
   assert.equal(timeouts.filter((x) => !x.cleared && x.ms !== 120).length, 0);
@@ -795,10 +869,9 @@ test("terminal: no agent selected, and leaving the tab closes the socket and dis
   assert.match(role(none.doc, "note")!.textContent, /no agent selected/);
   assert.equal(none.sockets.length, 0);
 
-  const { sockets, terms, navigate, intervals, doc } = runShell("#/terminal/a1", running);
+  const { sockets, terms, navigate, intervals, host } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
-  const reconnect = role(doc, "reconnect"); // the elements leave the page on unmount, so hold the node
   navigate("#/audit");
   assert.equal(sockets[0]!.closed, true);
   assert.equal(terms[0]!.disposed, true);
@@ -806,18 +879,22 @@ test("terminal: no agent selected, and leaving the tab closes the socket and dis
   sockets[0]!.drop(); // a late close from the old socket must not schedule a reconnect
   await flush();
   assert.equal(sockets.length, 1);
-  assert.equal(reconnect.hidden, true);
+  assert.equal(
+    host.menuCalls.filter(([c, st]) => c === "terminal.reconnect" && st.visible === true).length,
+    0,
+    "a late close from an unmounted view does not offer Reconnect",
+  );
 });
 
 test("terminal: switching agents by hash reconnects to the new id", async () => {
-  const { sockets, navigate, doc } = runShell("#/terminal/a1", running);
+  const { sockets, navigate, hosts } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
   navigate("#/terminal/b2");
   await flush();
   assert.equal(sockets[0]!.closed, true);
   assert.equal(sockets[1]!.url, "ws://ui.test/v1/agents/b2/terminal");
-  assert.equal(role(doc, "title")!.textContent, "b2");
+  assert.equal(hosts.at(-1)!.titles.at(-1), "Terminal \u00b7 b2");
 });
 
 test("terminal: copy chord copies a selection instead of sending ^C; key bar sends escape sequences with one-shot Ctrl", async () => {
@@ -885,49 +962,44 @@ test("terminal: Shift+Enter/Ctrl+Enter/Ctrl+Shift+letter reach the socket as byt
 });
 
 test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): cancel and Escape keep it off, confirm turns it on", async () => {
-  const { doc } = runShell("#/terminal/a1", running);
+  const { doc, host, terms } = runShell("#/terminal/a1", running);
   await flush();
-  const raw = role(doc, "trace-raw")!;
   const prompt = role(doc, "trace-confirm")!;
   const fire = (n: FakeNode, type: string, ev: unknown = {}) => {
     for (const fn of n.listeners.get(type) ?? []) fn(ev);
   };
-  const check = () => {
-    raw.checked = true;
-    fire(raw, "change");
-  };
-  check();
-  assert.equal(raw.checked, false); // off until confirmed
+  const raw = () => host.menu["terminal.trace-raw"]?.checked;
+  const request = () => host.run("terminal.trace-raw", true);
+  request();
+  assert.equal(raw(), false); // off until confirmed
   assert.equal(prompt.hidden, false);
   assert.equal(role(doc, "trace-confirm-ok")!.focused, 1);
+  const focusedBefore = terms[0]!.focused;
   clickEl(role(doc, "trace-confirm-cancel")!);
   assert.equal(prompt.hidden, true);
-  assert.equal(raw.checked, false);
-  assert.equal(raw.focused, 1);
-  check();
+  assert.equal(raw(), false);
+  assert.equal(terms[0]!.focused, focusedBefore + 1, "focus returns to the terminal");
+  request();
   fire(prompt, "keydown", { key: "Enter" }); // Enter is the focused button's native click, not a cancel
   assert.equal(prompt.hidden, false);
   fire(prompt, "keydown", { key: "Escape" });
   assert.equal(prompt.hidden, true);
-  assert.equal(raw.checked, false);
-  assert.equal(raw.focused, 2);
-  check();
+  assert.equal(raw(), false);
+  request();
   clickEl(role(doc, "trace-confirm-ok")!);
   assert.equal(prompt.hidden, true);
-  assert.equal(raw.checked, true);
-  assert.equal(raw.focused, 3);
-  raw.checked = false; // unchecking never prompts
-  fire(raw, "change");
+  assert.equal(raw(), true);
+  host.run("terminal.trace-raw", false); // unchecking never prompts
   assert.equal(prompt.hidden, true);
 });
 
 test("terminal: View trace opens an in-app viewer with the checked options, closes on Escape and returns focus; no agent means no fetch", async () => {
-  const { doc, pageBody, docKeys, fetches } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "# Trace text" } });
+  const { doc, pageBody, docKeys, fetches, host } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "# Trace text" } });
   await flush();
-  const btn = role(doc, "trace-view")!;
-  role(doc, "trace-children")!.checked = true;
+  const btn = role(doc, "trace-chip")!; // the viewer returns focus to the trace status line
+  host.run("terminal.trace-children", true);
   const before = fetches.length;
-  clickEl(btn);
+  host.run("terminal.trace-view");
   await flush();
   assert.equal(fetches.length, before + 1);
   assert.equal(fetches[fetches.length - 1]!.url, "/v1/agents/a1/trace?format=md&include=children");
@@ -943,16 +1015,15 @@ test("terminal: View trace opens an in-app viewer with the checked options, clos
   // negative control: without an open agent the button does nothing
   const none = runShell("#/terminal");
   await flush();
-  clickEl(role(none.doc, "trace-view")!);
+  none.host.run("terminal.trace-view");
   assert.equal(none.pageBody.children.length, 0);
 });
 
 test("terminal: View trace twice keeps one viewer; navigating to another agent dismisses it", async () => {
   const r = runShell("#/terminal/a1", { ...running, "/v1/agents/a2": { body: { state: "running" } } });
   await flush();
-  const btn = role(r.doc, "trace-view")!;
-  clickEl(btn);
-  clickEl(btn);
+  r.host.run("terminal.trace-view");
+  r.host.run("terminal.trace-view");
   await flush();
   assert.equal(r.pageBody.children.length, 1);
   r.navigate("#/terminal/a2");
@@ -964,32 +1035,26 @@ test("terminal: View trace twice keeps one viewer; navigating to another agent d
 test("terminal: View trace never fetches raw unless the raw opt-in was confirmed", async () => {
   const r = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "t" } });
   await flush();
-  const raw = role(r.doc, "trace-raw")!;
-  const fire = (n: FakeNode, type: string) => {
-    for (const fn of n.listeners.get(type) ?? []) fn({});
-  };
   const view = async () => {
     const n = r.fetches.length;
-    clickEl(role(r.doc, "trace-view")!);
+    r.host.run("terminal.trace-view");
     await flush();
     const url = r.fetches[n]!.url;
     for (const fn of [...r.docKeys]) fn({ key: "Escape" });
     return url;
   };
-  raw.checked = true; // checking opens the in-page prompt and keeps raw off
-  fire(raw, "change");
+  r.host.run("terminal.trace-raw", true); // checking opens the in-page prompt and keeps raw off
   assert.doesNotMatch(await view(), /raw=1/, "prompt open, unconfirmed");
   clickEl(role(r.doc, "trace-confirm-cancel")!);
   assert.doesNotMatch(await view(), /raw=1/, "cancelled");
-  raw.checked = true;
-  fire(raw, "change");
+  r.host.run("terminal.trace-raw", true);
   clickEl(role(r.doc, "trace-confirm-ok")!);
   assert.match(await view(), /raw=1/, "confirmed");
 });
 
 test("terminal: key bar toggle, Alt one-shot, named keys, Send key menu, and offline no-ops", async () => {
   const store: Record<string, string> = {};
-  const { doc, sockets, terms } = runShell("#/terminal/a1", running, undefined, store);
+  const { doc, sockets, terms, host } = runShell("#/terminal/a1", running, undefined, store);
   await flush();
   const keys = role(doc, "keys")!;
   const menu = role(doc, "keymenu")!;
@@ -998,7 +1063,7 @@ test("terminal: key bar toggle, Alt one-shot, named keys, Send key menu, and off
   assert.equal(ws.sent.length, 0);
   assert.match(keys.className, /\boff\b/);
   assert.doesNotMatch(keys.className, /\bopen\b/); // desktop default: collapsed
-  clickEl(role(doc, "keys-toggle")!);
+  host.run("terminal.keys");
   assert.match(keys.className, /\bopen\b/);
   assert.equal(store["pomtree.termKeysOpen"], "1");
   ws.open();
@@ -1030,15 +1095,18 @@ test("terminal: key bar toggle, Alt one-shot, named keys, Send key menu, and off
 
 test("terminal: font size buttons clamp, persist as a benign pref, and apply to the live terminal", async () => {
   const store: Record<string, string> = { "pomtree.termFontSize": "20" };
-  const { doc, terms, sockets } = runShell("#/terminal/a1", running, undefined, store);
+  const { terms, sockets, host } = runShell("#/terminal/a1", running, undefined, store);
   await flush();
   sockets[0]!.open();
   assert.equal(terms[0]!.options.fontSize, 20);
-  clickEl(role(doc, "font-inc")!);
+  host.run("terminal.font-larger");
   assert.equal(terms[0]!.options.fontSize, 21);
   assert.equal(store["pomtree.termFontSize"], "21");
-  for (let i = 0; i < 40; i++) clickEl(role(doc, "font-dec")!);
+  for (let i = 0; i < 40; i++) host.run("terminal.font-smaller");
   assert.equal(terms[0]!.options.fontSize, 8);
+  host.run("terminal.font-reset");
+  assert.equal(terms[0]!.options.fontSize, 14, "reset returns to the default size");
+  assert.equal(store["pomtree.termFontSize"], "14");
 });
 
 test("terminal pane: paths are JSON-escaped, vendor path is configurable, only the benign UI prefs touch storage", () => {
@@ -1727,7 +1795,7 @@ test("view registry: the shell page registers the multi-instance terminal view o
 });
 
 test("terminal views: two instances for different agents mount into two roots without colliding", async () => {
-  const { sockets, terms, observers, doc, rootA, rootB, inRoot, titles } = mountTwo();
+  const { sockets, terms, observers, doc, rootA, rootB, inRoot, titles, hosts } = mountTwo();
   await flush();
   assert.deepEqual(
     sockets.map((s) => s.url),
@@ -1740,12 +1808,10 @@ test("terminal views: two instances for different agents mount into two roots wi
   assert.ok(inRoot(rootA, "host") !== inRoot(rootB, "host"));
   assert.ok(observers[0]!.observed.length === 1 && observers[0]!.observed[0] === inRoot(rootA, "host"), "A's observer watches A's host");
   assert.ok(observers[1]!.observed.length === 1 && observers[1]!.observed[0] === inRoot(rootB, "host"), "B's observer watches B's host");
-  assert.equal(inRoot(rootA, "title").textContent, "a1");
-  assert.equal(inRoot(rootB, "title").textContent, "b2");
   assert.deepEqual(titles, ["A:Terminal \u00b7 a1", "B:Terminal \u00b7 b2"]);
   sockets[0]!.open();
-  assert.equal(inRoot(rootA, "conn").textContent, "connected");
-  assert.equal(inRoot(rootB, "conn").textContent, "connecting", "B is not touched by A's socket");
+  assert.equal(statusText(hosts[0]!, "connection"), "connected");
+  assert.equal(statusText(hosts[1]!, "connection"), "connecting", "B is not touched by A's socket");
   const sentA = sockets[0]!.sent.length;
   terms[1]!.handlers.data!("x");
   assert.equal(sockets[0]!.sent.length, sentA, "input typed in B never reaches A's socket");
@@ -1758,7 +1824,7 @@ test("terminal views: two instances for different agents mount into two roots wi
 });
 
 test("terminal views: unmounting one instance releases its resources and leaves the other running", async () => {
-  const { sockets, terms, observers, intervals, timeouts, resize, resizeListeners, rootA, rootB, a, inRoot } = mountTwo();
+  const { sockets, terms, observers, intervals, timeouts, resize, resizeListeners, rootA, rootB, a, inRoot, hosts } = mountTwo();
   await flush();
   sockets[0]!.open();
   sockets[1]!.open();
@@ -1787,14 +1853,14 @@ test("terminal views: unmounting one instance releases its resources and leaves 
   assert.equal(sockets.length, 2);
   terms[1]!.handlers.data!("y");
   assert.equal(text(sockets[1]!.sent.at(-1)), "y", "B still relays input");
-  assert.equal(inRoot(rootB, "conn").textContent, "connected");
+  assert.equal(statusText(hosts[1]!, "connection"), "connected");
   a.unmount(); // idempotent
 });
 
 test("terminal views: unmounting one instance leaves another instance's trace viewer open", async () => {
   const r = mountTwo();
   await flush();
-  clickEl(r.inRoot(r.rootB, "trace-view"));
+  r.hosts[1]!.run("terminal.trace-view");
   await flush();
   assert.equal(r.pageBody.children.length, 1);
   r.a.unmount();
@@ -1807,7 +1873,7 @@ test("terminal views: the view never writes location.hash; navigation is the hos
   const r = mountTwo();
   await flush();
   r.sockets[0]!.open();
-  clickEl(r.inRoot(r.rootA, "reconnect"));
+  r.hosts[0]!.run("terminal.reconnect");
   r.a.unmount();
   r.b.unmount();
   assert.equal(r.location.hash, "#/tree");
@@ -1902,14 +1968,14 @@ test("terminal: unmounting removes its colour-scheme change listener and clears 
 test("terminal: the trace viewer belongs to the instance that opened it; A opens, B clicks, A unmounts", async () => {
   const r = mountTwo();
   await flush();
-  clickEl(r.inRoot(r.rootA, "trace-view"));
+  r.hosts[0]!.run("terminal.trace-view");
   await flush();
   assert.equal(r.pageBody.children.length, 1);
-  clickEl(r.inRoot(r.rootB, "trace-view")); // reuses A's viewer and must not take it over
+  r.hosts[1]!.run("terminal.trace-view"); // reuses A's viewer and must not take it over
   assert.equal(r.pageBody.children.length, 1);
   r.a.unmount();
   assert.equal(r.pageBody.children.length, 0, "A's unmount dismissed the viewer it created");
-  clickEl(r.inRoot(r.rootB, "trace-view")); // B opens a fresh one and owns it
+  r.hosts[1]!.run("terminal.trace-view"); // B opens a fresh one and owns it
   await flush();
   assert.equal(r.pageBody.children.length, 1);
   r.b.unmount();
@@ -1926,13 +1992,13 @@ test("terminal: a copy still in flight when the view unmounts opens no manual-co
   const r = mountTwo();
   await flush();
   Object.assign(r.context, { navigator: { clipboard: { writeText: () => Promise.reject(new Error("denied")) } } });
-  clickEl(r.inRoot(r.rootA, "trace"));
+  r.hosts[0]!.run("terminal.trace-copy");
   r.a.unmount(); // before the fetch and clipboard promises settle
   await flush();
   await flush();
   assert.equal(r.pageBody.children.length, 0);
   // negative control: the same click on a mounted view does open the modal
-  clickEl(r.inRoot(r.rootB, "trace"));
+  r.hosts[1]!.run("terminal.trace-copy");
   await flush();
   await flush();
   assert.equal(r.pageBody.children.length, 1, "the modal opens when the view is still mounted");
@@ -1950,4 +2016,137 @@ test("terminal: a failed library load then a retry appends the stylesheet link o
   def.mount(fakeNode(), { agent: "b2" }, { setTitle() {}, navigate() {} });
   await flush();
   assert.equal(r.headNodes.filter((n) => n.tagName === "link").length, 1, "one stylesheet across the retry");
+});
+
+// --- terminal toolbar in window chrome: the view drives the declared menus and status through its host ---------
+
+test("terminal chrome: the pane markup no longer carries the toolbar; the view registers the terminal declaration's menus and status", () => {
+  const html = renderTerminalPane();
+  for (const gone of ["statusbar", "fontgrp", "tracegrp", "trace-menu", 'data-role="reconnect"', "keys-toggle", 'data-role="font-', 'data-role="conn"']) {
+    assert.ok(!html.includes(gone), `${gone} left the pane`);
+  }
+  assert.ok(html.includes('data-role="trace-chip" class="tracechip" role="status" tabindex="-1"'), "the trace chip stays in the pane as a status line");
+  assert.ok(html.includes('aria-label="Terminal keys"'), "the key bar stays in the pane");
+  const { context } = runShell("#/tree");
+  const def = runInContext("PaneKit.declaration('terminal')", context) as { menus: { id: string }[]; status: { id: string }[] };
+  assert.deepEqual(
+    [...def.menus].map((m) => m.id),
+    (TERMINAL_DECLARATION.menus ?? []).map((m) => m.id),
+  );
+  assert.deepEqual(
+    [...def.status].map((m) => m.id),
+    ["state", "connection"],
+  );
+});
+
+test("terminal chrome: every declared command has a handler in the view, and running them all (plus an undeclared one) does not throw", async () => {
+  const { host, sockets } = runShell("#/terminal/a1", running);
+  await flush();
+  sockets[0]!.open();
+  const commands = (TERMINAL_DECLARATION.menus ?? []).flatMap((m) => m.items.flatMap((i) => ("command" in i ? [i.command] : [])));
+  assert.ok(commands.length >= 11, "the declaration lists the toolbar's commands");
+  const html = renderTerminalPane();
+  for (const c of commands) assert.ok(html.includes(`"${c}":`), `${c} is handled`);
+  for (const c of commands) host.run(c, c.endsWith("trace-children") || c.endsWith("trace-raw") ? false : undefined);
+  host.run("terminal.not-declared");
+});
+
+test("terminal chrome: Reconnect is offered only after a disconnect and withdrawn on connect", async () => {
+  const { host, sockets } = runShell("#/terminal/a1", running);
+  await flush();
+  assert.equal(reconnectOffered(host), false, "not offered while connecting");
+  sockets[0]!.open();
+  assert.equal(reconnectOffered(host), false, "not offered while connected");
+  sockets[0]!.drop();
+  assert.equal(reconnectOffered(host), true);
+  await flush();
+  host.run("terminal.reconnect");
+  assert.equal(sockets.length, 2, "the command redials like the old button");
+  sockets[1]!.open();
+  assert.equal(reconnectOffered(host), false);
+});
+
+test("terminal chrome: reconnect while a socket is live does nothing (as the old button)", async () => {
+  const { host, sockets } = runShell("#/terminal/a1", running);
+  await flush();
+  sockets[0]!.open();
+  host.run("terminal.reconnect");
+  assert.equal(sockets.length, 1);
+});
+
+test("terminal chrome: state and connection map to status tones", async () => {
+  const { host, sockets } = runShell("#/terminal/a1", running);
+  await flush();
+  assert.deepEqual(host.status.connection, { text: "connecting", tone: "warn" });
+  assert.equal(host.status.state?.text, "running");
+  assert.equal(host.status.state?.tone, "ok");
+  sockets[0]!.open();
+  assert.deepEqual(host.status.connection, { text: "connected", tone: "ok" });
+  sockets[0]!.drop();
+  assert.deepEqual(host.status.connection, { text: "disconnected", tone: "warn" });
+  const y = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
+  await flush();
+  assert.equal(y.host.status.state?.tone, "warn");
+  const e = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "exited" } } });
+  await flush();
+  assert.equal(e.host.status.state?.tone, "info");
+  const f = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "failed" } } });
+  await flush();
+  assert.equal(f.host.status.state?.tone, "err");
+  const m = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "mystery" } } });
+  await flush();
+  assert.equal(m.host.status.state?.tone, null, "an unknown state shows text without a tone");
+});
+
+test("terminal chrome: trace commands fetch the same URLs the old buttons did, honouring the two options", async () => {
+  const { host, fetches } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "t" } });
+  await flush();
+  const last = async (command: string) => {
+    const n = fetches.length;
+    host.run(command);
+    await flush();
+    return fetches[n]?.url;
+  };
+  assert.equal(await last("terminal.trace-copy"), "/v1/agents/a1/trace?format=md");
+  assert.equal(await last("terminal.trace-short"), "/v1/agents/a1/trace?format=md&short=1");
+  host.run("terminal.trace-children", true);
+  assert.equal(await last("terminal.trace-copy"), "/v1/agents/a1/trace?format=md&include=children");
+  assert.equal(await last("terminal.trace-download"), "/v1/agents/a1/trace?format=md&include=children");
+  host.run("terminal.trace-children", false);
+  assert.equal(await last("terminal.trace-copy"), "/v1/agents/a1/trace?format=md");
+});
+
+test("terminal chrome: the Keys command toggles the bar and the stored pref; the bar keeps an id for aria-controls", async () => {
+  const store: Record<string, string> = {};
+  const { doc, host } = runShell("#/terminal/a1", running, undefined, store);
+  await flush();
+  const keys = role(doc, "keys")!;
+  assert.ok(keys.id.startsWith("term-keys-"));
+  assert.doesNotMatch(keys.className, /\bopen\b/);
+  host.run("terminal.keys");
+  assert.match(keys.className, /\bopen\b/);
+  assert.equal(store["pomtree.termKeysOpen"], "1");
+  host.run("terminal.keys");
+  assert.doesNotMatch(keys.className, /\bopen\b/);
+  assert.equal(store["pomtree.termKeysOpen"], "0");
+});
+
+test("terminal chrome: a raw toggle request never turns raw on before the confirm (checked is pushed false, then true)", async () => {
+  const { host, doc } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "t" } });
+  await flush();
+  host.run("terminal.trace-raw", true);
+  const raws = host.menuCalls.filter(([c]) => c === "terminal.trace-raw").map(([, s]) => s.checked);
+  assert.deepEqual(raws, [false]);
+  clickEl(role(doc, "trace-confirm-cancel")!);
+  assert.deepEqual(
+    host.menuCalls.filter(([c]) => c === "terminal.trace-raw").map(([, s]) => s.checked),
+    [false],
+    "cancel pushes nothing more",
+  );
+  host.run("terminal.trace-raw", true);
+  clickEl(role(doc, "trace-confirm-ok")!);
+  assert.deepEqual(
+    host.menuCalls.filter(([c]) => c === "terminal.trace-raw").map(([, s]) => s.checked),
+    [false, false, true],
+  );
 });

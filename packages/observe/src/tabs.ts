@@ -10,6 +10,7 @@ import { TERM_LOGIC_JS, TERMINAL_WS_PATH } from "./termKit.ts";
 import { TRACE_LOGIC_JS } from "./traceKit.ts";
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { scriptJson } from "./web.ts";
+import { TERMINAL_DECLARATION } from "./viewMenus.ts";
 
 // A filterable journal view. GET <journalPath>?from&limit&agent&kind returns an array
 // of { seq, ts, agent, kind, summary } rows; `seq` is the paging cursor for "more",
@@ -85,13 +86,14 @@ export function renderTerminalPane(ctx: { agentsBase?: string; terminalPath?: st
   const base = scriptJson(ctx.agentsBase ?? "/v1/agents");
   const wsPath = scriptJson(ctx.terminalPath ?? TERMINAL_WS_PATH);
   const vendor = scriptJson(ctx.vendorPath ?? "/ui/vendor");
+  const menus = scriptJson(TERMINAL_DECLARATION.menus);
+  const status = scriptJson(TERMINAL_DECLARATION.status);
   return `<template data-view-template="terminal"><div class="term pane">
-<div class="statusbar"><strong data-role="title"></strong><span data-role="state" class="state"></span><span data-role="conn" class="conn"></span> <button type="button" data-role="reconnect" hidden>Reconnect</button> <span class="fontgrp"><button type="button" data-role="font-dec" aria-label="Smaller font" title="Smaller font">A−</button><button type="button" data-role="font-inc" aria-label="Larger font" title="Larger font">A+</button></span> <span class="tracegrp"><button type="button" data-role="trace" title="Copy a complete session trace (Markdown, secrets redacted) to paste into a chat">Copy trace</button><button type="button" data-role="trace-view" title="View the session trace in a window">View trace</button><button type="button" data-role="trace-short" title="Copy header + last 40 events + errors only">Short</button><button type="button" data-role="trace-opt" aria-expanded="false" aria-label="Trace options" title="Trace options">▾</button><span data-role="trace-chip" class="tracechip" role="status"></span></span></div>
-<div data-role="trace-menu" class="tracemenu" hidden><label><input type="checkbox" data-role="trace-children"> include children (condensed)</label><label><input type="checkbox" data-role="trace-raw"> include raw tool output (no redaction)</label><span class="warn">Raw skips the secret-redaction pass: tokens or keys an agent printed will be in the text. Do not paste it anywhere public.</span><span><button type="button" data-role="trace-dl">Download .md</button></span></div>
 <div data-role="trace-confirm" class="tracemenu" role="alertdialog" aria-label="Confirm raw trace" hidden><span class="warn">Raw trace skips secret redaction. Tokens or keys that an agent printed will be included. Continue?</span><span><button type="button" data-role="trace-confirm-ok">Include raw output</button> <button type="button" data-role="trace-confirm-cancel">Cancel</button></span></div>
+<div data-role="trace-chip" class="tracechip" role="status" tabindex="-1"></div>
 <div data-role="note" class="termnote" role="status" aria-live="polite"></div>
 <div class="termwrap"><div data-role="host" class="termhost"></div><button type="button" data-role="bottom" class="termbottom" hidden>↓ bottom</button></div>
-<div class="keywrap" data-role="keywrap"><button type="button" data-role="keys-toggle" aria-expanded="false">Keys</button>
+<div class="keywrap" data-role="keywrap">
 <div data-role="keys" class="keybar" role="toolbar" aria-label="Terminal keys"><button type="button" data-key="Esc">Esc</button><button type="button" data-key="Tab">Tab</button><button type="button" data-key="Shift+Tab">Shift+Tab</button><button type="button" data-key="Enter">Enter</button><button type="button" data-key="Shift+Enter">Shift+Enter</button><button type="button" data-role="alt" data-key="Alt" aria-pressed="false">Alt</button><button type="button" data-role="ctrl" data-key="Ctrl" aria-pressed="false">Ctrl</button><button type="button" data-key="ArrowLeft" aria-label="Left">←</button><button type="button" data-key="ArrowDown" aria-label="Down">↓</button><button type="button" data-key="ArrowUp" aria-label="Up">↑</button><button type="button" data-key="ArrowRight" aria-label="Right">→</button><button type="button" data-key="Paste">Paste</button><button type="button" data-key="SendKey" aria-expanded="false">Send key…</button></div>
 <div data-role="keymenu" class="keymenu" role="menu" aria-label="Send key" hidden><button type="button" role="menuitem" data-sendkey="Esc">Esc</button><button type="button" role="menuitem" data-sendkey="Ctrl+C">Ctrl+C</button><button type="button" role="menuitem" data-sendkey="Ctrl+D">Ctrl+D</button><button type="button" role="menuitem" data-sendkey="Ctrl+L">Ctrl+L</button><button type="button" role="menuitem" data-sendkey="Ctrl+O">Ctrl+O</button><button type="button" role="menuitem" data-sendkey="Ctrl+P">Ctrl+P</button><button type="button" role="menuitem" data-sendkey="Ctrl+Shift+P">Ctrl+Shift+P</button><button type="button" role="menuitem" data-sendkey="Ctrl+T">Ctrl+T</button><button type="button" role="menuitem" data-sendkey="Ctrl+W">Ctrl+W</button><button type="button" role="menuitem" data-sendkey="Ctrl+N">Ctrl+N</button></div></div>
 </div></template>
@@ -158,19 +160,13 @@ const mountTerminalInstance = (root, params, hostApi) => {
   root.appendChild(tpl.content.cloneNode(true));
   const $ = (role) => root.querySelector('[data-role="' + role + '"]');
   const host = $("host");
-  const titleEl = $("title");
-  const stateEl = $("state");
-  const connEl = $("conn");
   const noteEl = $("note");
-  const reconnectBtn = $("reconnect");
   const bottomBtn = $("bottom");
   const keysEl = $("keys");
   const ctrlBtn = $("ctrl");
   const altBtn = $("alt");
-  const keysToggle = $("keys-toggle");
   const keyMenu = $("keymenu");
   keysEl.id = "term-keys-" + (++instances);
-  keysToggle.setAttribute("aria-controls", keysEl.id);
 
   const agentId = String(params && params.agent || "");
   let active = true;
@@ -186,11 +182,12 @@ const mountTerminalInstance = (root, params, hostApi) => {
   let fontSize = readFont();
   let poller = null;
 
-  const setConn = (label, cls) => { connEl.textContent = label; connEl.className = label ? "conn " + cls : "conn"; paintKeys(); };
+  const CONN_TONES = { ok: "ok", stale: "warn" };
+  const STATE_TONES = { running: "ok", yielded: "warn", exited: "info", failed: "err", error: "err" };
+  const setConn = (label, cls) => { hostApi.setStatus("connection", { text: label, tone: label && CONN_TONES[cls] || null }); paintKeys(); };
   const note = (text, bad) => { noteEl.textContent = text; noteEl.className = bad ? "termnote err" : "termnote"; };
   const paintAgent = (s) => {
-    stateEl.textContent = s;
-    stateEl.className = s ? "state s-" + String(s).split(" ")[0].replace(/[^a-z_-]/gi, "") : "state";
+    hostApi.setStatus("state", { text: s, tone: s && STATE_TONES[String(s).split(" ")[0]] || null });
   };
 
   const sendBytes = (b) => { if (ws && ws.readyState === 1) ws.send(b); };
@@ -223,7 +220,6 @@ const mountTerminalInstance = (root, params, hostApi) => {
   const paintKeys = () => {
     keysEl.className = "keybar" + (keysOpen ? " open" : "") + (online() ? "" : " off");
     keysEl.setAttribute("aria-disabled", online() ? "false" : "true");
-    keysToggle.setAttribute("aria-expanded", keysOpen ? "true" : "false");
     if (!keysOpen) closeKeyMenu();
   };
   const closeKeyMenu = () => { keyMenu.hidden = true; };
@@ -287,7 +283,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
   const afterClose = () => {
     if (!active) return;
     setConn("disconnected", "stale");
-    reconnectBtn.hidden = false;
+    hostApi.setMenuState("terminal.reconnect", { visible: true });
     attempt = TermKit.nextAttempt(attempt, openedAt ? Date.now() - openedAt : 0);
     const g = gen;
     lookup(agentId).then((agent) => {
@@ -319,7 +315,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
       lastSize = null;
       term.reset();
       setConn("connected", "ok");
-      reconnectBtn.hidden = true;
+      hostApi.setMenuState("terminal.reconnect", { visible: false });
       note("");
       doFit();
       term.focus();
@@ -352,31 +348,29 @@ const mountTerminalInstance = (root, params, hostApi) => {
     root.replaceChildren();
   };
 
-  reconnectBtn.addEventListener("click", () => {
+  const reconnect = () => {
     if (!active || !term || ws) return;
     clearRetry();
     attempt = 0;
     connect();
-  });
+  };
   bottomBtn.addEventListener("click", () => { if (term) { term.scrollToBottom(); term.focus(); } });
   const setFont = (n) => {
     fontSize = TermKit.clampFont(n);
     try { globalThis.localStorage.setItem(PREF_FONT, String(fontSize)); } catch (e) {}
     if (term) { term.options.fontSize = fontSize; scheduleFit(); term.focus(); }
   };
-  $("font-dec").addEventListener("click", () => setFont(fontSize - 1));
-  $("font-inc").addEventListener("click", () => setFont(fontSize + 1));
   // Key bar: buttons never take focus (keeps the on-screen keyboard up); Ctrl and Alt arm one-shot modifiers. The
   // "Keys" toggle shows or hides the bar (collapsed on desktop, open on touch unless a stored pref says otherwise).
   // Every action refocuses the terminal and is a no-op while the socket is down.
   const noFocus = (ev) => { if (ev.preventDefault) ev.preventDefault(); };
   $("keywrap").addEventListener("mousedown", noFocus);
-  keysToggle.addEventListener("click", () => {
+  const toggleKeys = () => {
     keysOpen = !keysOpen;
     try { globalThis.localStorage.setItem(PREF_KEYS, keysOpen ? "1" : "0"); } catch (e) {}
     paintKeys();
     if (term) term.focus();
-  });
+  };
   keyMenu.addEventListener("click", (ev) => {
     const name = ev.target && ev.target.getAttribute ? ev.target.getAttribute("data-sendkey") : null;
     const seq = name ? TermKit.namedKey(name) : null;
@@ -407,13 +401,10 @@ const mountTerminalInstance = (root, params, hostApi) => {
   paintKeys();
 
   const traceChip = $("trace-chip");
-  const traceMenu = $("trace-menu");
-  const traceOpt = $("trace-opt");
-  const traceKids = $("trace-children");
-  const traceRaw = $("trace-raw");
-  const traceView = $("trace-view");
+  let traceKids = false;
+  let traceRaw = false;
   const traceDeps = () => ({ fetch: (u) => fetch(u), clipboard: navigator.clipboard, doc: document, Blob, URL });
-  const traceOpts = (short) => ({ short, children: !!traceKids.checked, raw: !!traceRaw.checked });
+  const traceOpts = (short) => ({ short, children: traceKids, raw: traceRaw });
   const traceSay = (text, bad) => { traceChip.textContent = text; traceChip.className = bad ? "tracechip err" : "tracechip"; };
   const runTrace = (short) => {
     if (!agentId) return;
@@ -425,37 +416,48 @@ const mountTerminalInstance = (root, params, hostApi) => {
       if (typeof r.text === "string") T.modal(document, r.text, r.error);
     });
   };
-  $("trace").addEventListener("click", () => runTrace(false));
-  $("trace-short").addEventListener("click", () => runTrace(true));
-  traceView.addEventListener("click", () => {
+  const viewTrace = () => {
     if (!agentId) return;
     // T.viewer reuses a live viewer: only the instance that created it owns it (and dismisses it on unmount).
-    const v = T.viewer(traceDeps(), base, agentId, traceOpts(false), traceView);
+    const v = T.viewer(traceDeps(), base, agentId, traceOpts(false), traceChip);
     if (v !== viewerObj) { viewerObj = v; viewerOwner = self; }
-  });
-  traceOpt.addEventListener("click", () => { traceMenu.hidden = !traceMenu.hidden; traceOpt.setAttribute("aria-expanded", traceMenu.hidden ? "false" : "true"); });
+  };
   const rawConfirm = $("trace-confirm");
   const rawOk = $("trace-confirm-ok");
   const rawCancel = $("trace-confirm-cancel");
-  const closeRawConfirm = () => { rawConfirm.hidden = true; traceRaw.focus(); };
-  traceRaw.addEventListener("change", () => {
-    if (!traceRaw.checked) { rawConfirm.hidden = true; return; }
-    traceRaw.checked = false; // stays off until confirmed, so a copy while the prompt is open is redacted
+  const closeRawConfirm = () => { rawConfirm.hidden = true; if (term) term.focus(); };
+  const toggleRaw = (want) => {
+    if (!want) { traceRaw = false; rawConfirm.hidden = true; return; }
+    traceRaw = false; // stays off until confirmed, so a copy while the prompt is open is redacted
+    hostApi.setMenuState("terminal.trace-raw", { checked: false });
     rawConfirm.hidden = false;
     rawOk.focus();
-  });
-  rawOk.addEventListener("click", () => { traceRaw.checked = true; closeRawConfirm(); });
+  };
+  rawOk.addEventListener("click", () => { traceRaw = true; hostApi.setMenuState("terminal.trace-raw", { checked: true }); closeRawConfirm(); });
   rawCancel.addEventListener("click", closeRawConfirm);
   rawConfirm.addEventListener("keydown", (ev) => { if (ev && ev.key === "Escape") closeRawConfirm(); });
-  $("trace-dl").addEventListener("click", () => {
+  const downloadTrace = () => {
     if (!agentId) return;
     const o = traceOpts(false);
     fetch(T.url(base, agentId, o)).then((res) => { if (!res.ok) throw new Error("HTTP " + res.status); return res.text(); })
       .then((text) => { traceSay("Downloaded " + T.download(traceDeps(), text, T.filename(agentId, o)), false); })
       .catch((err) => traceSay("Trace failed: " + String(err && err.message ? err.message : err), true));
-  });
+  };
+  const COMMANDS = {
+    "terminal.font-smaller": () => setFont(fontSize - 1),
+    "terminal.font-larger": () => setFont(fontSize + 1),
+    "terminal.font-reset": () => setFont(TermKit.FONT_DEFAULT),
+    "terminal.trace-copy": () => runTrace(false),
+    "terminal.trace-view": viewTrace,
+    "terminal.trace-short": () => runTrace(true),
+    "terminal.trace-download": downloadTrace,
+    "terminal.trace-children": (want) => { traceKids = !!want; },
+    "terminal.trace-raw": toggleRaw,
+    "terminal.reconnect": reconnect,
+    "terminal.keys": toggleKeys,
+  };
+  hostApi.onCommand((command, arg) => { if (active && Object.prototype.hasOwnProperty.call(COMMANDS, command)) COMMANDS[command](arg); });
 
-  titleEl.textContent = agentId;
   hostApi.setTitle(agentId ? "Terminal · " + agentId.slice(0, 8) : "Terminal");
   paintAgent("");
   setConn("", "");
@@ -481,7 +483,7 @@ const mountTerminal = (root, params, hostApi) => {
   catch (e) { root.replaceChildren(); throw e; }
 };
 
-K.registerView({ id: "terminal", title: "Terminal", multi: true, mount: mountTerminal });
+K.registerView({ id: "terminal", title: "Terminal", multi: true, menus: ${menus}, status: ${status}, mount: mountTerminal });
 })();
 </script>`;
 }

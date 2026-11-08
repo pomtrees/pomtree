@@ -22,6 +22,7 @@
 // to any agent (201 { kind: signaled, to } or { kind: rejected, reason }; HTTP errors are { error }); the agent-id datalist is filled from GET <agentsPath>.
 
 import { PANE_KIT_JS } from "./paneKit.ts";
+import { INBOX_DECLARATION } from "./viewMenus.ts";
 import { scriptJson } from "./web.ts";
 
 export const INBOX_CSS = `
@@ -57,6 +58,12 @@ let active = false;
 let lastApprovals = [];
 let lastEscalations = null;
 let lastSeq = 0;
+let filter = "all"; // the View menu's "Show" radio; per page load, never persisted
+
+// The Inbox is a section view: PaneKit keeps one window model for it and the tile chrome renders its menu and footer.
+K.declareSection(${scriptJson(INBOX_DECLARATION)});
+const win = K.sectionHost("inbox");
+const FILTERS = { all: "All", message: "User messages", escalation: "Escalations", approval: "Approvals" };
 
 const say = (text, bad) => { status.className = bad ? "err" : "meta"; status.textContent = text; };
 
@@ -168,12 +175,28 @@ const deepLink = () => {
   }
 };
 
+// Cards that wait for the operator's answer: approvals and asks (escalations).
+const paintPending = () => {
+  let n = 0;
+  for (const it of items.values()) if (it.kind === "approval" || it.purpose === "ask") n++;
+  win.setStatus("pending", n > 0 ? { text: n + " pending", tone: "warn" } : { text: "" });
+};
+
+const emptyFilterLine = () => {
+  const li = document.createElement("li");
+  li.className = "meta";
+  li.textContent = "No " + FILTERS[filter] + " cards. Choose View \\u203a Show \\u203a All to see every card.";
+  return li;
+};
+
 const render = () => {
   const sorted = [...items.values()].sort(rank);
   for (const it of sorted) {
     it.ageEl.textContent = it.kind === "approval" ? dueText(it) : K.age(Date.now() - it.createdAt);
   }
-  list.replaceChildren(...sorted.map((it) => it.el));
+  const shown = filter === "all" ? sorted : sorted.filter((it) => it.kind === filter);
+  list.replaceChildren(...(shown.length === 0 && filter !== "all" ? [emptyFilterLine()] : shown.map((it) => it.el)));
+  paintPending();
   if (items.size > 0 && status.textContent === "Inbox empty") say("", false);
   if (items.size === 0 && !status.textContent) say("Inbox empty", false);
   deepLink();
@@ -320,6 +343,16 @@ const open = () => {
   };
 };
 open();
+
+win.onCommand((command, arg) => {
+  if (command === "inbox.filter") {
+    if (typeof arg !== "string" || !Object.prototype.hasOwnProperty.call(FILTERS, arg)) return;
+    filter = arg;
+    render();
+  } else if (command === "inbox.about") {
+    say("The Inbox lists agent messages, escalations and approvals for you. Approvals and asks stay on top until answered; other messages can be dismissed.", false);
+  }
+});
 
 const poller = K.poll(refresh, 5000);
 K.onActivate("inbox", () => { active = true; poller.start(); refreshAgents(); render(); }, () => { active = false; poller.stop(); });

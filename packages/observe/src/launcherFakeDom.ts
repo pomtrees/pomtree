@@ -1,5 +1,7 @@
 // A small fake DOM for the launcher bar tests (launcherShell.test.ts): just what the bar touches. innerHTML,
 // outerHTML and insertAdjacentHTML throw so any use of them on agent data fails a test.
+import { inspect } from "node:util";
+
 export type Listener = (ev: FakeEvent) => void;
 interface Reg {
   fn: Listener;
@@ -53,6 +55,10 @@ export class Node_ {
   private text = "";
   constructor(tag: string) {
     this.tagName = tag;
+  }
+  // Short descriptor so a failing assertion never inspects the parent/listener graph (it once exhausted memory).
+  [inspect.custom](): string {
+    return `<Node_ ${this.tagName} id=${this.id} class="${this.className}" children=${this.children.length}>`.slice(0, 119);
   }
   get parentNode(): Node_ | null {
     return this.parent;

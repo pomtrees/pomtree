@@ -1,6 +1,6 @@
 // The decided menus and status of the terminal, browser and inbox views, per docs/ui-vision.md and the mock
-// docs/mockups/ui-launcher-mock.html. Plain data, no functions and no logic. The window chrome does not use these
-// yet: the registerView calls adopt them when the window chrome lands.
+// docs/mockups/ui-launcher-mock.html. Plain data, no functions and no logic. tabs.ts, browserView.ts and inbox.ts register
+// them with registerView, and the window chrome renders them.
 
 import type { ViewDeclaration } from "./menuModel.ts";
 

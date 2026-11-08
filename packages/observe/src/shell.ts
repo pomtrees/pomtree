@@ -11,6 +11,9 @@ import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
 import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
+import { MENU_NAV_JS } from "./menuNav.ts";
+import { WINDOW_CHROME_JS } from "./windowChrome.ts";
+import { CHROME_CSS } from "./chromeCss.ts";
 import { THEME_CSS } from "./themeCss.ts";
 import { escapeHtml, scriptJson } from "./web.ts";
 
@@ -95,7 +98,7 @@ main { box-sizing: border-box; width: min(100% - 2 * var(--pad), 80rem); margin:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
-${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${LAUNCHER_CSS}${THEME_CSS}`;
+${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${CHROME_CSS}${LAUNCHER_CSS}${THEME_CSS}`;
 
 export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; title?: string }): string {
   const title = escapeHtml(opts.title ?? "pomtree");
@@ -153,6 +156,8 @@ const UI = {
 <main class="wm"><div id="wm-root" class="wm-root"></div><div id="wm-stash" hidden>${sections}</div></main>
 <script>
 ${LAYOUT_LOGIC_JS}
+${MENU_NAV_JS}
+${WINDOW_CHROME_JS}
 ${LAYOUT_SHELL_JS}
 const wm = createWindowManager(${tabsMeta}, ${scriptJson(LAYOUT_STORAGE_KEY)});
 </script>

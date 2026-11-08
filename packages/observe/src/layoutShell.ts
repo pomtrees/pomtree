@@ -208,6 +208,18 @@ function createWindowManager(tabs, storageKey) {
   const release = (rec) => { if (rec.release) { try { rec.release(); } catch (e) {} rec.release = null; } rec.fit = null; };
   const buildTile = (lf, want) => {
     const rec = { sig: want.sig, view: lf.view, release: null, fit: null };
+    let model = null;
+    let chrome = null;
+    let chromeErr = null;
+    try {
+      if (want.kind === "section") model = K && K.sectionModel ? K.sectionModel(lf.view) || null : null;
+      else if (want.kind !== "note") model = K.windowModel(lf.view);
+      const d = model && model.declaration;
+      if (d && (d.menus.length > 0 || d.status.length > 0)) {
+        if (typeof ChromeKit === "undefined" || !ChromeKit || typeof ChromeKit.createChrome !== "function") throw new Error("ChromeKit is not loaded");
+        chrome = ChromeKit.createChrome(model, { document });
+      }
+    } catch (e) { chromeErr = e; }
     const el = make("div", "tile");
     el.setAttribute("data-tile", lf.id);
     el.setAttribute("role", "group");
@@ -235,10 +247,12 @@ function createWindowManager(tabs, storageKey) {
     const bRight = mk("\\u25eb", "Split right", () => splitLeaf(lf.id, "row"));
     const bDown = mk("\\u2b13", "Split down", () => splitLeaf(lf.id, "col"));
     const bClose = mk("\\u00d7", "Close tile", () => commit(LK.close(layout(), lf.id)));
-    for (const c of [title, sel, bRight, bDown, bClose]) bar.appendChild(c);
+    const hasMenus = chrome && model.declaration.menus.length > 0;
+    for (const c of hasMenus ? [title, chrome.menus, chrome.overflow, sel, bRight, bDown, bClose] : [title, sel, bRight, bDown, bClose]) bar.appendChild(c);
     const body = make("div", "tile-body");
     el.appendChild(bar);
     el.appendChild(body);
+    if (chrome && model.declaration.status.length > 0) el.appendChild(chrome.footer);
     el.addEventListener("pointerdown", () => focusLeaf(lf.id), true);
     // only focus the operator caused counts: a view calling focus() on its own (xterm's hidden textarea once its socket opens) must not move the layout's focus
     // TODO(tile-focus-source): this key-held heuristic has two limits. (1) A key held down while a terminal's socket opens still counts as operator focus and moves the tile focus. (2) Focus that moves with no key or pointer press (screen-reader virtual cursor, voice control) no longer updates the focused tile. Preferred fix: stop the view stealing focus at the source (tabs.ts term.focus() after socket open skipped when its tile is not the focused one, e.g. via a host-provided focus-if-focused hook), then delete keyDown.
@@ -250,23 +264,25 @@ function createWindowManager(tabs, storageKey) {
       n.textContent = text;
       body.appendChild(n);
     };
+    if (chromeErr) note(lf.view + ": the window menus could not be built (" + errText(chromeErr) + "). Reload the page; if it persists, report this build as broken.");
     if (want.kind === "note") note(want.note);
     else if (want.kind === "section") {
       const sec = sections.get(lf.view);
       body.appendChild(sec);
       sec.hidden = false;
       UI.activate(lf.view);
-      rec.release = () => { UI.deactivate(lf.view); sec.hidden = true; stash.appendChild(sec); };
+      rec.release = () => { if (chrome) chrome.destroy(); UI.deactivate(lf.view); sec.hidden = true; stash.appendChild(sec); };
     } else {
       const host = make("div", "wm-mount");
       body.appendChild(host);
       const hostApi = { setTitle: (t) => { title.textContent = String(t); }, navigate: (h) => { location.hash = h; } };
       try {
-        const inst = regDef(lf.view).mount(host, lf.params.agent ? { agent: lf.params.agent } : {}, hostApi);
-        rec.release = () => { inst.unmount(); host.remove(); };
+        const inst = regDef(lf.view).mount(host, lf.params.agent ? { agent: lf.params.agent } : {}, model ? K.windowHost(model, hostApi) : hostApi);
+        rec.release = () => { if (chrome) chrome.destroy(); inst.unmount(); host.remove(); };
         rec.fit = inst.fit ? () => inst.fit() : null;
       } catch (e) {
         host.remove();
+        if (chrome) chrome.destroy();
         note(lf.view + ": the view failed to load (" + errText(e) + "). Choose another view or close this tile.");
       }
     }

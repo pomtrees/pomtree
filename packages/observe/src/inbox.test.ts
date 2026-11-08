@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { INBOX_JS, renderInboxPane } from "./inbox.ts";
+import { PANE_KIT_JS } from "./paneKit.ts";
 
 test("inbox pane markup has no executable inline script; the static script paints via textContent only and has its hooks", () => {
   const html = renderInboxPane();
@@ -192,9 +193,28 @@ function run(
       if (t === "hashchange") hashListeners.push(f);
     },
   };
+  // A fake of PaneKit's section API (K.declareSection / K.sectionHost, built by the shell slice), installed right after
+  // the real PaneKit so the script under test sees the contract: declareSection validates with the real MenuKit,
+  // sectionHost returns { setMenuState, setStatus, onCommand }.
+  const decls: unknown[] = [];
+  const statuses: { slot: string; text: string; tone?: string }[] = [];
+  let handler: (command: string, arg?: unknown) => void = () => {};
+  Object.assign(sandbox, {
+    __section: {
+      declare: (d: unknown) => decls.push(d),
+      setStatus: (slot: string, v: { text: string; tone?: string }) => statuses.push({ slot, text: v.text, tone: v.tone }),
+      onCommand: (f: typeof handler) => {
+        handler = f;
+      },
+    },
+  });
+  const fakeSection = `
+K.declareSection = (d) => { MenuKit.declareView({ id: d.id, title: d.title, multi: d.multi, menus: d.menus, status: d.status }); __section.declare(d); };
+K.sectionHost = (id) => ({ setMenuState: () => {}, setStatus: __section.setStatus, onCommand: __section.onCommand });
+`;
   const html = renderInboxPane(paths);
   byId.set("inbox-config", Object.assign(node(), { textContent: html.match(/id="inbox-config">([\s\S]*?)<\/script>/)![1]! }));
-  runInContext(INBOX_JS, createContext(sandbox));
+  runInContext(INBOX_JS.replace(PANE_KIT_JS, PANE_KIT_JS + fakeSection), createContext(sandbox));
   const push = (m: Record<string, unknown>) => sources[0]!.onmessage!({ data: JSON.stringify(m) });
   const msg = (seq: number, extra: Record<string, unknown> = {}) => ({
     seq,
@@ -206,6 +226,10 @@ function run(
     ...extra,
   });
   return {
+    decls,
+    statuses,
+    command: (c: string, a?: unknown) => handler(c, a),
+    pending: () => statuses.filter((x) => x.slot === "pending").at(-1),
     byId,
     store,
     fetches,
@@ -564,4 +588,85 @@ test("inbox compose: a rejected receipt at 201 is a failure that keeps the draft
 
 test("inbox compose: the textarea carries maxlength 4000", () => {
   assert.ok(renderInboxPane().includes('id="inbox-body" rows="2" maxlength="4000"'));
+});
+
+// ---- window chrome: View filter, About, pending status ----------------------------------------------------------------
+
+const mixed = () => ({
+  approvals: [{ id: "ap-1", requester: "a9", summary: "approve me", rung: "operator", deadlineAt: Date.now() + 60000 }],
+  escalations: [{ id: "esc-1", agent: "a1", question: "q?", options: [], holder: "root", createdAt: Date.now() }],
+});
+const cardKinds = (f: ReturnType<typeof run>) => f.list().children.map((li) => (li.className.match(/p-(\w+)/) ?? [])[1]);
+
+test("inbox chrome: declares the Inbox section once with the shared declaration", () => {
+  const f = run();
+  assert.equal(f.decls.length, 1);
+  const d = f.decls[0] as { id: string; multi: boolean; menus: { items: { command?: string; options?: { value: string }[] }[] }[] };
+  assert.equal(d.id, "inbox");
+  assert.equal(d.multi, false);
+  const radio = d.menus[0]!.items[0]!;
+  assert.equal(radio.command, "inbox.filter");
+  assert.deepEqual([...radio.options!.map((o) => o.value)], ["all", "message", "escalation", "approval"]);
+});
+
+test("inbox filter: shows only the chosen kind, All restores everything, nothing is persisted", async () => {
+  const f = run(mixed());
+  f.push(f.msg(1));
+  await flush();
+  assert.deepEqual(cardKinds(f).sort(), ["approval", "ask", "status"]);
+  f.command("inbox.filter", "approval");
+  assert.deepEqual(cardKinds(f), ["approval"]);
+  f.command("inbox.filter", "escalation");
+  assert.equal(f.list().children.length, 1);
+  assert.ok(f.list().children[0]!.className.includes("p-ask"));
+  f.command("inbox.filter", "message");
+  assert.deepEqual(cardKinds(f), ["status"]);
+  f.command("inbox.filter", "all");
+  assert.equal(f.list().children.length, 3);
+  assert.deepEqual(f.store, {});
+});
+
+test("inbox filter: an empty filtered list says which filter and how to clear it; a bad value is ignored", async () => {
+  const f = run({ approvals: mixed().approvals });
+  await flush();
+  f.command("inbox.filter", "message");
+  assert.equal(f.list().children.length, 1);
+  const line = f.list().children[0]!.textContent;
+  assert.match(line, /User messages/);
+  assert.match(line, /Show .* All/);
+  f.command("inbox.filter", "bogus"); // negative: unknown value leaves the filter alone
+  f.command("inbox.filter", 7);
+  assert.equal(f.list().children[0]!.textContent, line);
+  f.command("inbox.filter", "all");
+  assert.deepEqual(cardKinds(f), ["approval"]);
+  const none = run();
+  assert.equal(none.list().children.length, 0, "an empty inbox under All shows no filter line");
+});
+
+test("inbox filter: a card arriving while filtered out appears once the filter allows it", () => {
+  const f = run();
+  f.command("inbox.filter", "message");
+  f.push(f.msg(1));
+  assert.equal(f.list().children.length, 1);
+  assert.equal(f.list().children[0]!.className.includes("p-status"), true);
+});
+
+test("inbox pending status: counts approvals and asks, warn tone, empty when none, independent of the filter", async () => {
+  const f = run(mixed());
+  f.push(f.msg(1));
+  await flush();
+  assert.deepEqual({ ...f.pending() }, { slot: "pending", text: "2 pending", tone: "warn" });
+  f.command("inbox.filter", "message");
+  assert.equal(f.pending()!.text, "2 pending");
+  const quiet = run();
+  quiet.push(quiet.msg(1));
+  assert.equal(quiet.pending()!.text, "");
+  assert.equal(quiet.pending()!.tone, undefined);
+});
+
+test("inbox about: a textContent note in the status line", () => {
+  const f = run();
+  f.command("inbox.about");
+  assert.match(f.status().textContent, /^The Inbox lists agent messages/);
+  assert.equal(f.status().className, "meta");
 });

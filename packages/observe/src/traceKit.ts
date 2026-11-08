@@ -201,7 +201,6 @@ const T = (() => {
 `;
 
 export const TRACE_CSS = `
-.pane .tracegrp { display: inline-flex; gap: 0.25rem; align-items: center; }
 .pane .tracemenu { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); font-size: 0.8125rem; }
 .pane .tracemenu[hidden] { display: none; }
 .pane .tracemenu .warn { color: var(--err); font-size: 0.75rem; }
