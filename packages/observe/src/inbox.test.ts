@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
-import { INBOX_JS, renderInboxPane } from "./inbox.ts";
+import { INBOX_CSS, INBOX_JS, renderInboxPane } from "./inbox.ts";
 import { PANE_KIT_JS } from "./paneKit.ts";
 
 test("inbox pane markup has no executable inline script; the static script paints via textContent only and has its hooks", () => {
@@ -742,4 +742,14 @@ test("inbox stream: onopen clears either message and resets the backoff", () => 
   f.sources[2]!.readyState = 2;
   f.sources[2]!.onerror!();
   assert.equal(f.timeouts[2]!.ms, 2000);
+});
+
+test("the inbox status notice sticks at the top of its scroller and keeps its own space, so it never overlays the compose fields", () => {
+  const rule = INBOX_CSS.match(/\.pane #inbox-status \{([^}]*)\}/)![1]!;
+  assert.match(rule, /position: sticky/);
+  assert.match(rule, /top: 0[;\s]/, "a sticky offset below 0 pushes the notice down over the first field");
+  assert.ok(!/top: [1-9]/.test(rule) && !/top: 0\.\d/.test(rule));
+  const filled = INBOX_CSS.match(/\.pane #inbox-status:not\(:empty\) \{([^}]*)\}/)![1]!;
+  assert.match(filled, /margin: 0 0 var\(--gap\)/, "a shown notice leaves a gap before the compose form");
+  assert.ok(!/position: (absolute|fixed)/.test(INBOX_CSS));
 });

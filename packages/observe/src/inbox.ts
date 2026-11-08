@@ -42,8 +42,8 @@ export const INBOX_CSS = `
 .pane .compose input { flex: 1 1 10rem; }
 .pane .compose textarea { flex: 1 1 100%; resize: vertical; font: inherit; }
 .pane .compose button { flex: 0 0 auto; min-height: 2.75rem; }
-.pane #inbox-status { position: sticky; top: 3.25rem; z-index: 5; }
-.pane #inbox-status:not(:empty) { padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.pane #inbox-status { position: sticky; top: 0; z-index: 5; }
+.pane #inbox-status:not(:empty) { margin: 0 0 var(--gap); padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
 `;
 
 /** The Inbox pane's browser script, served as a static asset at INBOX_SCRIPT_URL (config is read from the #inbox-config JSON block). */
