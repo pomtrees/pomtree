@@ -36,7 +36,7 @@ test("Dedupe is by signal id: same content with a new id is new, same id is not"
   assert.equal(d.fresh([{ kind: "message", from: "x", body: "no id" }]).length, 0);
 });
 
-test("plan orders cancel first, aborts, steers humans, follows up the rest", () => {
+test("plan orders cancel first, aborts, steers humans and agent signals", () => {
   const p = plan([
     { kind: "child_exited", child: "c", exit: 0 },
     { kind: "human_message", from: "u", body: "hi" },
@@ -47,10 +47,23 @@ test("plan orders cancel first, aborts, steers humans, follows up the rest", () 
     [
       ["steer", true],
       ["steer", false],
-      ["followUp", false],
+      ["steer", false],
     ],
   );
   assert.match(formatSignal({ kind: "human_message", from: "u", body: "hi" }), /hi/);
+});
+
+test("plan steers child_result and job_exited like child_exited; nudge and budget_warning stay follow-ups", () => {
+  const p = plan([
+    { kind: "budget_warning" },
+    { kind: "job_exited", job: "j", exit: 0 },
+    { kind: "nudge" },
+    { kind: "child_result", child: "c", result: "ok" },
+  ]);
+  assert.deepEqual(
+    p.map((x) => x.deliverAs),
+    ["steer", "steer", "followUp", "followUp"],
+  );
 });
 
 test("ackInbox posts injected ids with a key; fail-safe", async () => {
@@ -148,7 +161,7 @@ test("escalation steers like other steering kinds; budget_warning is advisory an
   );
   assert.deepEqual(
     p.map((x) => x.inj.deliverAs),
-    ["steer", "steer", "followUp", "followUp", "followUp"],
+    ["steer", "steer", "steer", "followUp", "followUp"],
   );
 });
 
