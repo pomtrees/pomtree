@@ -3,6 +3,10 @@
 // hosts views. A view is either a registry view (PaneKit.registerView: mounted per tile, unmounted on close) or a
 // singleton tab section that is moved into the tile body and activated through UI.activate/UI.deactivate (so it is
 // active exactly while it is in a visible tile). Agent data reaches the DOM only through textContent.
+// Windows follow the file-manager model: a browsing view (a list, a form) may have a tile selector and is shown once; an
+// item view (a registry view with a subject: one agent, or one report of an agent) shows exactly one subject, has no
+// selector, cannot exist without its subject, and is opened by focusing the tile that shows it or splitting the focused
+// tile, never by retargeting a tile.
 // It returns { layout, tiles, api }: api is the window-manager surface for the launcher bar (launcherShell.ts).
 // Plain JS, no backticks, no template interpolation and no backslashes (it is a template literal).
 export const LAYOUT_STORAGE_KEY = "pomtree.layout";
@@ -31,7 +35,26 @@ function createWindowManager(tabs, storageKey) {
   const regDef = (id) => (K && K.view ? K.view(id) : undefined);
   const kindOf = (view) => (regDef(view) ? "mount" : sections.has(view) ? "section" : "none");
   const multiOf = (view) => { const d = regDef(view); return !!(d && d.multi); };
-  const dedupeKey = (lf) => lf.view + (multiOf(lf.view) ? "|" + (lf.params.agent || "") : "");
+  // "agent" or "report" for an item view, null for a browsing view or an unknown one.
+  const subjectOf = (view) => { const d = regDef(view); return (d && d.multi && d.subject) || null; };
+  const isItem = (view) => subjectOf(view) !== null;
+  const hasSubject = (view, p) => {
+    const need = subjectOf(view);
+    return need === null || (!!p.agent && (need !== "report" || !!p.report));
+  };
+  const needText = (view) => (subjectOf(view) === "report" ? "an agent and a report id" : "an agent");
+  const itemParams = (agent, report) => {
+    const p = {};
+    if (agent) p.agent = agent;
+    if (report) p.report = report;
+    return p;
+  };
+  const subjectsMap = () => {
+    const out = {};
+    for (const id of order) { const need = subjectOf(id); if (need) out[id] = need; }
+    return out;
+  };
+  const dedupeKey = (lf) => lf.view + (isItem(lf.view) ? "|" + LK.subjectKey(lf.params) : "");
   const errText = (e) => String(e && e.message ? e.message : e);
   const make = (tag, cls) => { const el = document.createElement(tag); if (cls) el.className = cls; return el; };
   const button = (label, fn, cls) => {
@@ -61,27 +84,28 @@ function createWindowManager(tabs, storageKey) {
     notices.set(key, box);
   };
 
-  // ---- hash routing: #/<view>[/<agent>] ----
+  // ---- hash routing: #/<view>[/<agent>[/<report>]]; an item view needs its whole subject, each segment percent-encoded ----
+  const segment = (raw) => {
+    if (!raw) return null;
+    let v;
+    try { v = decodeURIComponent(raw); } catch (e) { return null; }
+    return v.length > 0 && v.length <= 256 ? v : null;
+  };
   const hashTarget = (hash) => {
     if (typeof hash !== "string" || !hash.startsWith("#/")) return null;
     const parts = hash.slice(2).split(/[/?#]/);
     let view = parts[0] || "";
     if (view === "escalations" && !sections.has("escalations") && sections.has("inbox")) view = "inbox";
     if (!VIEW_OK.test(view) || kindOf(view) === "none") return null;
-    let agent = "";
-    if (multiOf(view) && parts[1]) { try { agent = decodeURIComponent(parts[1]); } catch (e) { agent = ""; } }
-    if (agent.length > 256) return null;
-    return { view, agent };
+    const need = subjectOf(view);
+    if (!need) return { view, agent: "", report: "" };
+    const agent = segment(parts[1]);
+    if (agent === null) return null;
+    if (need === "agent") return { view, agent, report: "" };
+    const report = segment(parts[2]);
+    return report === null ? null : { view, agent, report };
   };
-  const hashFor = (lf) => "#/" + lf.view + (lf.params.agent ? "/" + encodeURIComponent(lf.params.agent) : "");
-  const openTarget = (l, t) => {
-    const multi = multiOf(t.view);
-    if (multi && !t.agent) {
-      const hit = LK.leaves(l).find((x) => x.view === t.view);
-      if (hit) return LK.focus(l, hit.id);
-    }
-    return LK.open(l, t.view, t.agent ? { agent: t.agent } : {}, multi);
-  };
+  const hashFor = (view, p) => "#/" + view + (isItem(view) && p.agent ? "/" + encodeURIComponent(p.agent) + (subjectOf(view) === "report" && p.report ? "/" + encodeURIComponent(p.report) : "") : "");
 
   // ---- state: the stored (desktop) layout, plus an in-memory single-leaf layout while narrow ----
   const defaultView = order.indexOf("tree") >= 0 ? "tree" : order[0] || "tree";
@@ -109,7 +133,7 @@ function createWindowManager(tabs, storageKey) {
       return null;
     }
     if (text === null) return null;
-    const r = LK.parse(text, { views: order });
+    const r = LK.parse(text, { views: order, subjects: subjectsMap() });
     if (r.ok) return r.layout;
     notify("load", "The saved layout was not used. " + r.reason + " It stays as it is until you change the layout; it will be replaced when the layout is next changed.");
     return null;
@@ -133,7 +157,7 @@ function createWindowManager(tabs, storageKey) {
   const doImport = (file) => {
     if (!file) return;
     Promise.resolve(file.text()).then((text) => {
-      const r = LK.parse(text, { views: order });
+      const r = LK.parse(text, { views: order, subjects: subjectsMap() });
       if (!r.ok) { notify("import", "Import failed. " + r.reason); return; }
       desktop = r.layout;
       render();
@@ -165,8 +189,9 @@ function createWindowManager(tabs, storageKey) {
     const lf = l && focusedLeaf(l);
     if (!lf) return;
     const t = hashTarget(location.hash);
-    if (t && t.view === lf.view && t.agent === (lf.params.agent || "")) return;
-    try { history.replaceState(null, "", hashFor(lf)); } catch (e) {}
+    const want = hashFor(lf.view, lf.params);
+    if (t && hashFor(t.view, t) === want) return;
+    try { history.replaceState(null, "", want); } catch (e) {}
   };
 
   // ---- tiles ----
@@ -184,20 +209,33 @@ function createWindowManager(tabs, storageKey) {
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(run); else setTimeout(run, 16);
   };
+  // A browsing view not shown yet, never an item view (it would have no subject); null when every browsing view is shown.
   const pickNewView = () => {
     const shown = new Set(LK.leaves(layout()).map((x) => x.view));
-    for (const id of order) if (kindOf(id) === "section" && !shown.has(id)) return id;
-    return regDef("terminal") ? "terminal" : defaultView;
+    for (const id of order) if (kindOf(id) !== "none" && !isItem(id) && !shown.has(id)) return id;
+    return null;
   };
   let keyDown = false;
   const focusLeaf = (id) => { commit(LK.focus(layout(), id)); };
   const splitLeaf = (id, dir, view, params) => {
-    const next = LK.split(layout(), id, dir, view || pickNewView(), params);
+    const p = params || {};
+    if (view && !hasSubject(view, p)) {
+      notify("open", "Cannot open " + (titles.get(view) || view) + " without " + needText(view) + ". Open it from the Tree, the top bar or a link that names it.");
+      return;
+    }
+    const pick = view || pickNewView();
+    if (!pick) {
+      notify("newview", "Every browsing window is already open, so there is nothing new to put in a split. Open an agent's terminal from the Tree or the top bar, or close a tile first.");
+      return;
+    }
+    const next = LK.split(layout(), id, dir, pick, p);
     if (next === layout()) notify("limit", "Cannot split further: a layout holds at most " + LK.MAX_LEAVES + " tiles nested " + LK.MAX_DEPTH + " levels deep. Close a tile first.");
     else commit(next);
   };
+  // An item view is opened with its subject (showView), never chosen for a tile, so a tile can only switch between browsing views.
   const changeView = (id, view) => {
     const l = layout();
+    if (isItem(view)) { render(); return; }
     if (!multiOf(view) && kindOf(view) !== "none") {
       const at = LK.find(l, view, {}, false);
       if (at && at !== id) { if (!commit(LK.focus(l, at))) render(); return; }
@@ -227,17 +265,20 @@ function createWindowManager(tabs, storageKey) {
     const bar = make("div", "tile-bar");
     const title = make("span", "tile-title");
     title.textContent = titles.get(lf.view) || lf.view;
-    const sel = make("select", "tile-view");
-    sel.setAttribute("aria-label", "View shown in this tile");
-    const ids = order.indexOf(lf.view) >= 0 ? order : order.concat([lf.view]);
-    for (const id of ids) {
-      const o = make("option");
-      o.value = id;
-      o.textContent = titles.get(id) || id;
-      sel.appendChild(o);
+    let sel = null;
+    if (!isItem(lf.view)) {
+      sel = make("select", "tile-view");
+      sel.setAttribute("aria-label", "View shown in this tile");
+      const browsing = order.filter((id) => !isItem(id));
+      for (const id of browsing.indexOf(lf.view) >= 0 ? browsing : browsing.concat([lf.view])) {
+        const o = make("option");
+        o.value = id;
+        o.textContent = titles.get(id) || id;
+        sel.appendChild(o);
+      }
+      sel.value = lf.view;
+      sel.addEventListener("change", () => changeView(lf.id, sel.value));
     }
-    sel.value = lf.view;
-    sel.addEventListener("change", () => changeView(lf.id, sel.value));
     const mk = (label, aria, fn) => {
       const b = button(label, fn, "tile-btn");
       b.setAttribute("aria-label", aria);
@@ -248,7 +289,8 @@ function createWindowManager(tabs, storageKey) {
     const bDown = mk("\\u2b13", "Split down", () => splitLeaf(lf.id, "col"));
     const bClose = mk("\\u00d7", "Close tile", () => commit(LK.close(layout(), lf.id)));
     const hasMenus = chrome && model.declaration.menus.length > 0;
-    for (const c of hasMenus ? [title, chrome.menus, chrome.overflow, sel, bRight, bDown, bClose] : [title, sel, bRight, bDown, bClose]) bar.appendChild(c);
+    const parts = hasMenus ? [title, chrome.menus, chrome.overflow, sel, bRight, bDown, bClose] : [title, sel, bRight, bDown, bClose];
+    for (const c of parts) if (c) bar.appendChild(c);
     const body = make("div", "tile-body");
     el.appendChild(bar);
     el.appendChild(body);
@@ -277,13 +319,13 @@ function createWindowManager(tabs, storageKey) {
       body.appendChild(host);
       const hostApi = { setTitle: (t) => { title.textContent = String(t); }, navigate: (h) => { location.hash = h; } };
       try {
-        const inst = regDef(lf.view).mount(host, lf.params.agent ? { agent: lf.params.agent } : {}, model ? K.windowHost(model, hostApi) : hostApi);
+        const inst = regDef(lf.view).mount(host, itemParams(lf.params.agent, lf.params.report), model ? K.windowHost(model, hostApi) : hostApi);
         rec.release = () => { if (chrome) chrome.destroy(); inst.unmount(); host.remove(); };
         rec.fit = inst.fit ? () => inst.fit() : null;
       } catch (e) {
         host.remove();
         if (chrome) chrome.destroy();
-        note(lf.view + ": the view failed to load (" + errText(e) + "). Choose another view or close this tile.");
+        note(lf.view + ": the view failed to load (" + errText(e) + ")." + (sel ? " Choose another view or close this tile." : " Close this tile."));
       }
     }
     return rec;
@@ -369,12 +411,13 @@ function createWindowManager(tabs, storageKey) {
       let kind = kindOf(lf.view);
       let note = "";
       if (kind === "none") { kind = "note"; note = lf.view + ": view not available. Choose another view or close this tile."; }
+      else if (!hasSubject(lf.view, lf.params)) { kind = "note"; note = lf.view + ": this window has no " + (subjectOf(lf.view) === "report" ? "report" : "agent") + " to show. Close this tile and open it again from the Tree or the top bar."; }
       else {
         const dk = dedupeKey(lf);
-        if (owners.has(dk)) { kind = "note"; note = lf.view + ": already shown in another tile. Choose another view or close this tile."; }
+        if (owners.has(dk)) { kind = "note"; note = lf.view + ": already shown in another tile." + (isItem(lf.view) ? " Close this tile." : " Choose another view or close this tile."); }
         else owners.add(dk);
       }
-      want.set(lf.id, { kind, note, sig: lf.view + "|" + (lf.params.agent || "") + "|" + kind + "|" + note });
+      want.set(lf.id, { kind, note, sig: lf.view + "|" + (lf.params.agent || "") + "|" + (lf.params.report || "") + "|" + kind + "|" + note });
     }
     for (const [id, rec] of [...tiles]) {
       const w = want.get(id);
@@ -390,7 +433,7 @@ function createWindowManager(tabs, storageKey) {
       rec.el.style.width = pct(r.w);
       rec.el.style.height = pct(r.h);
       rec.el.className = lf.id === l.focus ? "tile tile-focused" : "tile";
-      rec.sel.value = lf.view;
+      if (rec.sel) rec.sel.value = lf.view;
       rec.bClose.disabled = leaves.length < 2;
       geom += lf.id + ":" + rec.el.style.left + "," + rec.el.style.top + "," + rec.el.style.width + "," + rec.el.style.height + ";";
     }
@@ -412,6 +455,16 @@ function createWindowManager(tabs, storageKey) {
     for (const fn of [...listeners]) { try { fn(); } catch (e) { notify("launcher", "The top bar failed to update (" + errText(e) + "). Reload the page; the layout is unaffected."); } }
   };
 
+  // Shows a view: focuses the tile that shows it, else (narrow) replaces the single window, else splits the focused tile to
+  // the right. The one path for api.openView and for an item view named by the hash.
+  const showView = (view, params) => {
+    const l = layout();
+    const at = LK.find(l, view, params, multiOf(view));
+    if (at) { focusLeaf(at); return; }
+    if (narrow) commit(LK.setView(l, l.focus, view, params));
+    else splitLeaf(l.focus, "row", view, params);
+  };
+
   // ---- narrow fallback: one view at a time, never persisted ----
   const applyNarrow = (on) => {
     if (on === narrow) return;
@@ -426,18 +479,25 @@ function createWindowManager(tabs, storageKey) {
   // ---- start ----
   const start = hashTarget(location.hash);
   const stored = loadStored();
-  let base = stored || single(start ? start.view : defaultView, start && start.agent ? { agent: start.agent } : undefined);
-  if (stored && start) base = openTarget(stored, start);
-  desktop = base;
-  if (narrow) { const f = focusedLeaf(desktop); narrowLayout = single(f.view, f.params); }
+  const startItem = !!start && isItem(start.view);
+  const startParams = start ? itemParams(start.agent, start.report) : undefined;
+  desktop = stored || single(start ? start.view : defaultView, startParams);
+  if (stored && start && !startItem) desktop = LK.open(stored, start.view, {}, false);
+  if (narrow) {
+    if (stored && startItem) narrowLayout = single(start.view, startParams);
+    else { const f = focusedLeaf(desktop); narrowLayout = single(f.view, f.params); }
+  }
   render();
-  if (stored && base !== stored) save();
+  if (stored && desktop !== stored) save();
+  if (stored && startItem && !narrow) showView(start.view, startParams);
   syncHash();
 
   // TODO(ui-arrangement-policy): nothing places a window when an agent appears or finishes; a window opens only from a hash link or the operator's own action. Trigger: building automatic window placement (see docs/ui-vision.md, Open questions).
   addEventListener("hashchange", () => {
     const t = hashTarget(location.hash);
-    if (t) commit(openTarget(layout(), t));
+    if (!t) return;
+    if (isItem(t.view)) showView(t.view, itemParams(t.agent, t.report));
+    else commit(LK.open(layout(), t.view, {}, false));
   });
   document.addEventListener("keyup", () => { keyDown = false; }, true);
   addEventListener("blur", () => { keyDown = false; });
@@ -461,15 +521,15 @@ function createWindowManager(tabs, storageKey) {
     views: () => order.map((id) => ({ id, title: titles.get(id), multi: multiOf(id) })),
     focus: focusLeaf,
     focusDom: () => { const rec = tiles.get(layout().focus); if (rec && rec.el.focus) rec.el.focus(); },
-    openView: (view, agent) => {
+    openView: (view, agent, report) => {
       if (kindOf(view) === "none") { notify("open", "View not available: " + view + "."); return; }
-      const l = layout();
-      const multi = multiOf(view);
-      const params = multi && agent ? { agent } : {};
-      const at = LK.find(l, view, params, multi);
-      if (at) { focusLeaf(at); return; }
-      if (narrow) commit(LK.setView(l, l.focus, view, params));
-      else splitLeaf(l.focus, "row", view, params);
+      const need = subjectOf(view);
+      const params = need ? itemParams(agent, need === "report" ? report : "") : {};
+      if (!hasSubject(view, params)) {
+        notify("open", "Cannot open " + (titles.get(view) || view) + " without " + needText(view) + ". Open it from the Tree, the top bar or a link that names it.");
+        return;
+      }
+      showView(view, params);
     },
     splitFocused: (dir) => { if (!narrow) splitLeaf(layout().focus, dir); },
     closeFocused: () => { if (!narrow) commit(LK.close(layout(), layout().focus)); },

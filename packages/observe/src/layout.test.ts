@@ -556,3 +556,98 @@ test("round trip: every mutator's result loads, for valid and invalid inputs", (
   assert.notEqual(ok, two());
   loads(ok);
 });
+
+// ---- subjects: params are the closed set {agent?, report?}; a report needs its agent ----
+const rp = (agent: string, report: string) => ({ agent, report });
+
+test("params: report is accepted with its agent, refused alone, and any other key still refuses", () => {
+  assert.deepEqual(plain(K.leaves(solo("report", rp("a1", "r1")))[0]?.params), rp("a1", "r1"));
+  assert.equal(K.single("report", { report: "r1" }), null, "report without agent");
+  assert.equal(K.single("report", { agent: "a1", report: 5 } as never), null);
+  assert.equal(K.single("report", { agent: "a1", report: "r".repeat(257) }), null);
+  assert.ok(K.single("report", { agent: "a1", report: "r".repeat(256) }));
+  assert.equal(K.single("report", { agent: "a1", report: "r1", title: "x" } as never), null);
+  const l = three();
+  assert.equal(K.split(l, "t1", "row", "report", { report: "r1" }), l);
+  assert.equal(K.setView(l, "t1", "report", { report: "r1" }), l);
+  assert.equal(K.open(l, "report", { report: "r1" }, true), l);
+});
+
+test("parse rejects a report without an agent, a bad report and an unsupported key", () => {
+  const rejects = (mut: (r: any) => void, needle: string) => {
+    const r = plain(three());
+    mut(r);
+    const out = K.parse(JSON.stringify(r));
+    assert.equal(out.ok, false, needle);
+    if (!out.ok) assert.ok(out.reason.includes(needle), out.reason);
+  };
+  rejects((r) => (r.root.children[0].params = { report: "r1" }), "params.report");
+  rejects((r) => (r.root.children[0].params = { agent: "a", report: 5 }), "params.report");
+  rejects((r) => (r.root.children[0].params = { agent: "a", report: "r".repeat(257) }), "params.report");
+  rejects((r) => (r.root.children[0].params = { agent: "a", report: "r", note: "x" }), 'unsupported key "note"');
+  const ok = plain(three());
+  ok.root.children[0].params = rp("a", "r".repeat(256));
+  assert.ok(K.parse(JSON.stringify(ok)).ok);
+});
+
+test("find, setView and open distinguish report ids of one agent", () => {
+  let l = K.split(solo("tree"), "t1", "row", "report", rp("a1", "r1")); // t2 shows a1/r1
+  assert.equal(K.find(l, "report", rp("a1", "r1"), true), "t2");
+  assert.equal(K.find(l, "report", rp("a1", "r2"), true), null);
+  assert.equal(K.find(l, "report", rp("a2", "r1"), true), null);
+  assert.equal(K.setView(l, "t2", "report", rp("a1", "r1")), l, "same subject: same reference");
+  const moved = K.setView(l, "t2", "report", rp("a1", "r2"));
+  assert.notEqual(moved, l);
+  assert.deepEqual(plain(K.leaves(moved)[1]?.params), rp("a1", "r2"));
+  assert.equal(K.open(l, "report", rp("a1", "r1"), true), l, "already focused");
+  l = K.focus(l, "t1");
+  assert.equal(K.open(l, "report", rp("a1", "r1"), true).focus, "t2", "open focuses the existing subject");
+  const o = K.open(l, "report", rp("a1", "r9"), true);
+  assert.deepEqual(plain(K.leaves(o)[0]), { kind: "leaf", id: "t1", view: "report", params: rp("a1", "r9") });
+  // a leaf with only an agent is another subject than one with a report
+  const t = K.split(solo("tree"), "t1", "row", "terminal", { agent: "a1" });
+  assert.equal(K.find(t, "terminal", rp("a1", "r1"), true), null);
+});
+
+test("subjectKey is equal only for equal agent and report, including ids with separators", () => {
+  assert.equal(K.subjectKey(rp("a", "b")), K.subjectKey(rp("a", "b")));
+  assert.notEqual(K.subjectKey({ agent: "a" }), K.subjectKey(rp("a", "b")));
+  assert.notEqual(K.subjectKey(rp("a|", "b")), K.subjectKey(rp("a", "|b")));
+  assert.equal(K.subjectKey({}), K.subjectKey(undefined));
+});
+
+test("parse with opts.subjects accepts leaves with their subject and rejects those without, naming tile and view", () => {
+  const subjects = { terminal: "agent", report: "report" } as const;
+  const leafOf = (view: string, params: object) =>
+    JSON.stringify({
+      version: 1,
+      next: 4,
+      focus: "t1",
+      root: {
+        kind: "split",
+        id: "s3",
+        dir: "row",
+        ratio: 0.5,
+        children: [
+          { kind: "leaf", id: "t1", view: "tree", params: {} },
+          { kind: "leaf", id: "t2", view, params },
+        ],
+      },
+    });
+  const bad = (view: string, params: object, needle: string) => {
+    const r = K.parse(leafOf(view, params), { subjects });
+    assert.equal(r.ok, false, `${view} ${JSON.stringify(params)}`);
+    if (!r.ok) assert.ok(r.reason.includes(needle), r.reason);
+  };
+  assert.ok(K.parse(leafOf("terminal", { agent: "a1" }), { subjects }).ok);
+  assert.ok(K.parse(leafOf("report", rp("a1", "r1")), { subjects }).ok);
+  bad("terminal", {}, "tile t2 shows terminal without an agent");
+  bad("report", {}, "tile t2 shows report without an agent");
+  bad("report", { agent: "a1" }, "tile t2 shows report without a report id");
+  // views outside the map need no subject, and without opts nothing is checked
+  assert.ok(K.parse(leafOf("hosts", {}), { subjects }).ok);
+  assert.ok(K.parse(leafOf("terminal", {})).ok);
+  assert.ok(K.parse(leafOf("terminal", {}), { views: ["terminal"] }).ok);
+  // an inherited property name is not a subject requirement
+  assert.ok(K.parse(leafOf("constructor", {}), { subjects }).ok);
+});

@@ -33,7 +33,11 @@ const VIEWS: ViewDef[] = [
   { id: "agent", title: "Agent", multi: true },
 ];
 const ag = (id: string, name: string, state = "running", exit: string | null = null): AgentInfo => ({ id, name, state, exit });
-const leaf = (id: string, view: string, agent?: string): LeafLike => ({ id, view, params: agent ? { agent } : {} });
+const leaf = (id: string, view: string, agent?: string, report?: string): LeafLike => ({
+  id,
+  view,
+  params: { ...(agent ? { agent } : {}), ...(report ? { report } : {}) },
+});
 const ctx = (over: Partial<BuildCtx> = {}): BuildCtx =>
   deepFreeze({
     leaves: [leaf("t1", "tree"), leaf("t2", "agent", "a1")],
@@ -195,6 +199,34 @@ test("windowLabel", () => {
   assert.equal(K.windowLabel(leaf("t2", "agent", "a1"), VIEWS, agents), "Agent: alpha");
   assert.equal(K.windowLabel(leaf("t3", "agent", "zz"), VIEWS, agents), "Agent: zz");
   assert.equal(K.windowLabel(leaf("t4", "mystery"), VIEWS, agents), "mystery");
+});
+
+test("windowLabel and dot of a report leaf: view title, the report id clipped, no state dot", () => {
+  const agents = deepFreeze([ag("a1", "alpha", "exited", "failed")]);
+  const views = [...VIEWS, { id: "report", title: "Report", multi: true }];
+  assert.equal(K.windowLabel(leaf("t1", "report", "a1", "r-1"), views, agents), "Report: r-1");
+  assert.equal(K.windowLabel(leaf("t1", "report", "a1", "r".repeat(100)), views, agents), `Report: ${"r".repeat(80)}`);
+  assert.equal(K.windowLabel(leaf("t1", "report", "zz", "r-1"), views, []), "Report: r-1", "agent unknown: still the report id");
+  const w = plain(K.windowList([leaf("t1", "report", "a1", "r-1")], "t1", views, agents, 0));
+  assert.equal(w.entries[0].dot, "none", "a failed agent does not colour its report window");
+  assert.equal(w.attention, 0);
+  assert.equal(
+    plain(K.windowList([leaf("t2", "agent", "a1")], "t2", views, agents, 0)).entries[0].dot,
+    "err",
+    "negative control: the agent leaf keeps its dot",
+  );
+});
+
+test("an open report window is listed with its agent and report in the hint and does not hide the agent's other entries", () => {
+  const views = [...VIEWS, { id: "report", title: "Report", multi: true }];
+  const items = K.buildItems(ctx({ views, leaves: [leaf("t1", "tree"), leaf("t2", "report", "a1", "r-1")] }));
+  const open = items.find((i) => i.key === "open:t2")!;
+  assert.equal(open.label, "Report: r-1");
+  assert.equal(open.hint, "a1 r-1 report");
+  assert.ok(
+    items.some((i) => i.key === "new:report/a1"),
+    "the agent leaf rule is keyed by view and agent only for leaves without a report",
+  );
 });
 
 test("windowList entries, attention, compact", () => {

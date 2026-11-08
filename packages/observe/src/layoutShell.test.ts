@@ -122,11 +122,11 @@ interface Opts {
 }
 
 interface WmApi {
-  state(): { leaves: { id: string; view: string; params: { agent?: string } }[]; focus: string; narrow: boolean; maxLeaves: number };
+  state(): { leaves: { id: string; view: string; params: { agent?: string; report?: string } }[]; focus: string; narrow: boolean; maxLeaves: number };
   views(): { id: string; title: string; multi: boolean }[];
   focus(id: string): void;
   focusDom(): void;
-  openView(view: string, agent?: string): void;
+  openView(view: string, agent?: string, report?: string): void;
   splitFocused(dir: "row" | "col"): void;
   closeFocused(): void;
   exportLayout(): void;
@@ -152,7 +152,14 @@ function boot(o: Opts = {}) {
     return s;
   });
   const log: string[] = [];
-  const mounts: { root: Node_; params: { agent?: string }; unmounted: boolean; fits: number; host: { setTitle(t: string): void } }[] = [];
+  const mounts: {
+    root: Node_;
+    view: string;
+    params: { agent?: string; report?: string };
+    unmounted: boolean;
+    fits: number;
+    host: { setTitle(t: string): void };
+  }[] = [];
   const store = o.store ?? {};
   const writes: string[] = [];
   const docListeners = new Map<string, { fn: L; capture: boolean }[]>();
@@ -183,10 +190,23 @@ function boot(o: Opts = {}) {
       id: "terminal",
       title: "Terminal",
       multi: true,
+      subject: "agent",
       mount(root: Node_, params: { agent?: string }, host: { setTitle(t: string): void }) {
-        const rec = { root, params, unmounted: false, fits: 0, host };
+        const rec = { root, view: "terminal", params, unmounted: false, fits: 0, host };
         mounts.push(rec);
         host.setTitle(params.agent ? "Terminal · " + params.agent : "Terminal");
+        return { unmount: () => (rec.unmounted = true), fit: () => rec.fits++ };
+      },
+    });
+    registry.set("report", {
+      id: "report",
+      title: "Report",
+      multi: true,
+      subject: "report",
+      mount(root: Node_, params: { agent?: string; report?: string }, host: { setTitle(t: string): void }) {
+        const rec = { root, view: "report", params, unmounted: false, fits: 0, host };
+        mounts.push(rec);
+        host.setTitle("Report · " + params.report);
         return { unmount: () => (rec.unmounted = true), fit: () => rec.fits++ };
       },
     });
@@ -446,10 +466,12 @@ test("a terminal view mounts per tile with its agent and unmounts on close; hash
   assert.equal(s.tiles()[0]!.byClass("tile-title")[0]!.textContent, "Terminal · agent-1", "host.setTitle drives the title");
   s.btn(s.tiles()[0]!, "Split right").click();
   s.hashchange("#/terminal/agent-2");
-  assert.equal(s.mounts.length, 2, "agent-2 replaces the focused tile, agent-1 stays mounted");
+  assert.equal(s.mounts.length, 2, "agent-2 gets its own tile, agent-1 stays mounted");
+  assert.equal(s.tiles().length, 3, "the focused tile was split, not replaced");
   assert.equal(s.mounts[0]!.unmounted, false);
-  s.btn(s.tileOf("t2"), "Close tile").click();
+  s.btn(s.tileOf("t4"), "Close tile").click();
   assert.equal(s.mounts[1]!.unmounted, true);
+  assert.equal(s.mounts[0]!.unmounted, false);
 });
 
 test("hash navigation focuses the tile that already shows the view instead of replacing one", () => {
@@ -470,14 +492,16 @@ test("hash navigation focuses the tile that already shows the view instead of re
   assert.equal(s.location.hash, "#/reports");
 });
 
-test("a terminal link without an agent focuses an existing terminal tile; the escalations hash maps to inbox", () => {
+test("a terminal link without an agent is ignored; the escalations hash maps to inbox", () => {
   const s = boot({ tabs: ["tree", "inbox", "terminal"], hash: "#/terminal/a1" });
   s.btn(s.tiles()[0]!, "Split right").click();
   s.hashchange("#/terminal");
-  assert.equal(s.tileOf("t1").className, "tile tile-focused");
+  assert.equal(s.tileOf("t2").className, "tile tile-focused", "nothing was focused or opened");
+  assert.equal(s.tiles().length, 2);
   assert.equal(s.mounts.length, 1);
   s.hashchange("#/escalations/e1");
-  assert.deepEqual(visibleSections(s).sort(), ["inbox", "tree"]);
+  assert.deepEqual(visibleSections(s), ["inbox"], "a browsing target retargets the focused (tree) tile");
+  assert.equal(s.mounts[0]!.unmounted, false, "the terminal window stays");
 });
 
 test("#/escalations opens the inbox only when no separate escalations tab exists", () => {
@@ -929,6 +953,7 @@ test("api.state and api.views report the layout and the openable views as plain 
       ["reports", "REPORTS", false],
       ["hosts", "HOSTS", false],
       ["terminal", "TERMINAL", true],
+      ["report", "Report", true],
     ],
   );
   assert.equal(boot({ narrow: true }).api.state().narrow, true);
@@ -1066,10 +1091,10 @@ test("shell page inlines MENU_NAV_JS, then WINDOW_CHROME_JS, then LAYOUT_SHELL_J
   assert.ok(css > html.indexOf(LAYOUT_CSS) && css > 0);
 });
 
-test("a registry view with declared menus gets a per-tile model; menus and overflow sit between title and selector, the footer after the body", () => {
+test("a registry view with declared menus gets a per-tile model; menus and overflow sit between title and buttons (an item tile has no selector), the footer after the body", () => {
   const s = boot({ hash: "#/terminal/a1", menus: true });
   const t = s.tiles()[0]!;
-  assert.deepEqual(barKinds(t), ["tile-title", "tile-menus", "tile-overflow", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-menus", "tile-overflow", "tile-btn", "tile-btn", "tile-btn"]);
   assert.deepEqual(
     t.children.map((c) => c.className),
     ["tile-bar", "tile-body", "tile-foot"],
@@ -1082,7 +1107,7 @@ test("a registry view with declared menus gets a per-tile model; menus and overf
 test("a view with no declared menus or status renders no menu strips and no footer", () => {
   const s = boot({ hash: "#/terminal/a1" });
   const t = s.tiles()[0]!;
-  assert.deepEqual(barKinds(t), ["tile-title", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-btn", "tile-btn", "tile-btn"]);
   assert.deepEqual(
     t.children.map((c) => c.className),
     ["tile-bar", "tile-body"],
@@ -1093,9 +1118,7 @@ test("a view with no declared menus or status renders no menu strips and no foot
 test("closing a terminal tile destroys its chrome; a second terminal tile gets its own model", () => {
   const s = boot({ hash: "#/terminal/a1", menus: true });
   s.btn(s.tiles()[0]!, "Split right").click();
-  const sel = s.tiles()[1]!.byClass("tile-view")[0]!;
-  sel.value = "terminal";
-  sel.fire("change");
+  s.api.openView("terminal", "a2");
   assert.equal(s.chromes.length, 2);
   assert.notEqual(s.models[1], s.models[0]);
   assert.deepEqual(
@@ -1143,4 +1166,261 @@ test("narrow fallback still renders chrome for the one visible tile", () => {
   const s = boot({ narrow: true, hash: "#/terminal/a1", menus: true });
   assert.equal(s.tiles().length, 1);
   assert.equal(s.tiles()[0]!.byClass("tile-menus").length, 1);
+});
+
+// ---- item windows: one subject per window, required, opened by focusing or splitting ----
+const selectOf = (tile: Node_) => tile.all().find((n) => n.tagName === "select");
+const optionValues = (tile: Node_) =>
+  selectOf(tile)!
+    .children.map((o) => o.value)
+    .join(",");
+const subjectsOf = (s: ReturnType<typeof boot>) =>
+  s.api
+    .state()
+    .leaves.map((l) => `${l.view}:${l.params.agent ?? ""}:${l.params.report ?? ""}`)
+    .join(" ");
+const twoLeaves = (a: unknown, b: unknown) =>
+  JSON.stringify({ version: 1, next: 4, focus: "t1", root: { kind: "split", id: "s3", dir: "row", ratio: 0.5, children: [a, b] } });
+const lf = (id: string, view: string, params: object = {}) => ({ kind: "leaf", id, view, params });
+
+test("a report hash opens a report window with agent and report; ids with slash, percent and unicode round-trip without clobbering the hash", () => {
+  const agent = "a/1";
+  const report = "r%x/y\u00e9 z";
+  const hash = "#/report/" + encodeURIComponent(agent) + "/" + encodeURIComponent(report);
+  const s = boot({ hash });
+  assert.equal(s.mounts.length, 1);
+  assert.equal(s.mounts[0]!.view, "report");
+  assert.equal(s.mounts[0]!.params.agent, agent);
+  assert.equal(s.mounts[0]!.params.report, report);
+  assert.equal(s.location.hash, hash, "start-up leaves the canonical hash as it is");
+  assert.deepEqual(s.replaced, [], "no replaceState: syncHash does not clobber");
+  s.btn(s.tiles()[0]!, "Split right").click();
+  s.tileOf("t1").fire("pointerdown"); // focusing the report tile writes its hash back
+  assert.equal(s.location.hash, hash, "round trip: the written hash is the same one");
+  s.hashchange(hash);
+  assert.equal(s.mounts.length, 1, "the same subject is focused, never duplicated");
+  assert.equal(s.tiles().length, 2);
+  assert.equal(s.assigns.length, 0);
+});
+
+test("a malformed or incomplete item hash is ignored at start-up and on hashchange", () => {
+  const bad = [
+    "#/terminal",
+    "#/terminal/",
+    "#/terminal//x",
+    "#/report",
+    "#/report/a1",
+    "#/report/a1/",
+    "#/report//r1",
+    "#/terminal/%E0%A4%A",
+    "#/report/a1/%E0%A4%A",
+    "#/terminal/" + "a".repeat(257),
+    "#/report/a1/" + "r".repeat(257),
+    "#/report/" + "a".repeat(257) + "/r1",
+  ];
+  for (const h of bad) {
+    const start = boot({ hash: h });
+    assert.equal(subjectsOf(start), "tree::", `start-up ${h.slice(0, 30)}`);
+    assert.equal(start.mounts.length, 0);
+    const s = boot();
+    s.hashchange(h);
+    assert.equal(subjectsOf(s), "tree::", `hashchange ${h.slice(0, 30)}`);
+    assert.equal(s.mounts.length, 0);
+    assert.equal(s.writes.length, 0);
+  }
+  const ok = boot();
+  ok.hashchange("#/report/a1/r1"); // negative control: the complete form is opened
+  assert.equal(ok.mounts.length, 1);
+});
+
+test("an item hash splits the focused tile to the right and leaves it as it was, instead of retargeting it", () => {
+  const s = boot();
+  s.hashchange("#/terminal/a1");
+  assert.equal(subjectsOf(s), "tree:: terminal:a1:");
+  assert.equal(s.api.state().focus, "t2");
+  assert.deepEqual(s.log, ["+tree"], "the tree stayed active and mounted");
+  s.hashchange("#/report/a1/r1");
+  assert.equal(subjectsOf(s), "tree:: terminal:a1: report:a1:r1", "split the focused terminal tile, which stays");
+  assert.equal(s.mounts[0]!.unmounted, false);
+  assert.equal(stored(s.store).root.children.length, 2, "the new layout is saved");
+  // a browsing view still retargets or focuses as before
+  s.hashchange("#/hosts");
+  assert.equal(subjectsOf(s), "tree:: terminal:a1: hosts::");
+});
+
+test("an item hash against a stored layout splits it, saves it, and focuses an existing subject without a save", () => {
+  const stored1 = JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "tree") });
+  const s = boot({ store: { "pomtree.layout": stored1 }, hash: "#/terminal/a1" });
+  assert.equal(subjectsOf(s), "tree:: terminal:a1:");
+  assert.equal(s.mounts.length, 1);
+  assert.equal(stored(s.store).root.children[1].params.agent, "a1");
+  const writes = s.writes.length;
+  const again = boot({ store: { "pomtree.layout": s.store["pomtree.layout"]! }, hash: "#/terminal/a1" });
+  assert.equal(subjectsOf(again), "tree:: terminal:a1:");
+  assert.equal(again.writes.length, 0, "already shown: only focus, nothing to save");
+  assert.equal(writes > 0, true);
+});
+
+test("in narrow mode an item hash replaces the single window and never persists", () => {
+  const s = boot({ narrow: true });
+  s.hashchange("#/report/a1/r1");
+  assert.equal(subjectsOf(s), "report:a1:r1");
+  assert.equal(s.writes.length, 0);
+  const start = boot({
+    narrow: true,
+    hash: "#/terminal/a1",
+    store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "tree") }) },
+  });
+  assert.equal(subjectsOf(start), "terminal:a1:");
+  assert.equal(start.writes.length, 0, "the stored desktop layout is left alone");
+});
+
+// A balanced 16-tile layout of terminals (each its own agent) or reports, at the tile limit but inside the depth limit.
+const full16 = (view: "terminal" | "report") => {
+  let n = 0;
+  const go = (k: number): unknown => {
+    if (k === 1) {
+      const i = ++n;
+      return lf(`t${i}`, view, view === "terminal" ? { agent: `a${i}` } : { agent: "a", report: `r${i}` });
+    }
+    const a = go(k / 2);
+    const b = go(k / 2);
+    return { kind: "split", id: `s${100 + ++n}`, dir: n % 2 ? "row" : "col", ratio: 0.5, children: [a, b] };
+  };
+  const root = go(16);
+  return JSON.stringify({ version: 1, next: 200, focus: "t1", root });
+};
+
+test("a hash opening at 16 tiles shows the limit notice and adds nothing", () => {
+  const s = boot({ store: { "pomtree.layout": full16("terminal") } });
+  assert.equal(s.api.state().leaves.length, 16);
+  s.hashchange("#/terminal/zzz");
+  assert.equal(s.api.state().leaves.length, 16);
+  assert.equal(
+    s.api.state().leaves.some((l) => l.params.agent === "zzz"),
+    false,
+  );
+  assert.match(s.noticeTexts().join("|"), /Cannot split further/);
+  const r = boot({ store: { "pomtree.layout": full16("report") } });
+  r.api.openView("report", "a", "last");
+  assert.equal(r.api.state().leaves.length, 16);
+  assert.match(r.noticeTexts().join("|"), /Cannot split further/);
+  const third = r.api.state().leaves[2]!; // negative control: an open subject is still focused at the limit
+  r.api.openView("report", "a", third.params.report);
+  assert.equal(r.api.state().focus, third.id);
+});
+
+test("api.openView opens and focuses an item per subject and refuses an item view without its subject", () => {
+  const s = boot();
+  s.api.openView("report", "a1", "r1");
+  s.api.openView("report", "a1", "r2");
+  assert.equal(subjectsOf(s), "tree:: report:a1:r1 report:a1:r2");
+  s.api.openView("report", "a1", "r1");
+  assert.equal(s.tiles().length, 3, "the same report is focused, not duplicated");
+  assert.equal(s.api.state().focus, "t2");
+  s.api.openView("report", "a2", "r1");
+  assert.equal(s.tiles().length, 4, "another agent's report of the same id is another subject");
+  for (const [view, agent, report] of [
+    ["terminal", undefined, undefined],
+    ["terminal", "", undefined],
+    ["report", "a1", undefined],
+    ["report", undefined, "r1"],
+    ["report", undefined, undefined],
+  ] as const) {
+    const n = s.tiles().length;
+    s.api.openView(view, agent, report);
+    assert.equal(s.tiles().length, n, `${view} ${agent} ${report}`);
+  }
+  assert.match(s.noticeTexts().join("|"), /Cannot open Report without an agent and a report id/);
+  const t = boot();
+  t.api.openView("terminal");
+  assert.equal(t.tiles().length, 1);
+  assert.match(t.noticeTexts().join("|"), /Cannot open TERMINAL without an agent/);
+  t.api.openView("terminal", "a1", "ignored");
+  assert.equal(subjectsOf(t), "tree:: terminal:a1:", "a terminal ignores a report id");
+});
+
+test("item tiles show no view selector; browsing tiles list only browsing views", () => {
+  const s = boot();
+  s.api.openView("terminal", "a1");
+  s.api.openView("report", "a1", "r1");
+  const t = s.tileOf("t2");
+  assert.equal(selectOf(t), undefined, "terminal tile: no selector");
+  assert.equal(selectOf(s.tileOf("t4")), undefined, "report tile: no selector");
+  assert.ok(s.btn(t, "Split right") && s.btn(t, "Split down") && s.btn(t, "Close tile"), "split and close stay");
+  assert.equal(t.byClass("tile-title")[0]!.textContent, "Terminal · a1");
+  assert.equal(optionValues(s.tileOf("t1")), "tree,reports,hosts");
+  // negative control: the selector still exists and works on a browsing tile
+  const sel = selectOf(s.tileOf("t1"))!;
+  sel.value = "hosts";
+  sel.fire("change");
+  assert.equal(subjectsOf(s), "hosts:: terminal:a1: report:a1:r1");
+  // a forced change to an item view is ignored, never producing an agent-less tile
+  sel.value = "terminal";
+  sel.fire("change");
+  assert.equal(subjectsOf(s), "hosts:: terminal:a1: report:a1:r1");
+  assert.equal(selectOf(s.tileOf("t1"))!.value, "hosts");
+});
+
+test("the split buttons add a browsing view not yet shown, and a notice instead of a tile once all are shown", () => {
+  const s = boot({ tabs: ["tree", "reports", "terminal"] });
+  s.api.openView("terminal", "a1"); // t2, focused
+  s.btn(s.tileOf("t2"), "Split right").click();
+  assert.equal(subjectsOf(s), "tree:: terminal:a1: reports::", "an item view is never picked");
+  const n = s.tiles().length;
+  s.btn(s.tileOf("t1"), "Split down").click();
+  assert.equal(s.tiles().length, n, "every browsing view is shown: nothing is split");
+  assert.match(s.noticeTexts().join("|"), /Every browsing window is already open/);
+  assert.equal(s.mounts.filter((m) => !m.params.agent).length, 0, "no agent-less tile was mounted");
+  s.api.splitFocused("row");
+  assert.equal(s.tiles().length, n);
+});
+
+test("a stored layout with an item tile that lacks its subject is not used, with a visible message naming tile and view", () => {
+  for (const [view, params, needle] of [
+    ["terminal", {}, "tile t2 shows terminal without an agent"],
+    ["report", { agent: "a1" }, "tile t2 shows report without a report id"],
+    ["report", {}, "tile t2 shows report without an agent"],
+  ] as const) {
+    const s = boot({ store: { "pomtree.layout": twoLeaves(lf("t1", "tree"), lf("t2", view, params)) } });
+    assert.equal(subjectsOf(s), "tree::", "the default layout is shown");
+    assert.equal(s.mounts.length, 0);
+    assert.match(s.noticeTexts().join("|"), /saved layout was not used/);
+    assert.ok(s.noticeTexts().join("|").includes(needle), needle);
+    assert.equal(s.writes.length, 0, "the rejected layout stays in storage");
+  }
+  const ok = boot({ store: { "pomtree.layout": twoLeaves(lf("t1", "tree"), lf("t2", "report", { agent: "a1", report: "r1" })) } });
+  assert.equal(subjectsOf(ok), "tree:: report:a1:r1");
+  assert.equal(ok.noticeTexts().length, 0);
+});
+
+test("Import refuses a layout with a subject-less item tile and keeps the current layout", async () => {
+  const s = boot();
+  s.api.importFile({ text: async () => twoLeaves(lf("t1", "tree"), lf("t2", "terminal")) });
+  await new Promise((r) => setImmediate(r));
+  assert.match(s.noticeTexts().join("|"), /Import failed\. .*tile t2 shows terminal without an agent/);
+  assert.equal(subjectsOf(s), "tree::");
+  s.api.importFile({ text: async () => twoLeaves(lf("t1", "tree"), lf("t2", "report", { agent: "a1", report: "r1" })) });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(subjectsOf(s), "tree:: report:a1:r1");
+});
+
+test("imported repeats of one subject get the defensive note; another report of the same agent mounts; the tile signature includes the report", async () => {
+  const dup = boot({
+    store: { "pomtree.layout": twoLeaves(lf("t1", "report", { agent: "a", report: "r1" }), lf("t2", "report", { agent: "a", report: "r1" })) },
+  });
+  assert.equal(dup.mounts.length, 1);
+  assert.match(dup.tileOf("t2").byClass("tile-note")[0]!.textContent, /already shown in another tile/);
+  assert.equal(selectOf(dup.tileOf("t2")), undefined, "the note tile of an item view has no selector either");
+  const other = boot({
+    store: { "pomtree.layout": twoLeaves(lf("t1", "report", { agent: "a", report: "r1" }), lf("t2", "report", { agent: "a", report: "r2" })) },
+  });
+  assert.equal(other.mounts.length, 2);
+  // same tile id and view and agent, other report: the tile is rebuilt, the old window unmounted
+  const s = boot({ store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "report", { agent: "a", report: "r1" }) }) } });
+  s.api.importFile({ text: async () => JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "report", { agent: "a", report: "r2" }) }) });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(s.mounts.length, 2);
+  assert.equal(s.mounts[0]!.unmounted, true);
+  assert.equal(s.mounts[1]!.params.report, "r2");
 });

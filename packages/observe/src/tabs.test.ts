@@ -863,10 +863,11 @@ test("terminal: an unknown agent (404) stops with 'agent not found'", async () =
   assert.match(role(doc, "note")!.textContent, /agent not found/);
 });
 
-test("terminal: no agent selected, and leaving the tab closes the socket and disposes the terminal", async () => {
+test("terminal: an agent-less hash opens nothing, and leaving the tab closes the socket and disposes the terminal", async () => {
+  // an agent-less terminal hash is ignored by the shell (no terminal tile exists without its agent)
   const none = runShell("#/terminal/");
   await flush();
-  assert.match(role(none.doc, "note")!.textContent, /no agent selected/);
+  assert.equal(none.hosts.length, 0);
   assert.equal(none.sockets.length, 0);
 
   const { sockets, terms, navigate, intervals, host } = runShell("#/terminal/a1", running);
@@ -886,13 +887,13 @@ test("terminal: no agent selected, and leaving the tab closes the socket and dis
   );
 });
 
-test("terminal: switching agents by hash reconnects to the new id", async () => {
+test("terminal: another agent's hash opens a second terminal and leaves the first connected", async () => {
   const { sockets, navigate, hosts } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
   navigate("#/terminal/b2");
   await flush();
-  assert.equal(sockets[0]!.closed, true);
+  assert.equal(sockets[0]!.closed, false, "the first terminal is untouched");
   assert.equal(sockets[1]!.url, "ws://ui.test/v1/agents/b2/terminal");
   assert.equal(hosts.at(-1)!.titles.at(-1), "Terminal \u00b7 b2");
 });
@@ -993,7 +994,7 @@ test("terminal: raw trace opt-in uses an in-page prompt (no native confirm): can
   assert.equal(prompt.hidden, true);
 });
 
-test("terminal: View trace opens an in-app viewer with the checked options, closes on Escape and returns focus; no agent means no fetch", async () => {
+test("terminal: View trace opens an in-app viewer with the checked options, closes on Escape and returns focus; no terminal without an agent", async () => {
   const { doc, pageBody, docKeys, fetches, host } = runShell("#/terminal/a1", { ...running, "/v1/agents/a1/trace": { body: "# Trace text" } });
   await flush();
   const btn = role(doc, "trace-chip")!; // the viewer returns focus to the trace status line
@@ -1012,14 +1013,13 @@ test("terminal: View trace opens an in-app viewer with the checked options, clos
   for (const fn of [...docKeys]) fn({ key: "Escape" });
   assert.equal(pageBody.children.length, 0);
   assert.equal(btn.focused, 1);
-  // negative control: without an open agent the button does nothing
+  // negative control: an agent-less hash opens no terminal, so there is no host to run the command on
   const none = runShell("#/terminal");
   await flush();
-  none.host.run("terminal.trace-view");
-  assert.equal(none.pageBody.children.length, 0);
+  assert.equal(none.hosts.length, 0);
 });
 
-test("terminal: View trace twice keeps one viewer; navigating to another agent dismisses it", async () => {
+test("terminal: View trace twice keeps one viewer; opening another agent's terminal leaves it with its own terminal", async () => {
   const r = runShell("#/terminal/a1", { ...running, "/v1/agents/a2": { body: { state: "running" } } });
   await flush();
   r.host.run("terminal.trace-view");
@@ -1028,8 +1028,8 @@ test("terminal: View trace twice keeps one viewer; navigating to another agent d
   assert.equal(r.pageBody.children.length, 1);
   r.navigate("#/terminal/a2");
   await flush();
-  assert.equal(r.pageBody.children.length, 0, "old agent's trace is gone");
-  assert.equal(r.docKeys.length, 0);
+  assert.equal(r.pageBody.children.length, 1, "the first terminal keeps its trace viewer");
+  assert.equal(r.docKeys.length > 0, true);
 });
 
 test("terminal: View trace never fetches raw unless the raw opt-in was confirmed", async () => {
@@ -1897,19 +1897,20 @@ test("terminal views: a mount that throws during setup clears what it put in the
 
 // Changed from the legacy single-section adapter test: the tiling shell mounts the terminal per tile, remounts when the
 // focused tile's agent changes, and unmounts when the tile's view changes.
-test("terminal views: the tiling shell mounts one terminal per tile, remounts on agent change and cleans up", async () => {
+test("terminal views: the tiling shell mounts one terminal per tile, adds a tile per agent and cleans up", async () => {
   const { doc, sockets, navigate, observers } = runShell("#/terminal/a1", running);
   await flush();
   const wm = doc.getElementById("wm-root")!;
   assert.equal(countMounts(wm), 1, "one mount root in the tile");
   navigate("#/terminal/b2");
   await flush();
-  assert.equal(countMounts(wm), 1, "the old root is removed on remount");
-  assert.equal(sockets[0]!.closed, true);
-  assert.equal(observers[0]!.disconnected, true);
-  navigate("#/audit");
-  assert.equal(countMounts(wm), 0);
+  assert.equal(countMounts(wm), 2, "the second agent gets its own tile; the first mount stays");
+  assert.equal(sockets[0]!.closed, false);
+  assert.equal(observers[0]!.disconnected, false);
+  navigate("#/audit"); // a browsing view retargets the focused (second) tile
+  assert.equal(countMounts(wm), 1);
   assert.equal(observers[1]!.disconnected, true);
+  assert.equal(observers[0]!.disconnected, false);
 });
 
 test("terminal views: the vendored xterm libraries load once per page across instances", async () => {

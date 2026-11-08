@@ -8,6 +8,8 @@
 // - The omnibar accepts open windows (focus), view types not yet shown (open in a new tile), one entry per known
 //   agent for each multi-instance view type, and a fixed list of actions. Free text is not a command: a query that
 //   matches nothing shows "Nothing matches", it never runs anything. A leading ">" limits the list to actions.
+// - A window may show one report of one agent (leaf params agent and report); its label is the view title and the
+//   report id, and it has no state dot.
 // - Matching is case-insensitive and token-wise: every space-separated token must match the label, kind or hint;
 //   a word-start match outranks a plain substring match. No fuzzy subsequence matching.
 // - The open key is Alt+Shift+P, read from the physical key code so it works with any layout.
@@ -33,10 +35,10 @@ export interface AgentInfo {
 export interface LeafLike {
   id: string;
   view: string;
-  params: { agent?: string };
+  params: { agent?: string; report?: string };
 }
 export type ActionId = "split-right" | "split-down" | "close-tile" | "reset-layout" | "export-layout" | "import-layout" | "sign-out";
-export type Run = { type: "focus"; leaf: string } | { type: "open"; view: string; agent?: string } | { type: "action"; id: ActionId };
+export type Run = { type: "focus"; leaf: string } | { type: "open"; view: string; agent?: string; report?: string } | { type: "action"; id: ActionId };
 export type OmniKind = "open" | "new" | "action";
 export interface OmniItem {
   key: string; // unique within one list
@@ -255,12 +257,15 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
   function windowLabel(leaf, views, agents) {
     const t = viewTitle(leaf.view, views);
     const id = leaf.params && leaf.params.agent;
+    const rid = leaf.params && leaf.params.report;
+    if (isStr(rid)) return t + ": " + clip(rid, 80);
     if (!isStr(id)) return t;
     const a = findAgent(agents, id);
     return t + ": " + (a ? a.name : id);
   }
   function leafDot(leaf, agents, inboxCount) {
     if (leaf.view === "inbox") return inboxCount > 0 ? "warn" : "none";
+    if (isStr(leaf.params && leaf.params.report)) return "none";
     const id = leaf.params && leaf.params.agent;
     return isStr(id) ? agentDot(findAgent(agents, id)) : "none";
   }
@@ -295,12 +300,13 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     for (const lf of ctx.leaves) {
       shownViews[lf.view] = true;
       const aid = lf.params && lf.params.agent;
-      if (isStr(aid)) shownAgents[lf.view + "/" + aid] = true;
+      const rid = lf.params && lf.params.report;
+      if (isStr(aid) && !isStr(rid)) shownAgents[lf.view + "/" + aid] = true;
       items.push({
         key: "open:" + lf.id,
         kind: "open",
         label: windowLabel(lf, ctx.views, ctx.agents),
-        hint: isStr(aid) ? aid + " " + lf.view : lf.view,
+        hint: isStr(aid) ? aid + " " + (isStr(rid) ? rid + " " : "") + lf.view : lf.view,
         dot: leafDot(lf, ctx.agents, ctx.inboxCount),
         run: { type: "focus", leaf: lf.id },
       });

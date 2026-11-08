@@ -67,8 +67,10 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     tr.appendChild(td);
     return tr;
   };
-  // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi, menus?, status?,
-  // mount(root, { agent? }, host) -> { unmount(), fit?() } }, host = { setTitle(text), navigate(hash) }.
+  // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi, subject?, menus?, status?,
+  // mount(root, { agent?, report? }, host) -> { unmount(), fit?() } }, host = { setTitle(text), navigate(hash) }.
+  // An item view shows exactly one subject (subject "agent": one window per agent id; "report": one per agent id and report id).
+  // multi without subject means "agent"; a view without multi is a browsing view and has no subject. view(id).subject is the result.
   // TODO(ui-extension-view-types): the registry is internal; extensions cannot declare view types. Trigger: the first public view-type API (docs/ui-vision.md, Open questions).
   const viewTypes = new Map();
   const declarations = new Map();
@@ -77,8 +79,10 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id)) throw new Error("registerView: invalid view id " + JSON.stringify(id) + "; use a lowercase id such as terminal");
     if (viewTypes.has(id)) throw new Error("registerView: view " + id + " is already registered; register each view id once");
     if (typeof def.title !== "string" || typeof def.multi !== "boolean" || typeof def.mount !== "function") throw new Error("registerView: view " + id + " needs a string title, a boolean multi and a mount function");
+    if (def.subject !== undefined && def.subject !== "agent" && def.subject !== "report") throw new Error("registerView: view " + id + " has subject " + JSON.stringify(def.subject) + "; use agent or report");
+    if (def.subject !== undefined && !def.multi) throw new Error("registerView: view " + id + " has a subject but multi is false; an item view needs multi: true");
     const decl = MenuKit.declareView({ id, title: def.title, multi: def.multi, menus: def.menus, status: def.status });
-    viewTypes.set(id, def);
+    viewTypes.set(id, { ...def, subject: def.multi ? def.subject || "agent" : undefined });
     declarations.set(id, decl);
   };
   const view = (id) => viewTypes.get(id);

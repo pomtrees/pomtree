@@ -2,14 +2,18 @@
 // page as global `LayoutKit`. A layout is a binary tiling tree of leaves (one view each) and splits; every function
 // returns a new layout and never mutates its input, and an invalid operation returns the input itself (same
 // reference) so callers can detect a no-op. No DOM, storage, clock or randomness here; tested in layout.test.ts.
-// Stored data is only view ids and agent ids. Plain JS, no backticks and no template interpolation (it is a
+// Stored data is only view ids, agent ids and report ids. Plain JS, no backticks and no template interpolation (it is a
 // template literal, so it must also contain no backslashes).
 // TODO(ui-floating-windows): windows tile only; there are no floating or overlapping windows. Trigger: an operator asks for floating windows or overlays.
 
 export type ViewId = string;
+// The closed set of leaf params: the subject a window shows. A report id is per agent, so report requires agent.
 export interface LeafParams {
   agent?: string;
+  report?: string;
 }
+// What a view needs to be shown: "agent" (an agent id) or "report" (an agent id and a report id).
+export type Subject = "agent" | "report";
 export interface LeafNode {
   kind: "leaf";
   id: string;
@@ -58,8 +62,11 @@ export interface LayoutKitApi {
   setView(layout: Layout, leafId: string, view: ViewId, params?: LeafParams): Layout;
   open(layout: Layout, view: ViewId, params?: LeafParams, multi?: boolean): Layout;
   find(layout: Layout, view: ViewId, params?: LeafParams, multi?: boolean): string | null;
+  // A string equal for two params exactly when they name the same subject (agent and report).
+  subjectKey(params?: LeafParams): string;
   serialize(layout: Layout): string;
-  parse(text: string, opts?: { views?: string[] }): ParseResult;
+  // opts.subjects maps a view id to the subject a leaf of that view must carry; views not in it need none.
+  parse(text: string, opts?: { views?: string[]; subjects?: Record<string, Subject> }): ParseResult;
 }
 
 export const LAYOUT_LOGIC_JS = `
@@ -69,7 +76,8 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
   const MAX_LEAVES = 16;
   const MAX_DEPTH = 8; // edges from the root to a leaf
   const MAX_TEXT = 65536;
-  const MAX_AGENT = 256;
+  const MAX_PARAM = 256; // longest agent id or report id
+  const PARAM_KEYS = ["agent", "report"];
   const MAX_NEXT = 999999990; // keeps every id at 9 digits or fewer
   const DEFAULT_MIN_RATIO = 0.1;
   const FLOOR_MIN_RATIO = 0.001; // ratios stay strictly inside (0,1), which parse requires
@@ -83,8 +91,15 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     return s.length > 40 ? s.slice(0, 40) + "..." : s;
   };
   const plainObject = (o) => !!o && typeof o === "object" && !Array.isArray(o);
-  const cleanParams = (p) => (p && typeof p.agent === "string" ? { agent: p.agent } : {});
+  const cleanParams = (p) => {
+    const out = {};
+    if (p && typeof p.agent === "string") out.agent = p.agent;
+    if (p && typeof p.report === "string") out.report = p.report;
+    return out;
+  };
   const agentOf = (p) => (p && typeof p.agent === "string" ? p.agent : null);
+  const reportOf = (p) => (p && typeof p.report === "string" ? p.report : null);
+  const subjectKey = (p) => JSON.stringify([agentOf(p), reportOf(p)]);
   const mkLeaf = (id, view, params) => ({ kind: "leaf", id, view, params: cleanParams(params) });
   const mkSplit = (id, dir, ratio, a, b) => ({ kind: "split", id, dir, ratio, children: [a, b] });
 
@@ -95,8 +110,9 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     const p = params === undefined ? {} : params;
     if (!plainObject(p)) return "params is not an object";
     const keys = Object.keys(p);
-    for (const k of keys) if (k !== "agent") return "params has unsupported key " + show(k);
-    if (keys.length && (typeof p.agent !== "string" || p.agent.length > MAX_AGENT)) return "params.agent is not a string of at most " + MAX_AGENT + " characters";
+    for (const k of keys) if (PARAM_KEYS.indexOf(k) < 0) return "params has unsupported key " + show(k);
+    for (const k of keys) if (typeof p[k] !== "string" || p[k].length > MAX_PARAM) return "params." + k + " is not a string of at most " + MAX_PARAM + " characters";
+    if (keys.indexOf("report") >= 0 && keys.indexOf("agent") < 0) return "params.report needs params.agent (a report id belongs to one agent)";
     return null;
   };
   const badLeaf = (lf) => leafProblem(lf.view, lf.params) !== null;
@@ -258,16 +274,16 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     const path = leafPath(layout, leafId);
     if (!path) return layout;
     const old = path[path.length - 1];
-    if (old.view === view && agentOf(old.params) === agentOf(params)) return layout;
+    if (old.view === view && subjectKey(old.params) === subjectKey(params)) return layout;
     const root = replace(layout.root, leafId, () => mkLeaf(leafId, view, params));
     return { version: VERSION, next: layout.next, focus: layout.focus, root };
   };
 
-  // First leaf in reading order showing this view (for multi views, the same params.agent too), else null.
+  // First leaf in reading order showing this view (for multi views, the same agent and report too), else null.
   const find = (layout, view, params, multi) => {
-    const ag = agentOf(params);
+    const key = subjectKey(params);
     for (const lf of leaves(layout)) {
-      if (lf.view === view && (!multi || agentOf(lf.params) === ag)) return lf.id;
+      if (lf.view === view && (!multi || subjectKey(lf.params) === key)) return lf.id;
     }
     return null;
   };
@@ -291,6 +307,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     try { raw = JSON.parse(text); } catch (e) { return fail("Layout text is not valid JSON" + RESET + "."); }
     if (!plainObject(raw)) return fail("Layout is not a JSON object" + RESET + ".");
     if (raw.version !== VERSION) return fail("Layout version " + show(raw.version) + " is not supported (this build reads version " + VERSION + ")" + RESET + ".");
+    const subjects = opts && plainObject(opts.subjects) ? opts.subjects : null;
     const ids = {};
     let maxNum = 0;
     let count = 0;
@@ -307,6 +324,9 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
         if (++count > MAX_LEAVES) bad("there are more than " + MAX_LEAVES + " tiles");
         const problem = leafProblem(n.view, n.params);
         if (problem) bad("tile " + n.id + " " + problem);
+        const need = subjects && Object.prototype.hasOwnProperty.call(subjects, n.view) ? subjects[n.view] : null;
+        if (need && !agentOf(n.params)) bad("tile " + n.id + " shows " + n.view + " without an agent");
+        if (need === "report" && !reportOf(n.params)) bad("tile " + n.id + " shows " + n.view + " without a report id");
         return mkLeaf(n.id, n.view, n.params);
       }
       if (n.dir !== "row" && n.dir !== "col") bad("split " + n.id + " has invalid dir " + show(n.dir));
@@ -333,6 +353,6 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     return { ok: true, layout: { version: VERSION, next: raw.next, focus: focusId, root }, unknown };
   };
 
-  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, leaves, setView, open, find, serialize, parse };
+  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, leaves, setView, open, find, subjectKey, serialize, parse };
 })());
 `;
