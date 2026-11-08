@@ -52,6 +52,9 @@ export function relayScript(leaf: number): ModelScript {
   const calls = (...cmds: string[]) => ({ kind: "tool_calls" as const, calls: cmds.map((c) => bash(c)), usage: BIG });
   const text = (t: string) => ({ kind: "text" as const, text: t, usage: BIG });
   const finish = 'pomtree result --status "$(cat /tmp/status)" --summary-file /tmp/poem.txt; rc=$?; touch /tmp/finished; echo result-exit=$rc';
+  const publishAsk =
+    `node -e '${NODE_PAGE}'; pomtree report publish /tmp/poem.html --name poem --media-type text/html; echo publish-exit=$?; ` +
+    'pomtree ask "poem published; reply OK to finish" --wait 600000; echo ask-exit=$?';
 
   for (let level = 1; level < leaf; level++) {
     turn(
@@ -59,7 +62,7 @@ export function relayScript(leaf: number): ModelScript {
       level,
       0,
       calls(
-        `REM=$(pomtree --json budget | node -e '${NODE_PARSE_BUDGET}'); CB=$((REM-${RESERVE})); echo BUDGET=$REM,$CB; ` +
+        `${level === 1 ? "touch /tmp/level1; " : ""}REM=$(pomtree --json budget | node -e '${NODE_PARSE_BUDGET}'); CB=$((REM-${RESERVE})); echo BUDGET=$REM,$CB; ` +
           `pomtree spawn --task '${task(leaf, level + 1)}' --name relay-${level + 1} --budget $CB --model ${MODEL_FLAG} > /tmp/kid 2> /tmp/spawn.err; echo $? > /tmp/spawn.rc; ` +
           "echo SPAWN-EXIT=$(cat /tmp/spawn.rc); echo KID=$(cat /tmp/kid); echo SPAWN-ERR=$(cat /tmp/spawn.err)",
       ),
@@ -76,15 +79,7 @@ export function relayScript(leaf: number): ModelScript {
       ),
     );
     if (level === 1) {
-      turn(
-        "l1-publish-ask",
-        1,
-        2,
-        calls(
-          `node -e '${NODE_PAGE}'; pomtree report publish /tmp/poem.html --name poem --media-type text/html; echo publish-exit=$?; ` +
-            'pomtree ask "poem published; reply OK to finish" --wait 600000; echo ask-exit=$?',
-        ),
-      );
+      turn("l1-publish-ask", 1, 2, calls(publishAsk));
       turn("l1-result", 1, 3, calls(finish));
       turn("l1-done", 1, 4, text("STUB-LEVEL-1-DONE"));
     } else {
@@ -100,6 +95,14 @@ export function relayScript(leaf: number): ModelScript {
   // Level 1 is the exception: a signal can land as the last user turn right after its ask returns, so the task text is gone and `l1-result`
   // cannot match; that turn must still run the result, or the top never finishes. Level 2+ shares this request shape (tool-result count 3) only
   // after its result, so the same reply is guarded by /tmp/finished and is a no-op there.
+  // A child's result and exit now reach a waiting parent as steers, between tool rounds: right after its wait-reap round (tool-result count 2)
+  // the last user text is "[pomtree] Child agent ... reported" instead of the task, so `l<N>-result` / `l1-publish-ask` cannot match. This rule
+  // runs the step that was pending: level 1 (marked by /tmp/level1) publishes and asks, a deeper level records its result; guarded by /tmp/finished.
+  rules.push({
+    id: "steered-child-message",
+    when: { lastUserIncludes: "[pomtree]", toolResults: 2 },
+    reply: calls(`[ -e /tmp/finished ] || if [ -e /tmp/level1 ]; then ${publishAsk}; else ${finish}; fi`),
+  });
   rules.push({
     id: "late-signal-result",
     when: { lastUserIncludes: "[pomtree]", toolResults: 3 },

@@ -73,7 +73,7 @@ test("idle Pi: several signals in one poll become ONE message so a second send c
   assert.deepEqual(h.acks[0]!.ids, ["h", "c"]);
 });
 
-test("streaming Pi: queued per deliverAs (steer for humans, followUp for the rest)", async () => {
+test("streaming Pi: queued per deliverAs (steer for humans and agent signals, followUp for nudges)", async () => {
   const pi = fakePi({ streaming: true });
   const h = harness([{ kind: "human_message", id: "h", from: "u", body: "hi" }], pi);
   await h.tick();
@@ -85,7 +85,44 @@ test("streaming Pi: queued per deliverAs (steer for humans, followUp for the res
   await harness([{ kind: "child_exited", id: "c", child: "c", exit: "succeeded" }], pi2).tick();
   assert.deepEqual(
     pi2.f.queued.map((q) => q.deliverAs),
+    ["steer"],
+  );
+  const pi3 = fakePi({ streaming: true });
+  await harness([{ kind: "nudge", id: "n" }], pi3).tick();
+  assert.deepEqual(
+    pi3.f.queued.map((q) => q.deliverAs),
     ["followUp"],
+  );
+});
+
+test("streaming Pi: child_result and job_exited are queued as steers, so they reach the agent between tool rounds", async () => {
+  const pi = fakePi({ streaming: true });
+  await harness([{ kind: "child_result", id: "r", child: "c", result: "ok" }], pi).tick();
+  assert.deepEqual(
+    pi.f.queued.map((q) => q.deliverAs),
+    ["steer"],
+  );
+  const pi2 = fakePi({ streaming: true });
+  await harness([{ kind: "job_exited", id: "j", job: "j", exit: 0 }], pi2).tick();
+  assert.deepEqual(
+    pi2.f.queued.map((q) => q.deliverAs),
+    ["steer"],
+  );
+});
+
+test("streaming Pi: a nudge with an agent message in one poll is queued once as a steer (documented current behaviour)", async () => {
+  // Current behaviour: one steering signal makes the whole batch a steer, so the nudge rides along in that message.
+  const pi = fakePi({ streaming: true });
+  await harness(
+    [
+      { kind: "nudge", id: "n" },
+      { kind: "message", id: "m", from: "a", body: "x" },
+    ],
+    pi,
+  ).tick();
+  assert.deepEqual(
+    pi.f.queued.map((q) => q.deliverAs),
+    ["steer"],
   );
 });
 

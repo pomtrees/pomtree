@@ -144,15 +144,15 @@ export interface Injection {
   inject: boolean;
 }
 
-// Highest priority first (stable within a rank). interrupt/cancel abort only; human messages steer after the current
-// tool batch; everything else queues as follow-up.
+// Highest priority first (stable within a rank). interrupt/cancel abort only; human messages, agent messages and child/job results
+// steer after the current tool batch (a follow-up would wait until the agent has no more tool calls); nudges and budget warnings queue as follow-up.
 export function planPairs(sigs: MailSignal[]): { s: MailSignal; inj: Injection }[] {
   return sigs
     .map((s, i) => ({ s, i }))
     .sort((a, b) => rank(a.s) - rank(b.s) || a.i - b.i)
     .map(({ s }) => {
       const abort = isInterrupt(s) || s.kind === "cancel";
-      return { s, inj: { text: abort ? "" : formatSignal(s), deliverAs: rank(s) <= 1 ? ("steer" as const) : ("followUp" as const), abort, inject: !abort } };
+      return { s, inj: { text: abort ? "" : formatSignal(s), deliverAs: rank(s) <= 3 ? ("steer" as const) : ("followUp" as const), abort, inject: !abort } };
     });
 }
 export const plan = (sigs: MailSignal[]): Injection[] => planPairs(sigs).map((p) => p.inj);
