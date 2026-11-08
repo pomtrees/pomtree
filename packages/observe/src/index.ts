@@ -17,3 +17,4 @@ export * from "./vendor.ts";
 export * from "./traceKit.ts";
 export * from "./inbox.ts";
 export * from "./menuModel.ts";
+export * from "./uiCommand.ts";
