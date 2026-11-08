@@ -1,5 +1,5 @@
-// The decided menus and status of the terminal, browser and inbox views, per docs/ui-vision.md and the mock
-// docs/mockups/ui-launcher-mock.html. Plain data, no functions and no logic. tabs.ts, browserView.ts and inbox.ts register
+// The decided menus and status of the terminal, browser, inbox and report views, per docs/ui-vision.md and the mock
+// docs/mockups/ui-launcher-mock.html. Plain data, no functions and no logic. tabs.ts, browserView.ts, reportView.ts and inbox.ts register
 // them with registerView, and the window chrome renders them.
 
 import type { ViewDeclaration } from "./menuModel.ts";
@@ -73,7 +73,7 @@ export const BROWSER_DECLARATION: ViewDeclaration = {
   ],
   status: [
     { id: "stream", title: "Stream" },
-    { id: "view-only", title: "Access", text: "view-only", tone: "info" },
+    { id: "view-only", title: "Access: the agent controls this content and it is untrusted", text: "view-only: agent-controlled", tone: "info" },
     { id: "url", title: "Page URL", mono: true },
   ],
 };
@@ -107,4 +107,32 @@ export const INBOX_DECLARATION: ViewDeclaration = {
   status: [{ id: "pending", title: "Pending" }],
 };
 
-export const VIEW_DECLARATIONS: ViewDeclaration[] = [TERMINAL_DECLARATION, BROWSER_DECLARATION, INBOX_DECLARATION];
+// The sandbox warning is the Help item's hint and the footer slot's text; there is no banner row in the pane.
+export const REPORT_DECLARATION: ViewDeclaration = {
+  id: "report",
+  title: "Report",
+  multi: true,
+  menus: [
+    {
+      id: "view",
+      items: [
+        { kind: "action", command: "report.download", label: "Download", enabled: false },
+        { kind: "action", command: "report.view-source", label: "View source", visible: false, enabled: false },
+      ],
+    },
+    {
+      id: "help",
+      items: [
+        {
+          kind: "action",
+          command: "report.sandbox",
+          label: "About the sandbox",
+          hint: "Rendered in a locked sandbox: scripts and network are disabled.",
+        },
+      ],
+    },
+  ],
+  status: [{ id: "sandbox", title: "Sandbox: rendered in a locked sandbox, scripts and network are disabled" }],
+};
+
+export const VIEW_DECLARATIONS: ViewDeclaration[] = [TERMINAL_DECLARATION, BROWSER_DECLARATION, INBOX_DECLARATION, REPORT_DECLARATION];

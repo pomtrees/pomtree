@@ -1,6 +1,7 @@
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { MD_LOGIC_JS } from "./mdKit.ts";
 import { scriptJson } from "./web.ts";
+import { REPORT_DECLARATION } from "./viewMenus.ts";
 
 // The "report" item view of the operator UI: one report per window, filling the whole window (the iframe or image
 // takes the remaining height, a markdown or text body scrolls inside it). Registered with PaneKit.registerView as a
@@ -37,79 +38,75 @@ const mountReportInstance = (root, params, hostApi) => {
     if (download) a.setAttribute("download", "");
     return a;
   };
-  const note = (text) => el("p", "empty", text);
+  const note = (text) => el("p", "pane-empty", text);
   const base = agentsBase + "/" + encodeURIComponent(agent) + "/reports/" + encodeURIComponent(id);
   let active = true;
   const wrap = el("div", "report pane pane-fill");
-  const head = el("div", "report-head");
-  head.style.cssText = "padding:0.25rem 0.5rem;display:flex;gap:1rem;align-items:baseline";
-  const title = el("strong", "report-name", "Report " + id);
-  const actions = el("div", "report-actions");
-  actions.appendChild(link(base + "?raw=1", "Download", true));
   const body = el("div", "report-body");
-  body.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto";
-  head.appendChild(title);
-  wrap.appendChild(head);
   wrap.appendChild(body);
   root.appendChild(wrap);
-  hostApi.setTitle("Report \\u00b7 " + id.slice(0, 8));
+  hostApi.setTitle("Report \u00b7 " + id.slice(0, 8));
+  hostApi.setMenuState("report.view-source", { visible: false, enabled: false });
+  hostApi.setMenuState("report.download", { enabled: false });
+  // Download and View source work only once the report's metadata loaded; a failed load leaves them disabled.
+  let loaded = false;
+  const setLoaded = (on) => {
+    loaded = on;
+    hostApi.setMenuState("report.download", { enabled: on });
+    hostApi.setMenuState("report.view-source", { enabled: on });
+  };
+  // The window menus drive the actions: Download hands the raw file to the browser, View source shows it as text.
+  const showSource = () => {
+    if (body.querySelector("pre")) return;
+    fetch(base + "?raw=1").then(K.check).then((r) => r.text()).then((t) => {
+      if (!active) return;
+      const pre = document.createElement("pre");
+      pre.textContent = t;
+      body.appendChild(pre);
+    }).catch((err) => { if (active) body.appendChild(note(K.errorMessage("source", err))); });
+  };
+  const COMMANDS = {
+    "report.download": () => { if (!loaded) return; const a = link(base + "?raw=1", "Download", true); if (a.click) a.click(); },
+    "report.view-source": () => { if (loaded) showSource(); },
+    "report.sandbox": () => {},
+  };
+  hostApi.onCommand((command) => { if (active && Object.prototype.hasOwnProperty.call(COMMANDS, command)) COMMANDS[command](); });
 
   K.getJson(base).then((report) => {
     if (!active) return;
-    title.textContent = report.name;
+    setLoaded(true);
     hostApi.setTitle("Report \\u00b7 " + report.name);
     const type = String(report.mediaType).split(";")[0].trim().toLowerCase();
     const isActive = ACTIVE.includes(type);
     if (isActive || IMG.includes(type)) {
-      const banner = el("div", "report-banner");
-      banner.setAttribute("role", "note");
-      banner.appendChild(document.createTextNode("Rendered in a locked sandbox: scripts and network are disabled. "));
-      banner.appendChild(actions);
-      wrap.insertBefore(banner, body);
+      hostApi.setStatus("sandbox", { text: "sandboxed", tone: "info" });
       let frame;
       if (isActive) {
         frame = document.createElement("iframe");
         frame.setAttribute("sandbox", "");
         frame.setAttribute("referrerpolicy", "no-referrer");
         frame.setAttribute("title", report.name);
-        frame.style.cssText = "flex:0 0 100%;width:100%;height:100%;border:0;background:#fff";
+        frame.className = "report-frame";
       } else {
         frame = document.createElement("img");
         frame.setAttribute("alt", report.name);
-        frame.style.cssText = "flex:0 0 100%;width:100%;height:100%;min-height:0;object-fit:contain";
+        frame.className = "report-img";
       }
       frame.setAttribute("src", base + "/render");
       body.appendChild(frame);
-      if (isActive) {
-        const src = document.createElement("a");
-        src.href = "#";
-        src.textContent = "View source";
-        src.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          if (body.querySelector("pre")) return;
-          fetch(base + "?raw=1").then(K.check).then((r) => r.text()).then((t) => {
-            if (!active) return;
-            const pre = document.createElement("pre");
-            pre.textContent = t;
-            body.appendChild(pre);
-          }).catch((err) => { if (active) body.appendChild(note(K.errorMessage("source", err))); });
-        });
-        actions.appendChild(document.createTextNode(" \\u00b7 "));
-        actions.appendChild(src);
-      }
+      if (isActive) hostApi.setMenuState("report.view-source", { visible: true });
     } else if (type === "text/markdown" || type === "text/plain" || type === "application/json") {
-      head.appendChild(actions);
       fetch(base + "?raw=1").then(K.check).then((r) => r.text()).then((t) => {
         if (!active) return;
         if (type === "text/markdown") { const md = document.createElement("div"); md.className = "md"; md.appendChild(Md.render(document, t)); body.appendChild(md); }
         else { const pre = document.createElement("pre"); pre.textContent = t; body.appendChild(pre); }
       }).catch((err) => { if (active) body.appendChild(note(K.errorMessage("report", err))); });
     } else {
-      head.appendChild(actions);
       body.appendChild(note("This report type (" + report.mediaType + ") cannot be previewed; use Download."));
     }
   }).catch((err) => {
     if (!active) return;
+    setLoaded(false);
     body.appendChild(note(err && err.status === 404 ? "This report is no longer available." : K.errorMessage("report", err)));
   });
   return { unmount() { active = false; root.replaceChildren(); } };
@@ -121,7 +118,7 @@ const mountReport = (root, params, hostApi) => {
   catch (e) { root.replaceChildren(); throw e; }
 };
 
-K.registerView({ id: "report", title: "Report", multi: true, subject: "report", mount: mountReport });
+K.registerView({ id: "report", title: "Report", multi: true, subject: "report", menus: ${scriptJson(REPORT_DECLARATION.menus)}, status: ${scriptJson(REPORT_DECLARATION.status)}, mount: mountReport });
 })();
 </script>`;
 }

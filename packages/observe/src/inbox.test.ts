@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
-import { INBOX_CSS, INBOX_JS, renderInboxPane } from "./inbox.ts";
+import { PANE_CSS } from "./paneKit.ts";
+import { INBOX_JS, renderInboxPane } from "./inbox.ts";
 import { PANE_KIT_JS } from "./paneKit.ts";
 
 test("inbox pane markup has no executable inline script; the static script paints via textContent only and has its hooks", () => {
@@ -68,6 +69,8 @@ interface N {
   scrolled: number;
   appendChild(c: N): void;
   replaceChildren(...n: N[]): void;
+  append(...n: N[]): void;
+  nextSibling: N | null;
   remove(): void;
   addEventListener(t: string, f: (ev: unknown) => void): void;
   scrollIntoView(): void;
@@ -91,6 +94,12 @@ const node = (tag = "div"): N => {
     replaceChildren(...k) {
       n.children = k;
       for (const c of k) c.parent = n;
+    },
+    append(...k) {
+      for (const c of k) n.appendChild(c);
+    },
+    get nextSibling() {
+      return n.parent ? (n.parent.children[n.parent.children.indexOf(n) + 1] ?? null) : null;
     },
     remove() {
       if (n.parent) n.parent.children.splice(n.parent.children.indexOf(n), 1);
@@ -225,6 +234,11 @@ K.declareSection = (d) => { MenuKit.declareView({ id: d.id, title: d.title, mult
 K.sectionHost = (id) => ({ setMenuState: () => {}, setStatus: __section.setStatus, onCommand: __section.onCommand });
 `;
   const html = renderInboxPane(paths);
+  const listNode = node("ul");
+  const composeCard = node("li");
+  byId.set("inbox", listNode);
+  byId.set("inbox-compose-card", composeCard);
+  listNode.appendChild(composeCard);
   byId.set("inbox-config", Object.assign(node(), { textContent: html.match(/id="inbox-config">([\s\S]*?)<\/script>/)![1]! }));
   runInContext(INBOX_JS.replace(PANE_KIT_JS, PANE_KIT_JS + fakeSection), createContext(sandbox));
   const push = (m: Record<string, unknown>) => sources[0]!.onmessage!({ data: JSON.stringify(m) });
@@ -252,7 +266,14 @@ K.sectionHost = (id) => ({ setMenuState: () => {}, setStatus: __section.setStatu
     hashListeners,
     intervals,
     timeouts,
-    list: () => byId.get("inbox")!,
+    // The cards only: the compose card is the list's permanent first child and the empty line is not a card.
+    list: () => ({
+      get children() {
+        return listNode.children.slice(1).filter((c) => c.className !== "pane-empty");
+      },
+    }),
+    composeKept: () => listNode.children[0] === composeCard,
+    rawList: () => listNode,
     status: () => byId.get("inbox-status")!,
   };
 }
@@ -326,7 +347,7 @@ test("inbox: Pass sends a decision; success removes the card; already-handled is
   assert.ok(!("body" in body));
   assert.equal(f.list().children.length, 0);
   assert.equal(f.status().textContent, "Already handled");
-  assert.equal(f.status().className, "meta");
+  assert.equal(f.status().className, "pane-notice");
 });
 
 test("inbox: pending approvals load, pin above asks, post a decision, and the deep link highlights and scrolls", async () => {
@@ -537,7 +558,7 @@ test("inbox compose: posts {to, body, idempotencyKey} without replyTo, X-Pomtree
   assert.equal(f.byId.get("inbox-body")!.value, "");
   assert.ok(!f.byId.get("inbox-send")!.disabled);
   assert.equal(f.status().textContent, "Message to a7");
-  assert.equal(f.status().className, "meta");
+  assert.equal(f.status().className, "pane-notice");
 });
 
 test("inbox compose: a typed error shows in the status line, keeps the draft, and the retry reuses the key", async () => {
@@ -547,7 +568,7 @@ test("inbox compose: a typed error shows in the status line, keeps the draft, an
   submit(f);
   await flush();
   assert.equal(f.status().textContent, "Failed to send: unknown agent a7");
-  assert.equal(f.status().className, "err");
+  assert.equal(f.status().className, "pane-notice err");
   assert.equal(f.byId.get("inbox-body")!.value, "hello");
   submit(f);
   await flush();
@@ -573,7 +594,7 @@ test("inbox compose: empty fields send nothing; the agent datalist is filled via
   assert.equal(opts[0]!.textContent, "<i>x</i>");
   submit(f);
   assert.equal(post(f).length, 0);
-  assert.equal(f.status().className, "err");
+  assert.equal(f.status().className, "pane-notice err");
 });
 
 test("inbox compose: a rejected receipt at 201 is a failure that keeps the draft; 409 and 400 show the error", async () => {
@@ -583,7 +604,7 @@ test("inbox compose: a rejected receipt at 201 is a failure that keeps the draft
   submit(f);
   await flush();
   assert.equal(f.status().textContent, "Not sent: not authorized");
-  assert.equal(f.status().className, "err");
+  assert.equal(f.status().className, "pane-notice err");
   assert.equal(f.byId.get("inbox-body")!.value, "hello");
   for (const [status, error] of [
     [409, "agent a7 is reaped"],
@@ -681,7 +702,7 @@ test("inbox about: a textContent note in the status line", () => {
   const f = run();
   f.command("inbox.about");
   assert.match(f.status().textContent, /^The Inbox lists agent messages/);
-  assert.equal(f.status().className, "meta");
+  assert.equal(f.status().className, "pane-notice");
 });
 
 const STREAM_CLOSED = /^Inbox stream closed \(the server refused it, e\.g\. sign-in expired or too many streams\)/;
@@ -693,7 +714,7 @@ test("inbox stream: a CLOSED source shows the closed message and reopens with ca
   first.onerror!();
   assert.equal(STREAM_CLOSED.test(f.status().textContent), true);
   assert.equal(/reconnecting/.test(f.status().textContent), false);
-  assert.equal(f.status().className, "err");
+  assert.equal(f.status().className, "pane-notice err");
   assert.equal(first.closed, true);
   assert.deepEqual(
     f.timeouts.map((t) => t.ms),
@@ -718,7 +739,7 @@ test("inbox stream: a CONNECTING error keeps the reconnecting message and does n
   f.sources[0]!.readyState = 0;
   f.sources[0]!.onerror!();
   assert.equal(f.status().textContent, "Stream interrupted \u2014 reconnecting");
-  assert.equal(f.status().className, "err");
+  assert.equal(f.status().className, "pane-notice err");
   assert.equal(f.sources[0]!.closed, false);
   assert.equal(f.timeouts.length, 0);
   assert.equal(f.sources.length, 1);
@@ -744,12 +765,68 @@ test("inbox stream: onopen clears either message and resets the backoff", () => 
   assert.equal(f.timeouts[2]!.ms, 2000);
 });
 
-test("the inbox status notice sticks at the top of its scroller and keeps its own space, so it never overlays the compose fields", () => {
-  const rule = INBOX_CSS.match(/\.pane #inbox-status \{([^}]*)\}/)![1]!;
+test("the compose card sticks at the top of the list scroller and the pane carries no card chrome of its own", () => {
+  const inboxRules = PANE_CSS.split("\n")
+    .filter((l) => l.startsWith(".inbox"))
+    .join("\n");
+  const rule = PANE_CSS.match(/\.inbox li\.compose \{([^}]*)\}/)![1]!;
   assert.match(rule, /position: sticky/);
-  assert.match(rule, /top: 0[;\s]/, "a sticky offset below 0 pushes the notice down over the first field");
-  assert.ok(!/top: [1-9]/.test(rule) && !/top: 0\.\d/.test(rule));
-  const filled = INBOX_CSS.match(/\.pane #inbox-status:not\(:empty\) \{([^}]*)\}/)![1]!;
-  assert.match(filled, /margin: 0 0 var\(--gap\)/, "a shown notice leaves a gap before the compose form");
-  assert.ok(!/position: (absolute|fixed)/.test(INBOX_CSS));
+  assert.match(rule, /top: 0[;\s]/);
+  assert.ok(!/position: (absolute|fixed)/.test(inboxRules));
+  assert.ok(!/box-shadow/.test(inboxRules), "card chrome comes from .card-list");
+});
+
+// --- shared pane skeleton -------------------------------------------------------------------
+const MARKUP = renderInboxPane();
+const listOpen = MARKUP.match(/<ul id="inbox"[^>]*>/)![0];
+
+test("inbox skeleton: root classes, no inline style, exactly one pane-body that is the card-list", () => {
+  assert.ok(MARKUP.startsWith('<div class="inbox pane">'));
+  assert.ok(!MARKUP.includes("<style"));
+  assert.equal(MARKUP.match(/pane-body/g)!.length, 1);
+  assert.match(listOpen, /class="card-list pane-body"/);
+});
+
+test("inbox skeleton: only the notice precedes the list, and it is hidden-by-default content-free", () => {
+  const before = MARKUP.slice(MARKUP.indexOf("\n") + 1, MARKUP.indexOf(listOpen));
+  assert.equal(before.trim(), '<div id="inbox-status" class="pane-notice" role="status" hidden></div>');
+  assert.ok(!/<h[1-6]/.test(MARKUP));
+});
+
+test("inbox skeleton: compose is the first card in the list, one form, one Send button, one row", () => {
+  const list = MARKUP.slice(MARKUP.indexOf(listOpen), MARKUP.indexOf("</ul>"));
+  assert.match(list.slice(listOpen.length).trim(), /^<li id="inbox-compose-card" class="compose">\s*<form id="inbox-compose"/);
+  assert.equal(list.match(/<form\b/g)!.length, 1);
+  assert.equal(list.match(/<button\b/g)!.length, 1);
+  assert.ok(!MARKUP.slice(0, MARKUP.indexOf(listOpen)).includes("<form"));
+  assert.match(PANE_CSS, /\.inbox \.compose form \{[^}]*display: flex; flex-wrap: wrap/);
+});
+
+test("inbox cards: tone classes map ask/approval to warn, alert to err, plain status to none; p-* classes stay", async () => {
+  const f = run({ approvals: [{ id: "ap1", requester: "a1", kind: "other", summary: "ok?", rung: 1, deadlineAt: Date.now() + 1000 }] });
+  f.push(f.msg(1, { purpose: "ask", subject: "q" }));
+  f.push(f.msg(2, { purpose: "alert" }));
+  f.push(f.msg(3, { purpose: "status" }));
+  f.intervals[0]?.();
+  await flush();
+  const cls = f.list().children.map((li) => li.className);
+  assert.ok(cls.some((c) => c.includes("p-approval") && c.includes("tone-warn")));
+  assert.ok(cls.some((c) => c.includes("p-ask") && c.includes("tone-warn")));
+  assert.ok(cls.some((c) => c.includes("p-alert") && c.includes("tone-err")));
+  const plain = cls.find((c) => c.includes("p-status"))!;
+  assert.ok(!/tone-/.test(plain));
+});
+
+test("inbox empty state: one pane-empty line in the list after compose, never a notice; cards replace it; compose survives renders", async () => {
+  const f = run();
+  f.sources[0]!.onopen!();
+  f.command("inbox.filter", "all");
+  assert.equal(f.status().textContent, "");
+  assert.equal(f.rawList().children[1]!.className, "pane-empty");
+  assert.equal(f.rawList().children[1]!.textContent, "Inbox empty");
+  assert.ok(f.composeKept());
+  f.push(f.msg(2));
+  assert.equal(f.list().children.length, 1);
+  assert.ok(!f.list().children[0]!.className.includes("pane-empty"));
+  assert.ok(f.composeKept());
 });

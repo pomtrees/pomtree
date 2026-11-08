@@ -25,32 +25,12 @@ import { PANE_KIT_JS } from "./paneKit.ts";
 import { INBOX_DECLARATION } from "./viewMenus.ts";
 import { scriptJson } from "./web.ts";
 
-export const INBOX_CSS = `
-.pane #inbox { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--gap); }
-.pane #inbox li { padding: var(--gap); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); }
-.pane #inbox li.p-ask, .pane #inbox li.p-approval { border-left-color: var(--warn); }
-.pane #inbox li.p-alert { border-left-color: var(--err); }
-.pane #inbox li.hl { outline: 2px solid var(--accent); outline-offset: 2px; }
-.pane #inbox li > * + * { margin-top: 0.5rem; }
-.pane #inbox .head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.pane #inbox .badge { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.0625rem 0.5rem; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--muted); }
-.pane #inbox .subject { white-space: pre-wrap; overflow-wrap: anywhere; }
-.pane #inbox .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.pane #inbox .actions input { flex: 1 1 12rem; }
-.pane #inbox .actions.big button { flex: 1 1 6rem; min-height: 3rem; font-size: 1rem; }
-.pane .compose { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 var(--gap); }
-.pane .compose input { flex: 1 1 10rem; }
-.pane .compose textarea { flex: 1 1 100%; resize: vertical; font: inherit; }
-.pane .compose button { flex: 0 0 auto; min-height: 2.75rem; }
-.pane #inbox-status { position: sticky; top: 0; z-index: 5; }
-.pane #inbox-status:not(:empty) { margin: 0 0 var(--gap); padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
-`;
-
 /** The Inbox pane's browser script, served as a static asset at INBOX_SCRIPT_URL (config is read from the #inbox-config JSON block). */
 export const INBOX_JS = `(() => {
 ${PANE_KIT_JS}
 const cfg = JSON.parse(document.getElementById("inbox-config").textContent);
 const list = document.getElementById("inbox");
+const composeCard = document.getElementById("inbox-compose-card");
 const status = document.getElementById("inbox-status");
 const MAX_MESSAGES = 200;
 const items = new Map(); // key -> { key, kind, id, replyTo, purpose, agent, subject, createdAt, deadlineAt, seq, el, ageEl, busy, pending }
@@ -65,7 +45,8 @@ K.declareSection(${scriptJson(INBOX_DECLARATION)});
 const win = K.sectionHost("inbox");
 const FILTERS = { all: "All", message: "User messages", escalation: "Escalations", approval: "Approvals" };
 
-const say = (text, bad) => { status.className = bad ? "err" : "meta"; status.textContent = text; };
+const ERR = "pane-notice err";
+const say = (text, bad) => { status.className = bad ? ERR : "pane-notice"; status.textContent = text; status.hidden = !text; };
 
 const pinned = (it) => it.kind === "approval" || it.purpose === "ask";
 const rank = (a, b) => {
@@ -99,7 +80,7 @@ const send = (it, fields) => {
   }).then((res) => res.json().catch(() => ({})).then((rec) => ({ res, rec }))).then(({ res, rec }) => {
     const reason = rec && typeof rec.reason === "string" ? rec.reason : "";
     if ((rec && rec.alreadyHandled === true) || /already (answered|handled|decided)/i.test(reason)) {
-      forget(it); say("Already handled", false); return;
+      forget(it); say("Already handled", false); render(); return;
     }
     if (!res.ok) throw Object.assign(new Error("HTTP " + res.status), { status: res.status });
     if (rec && rec.kind === "rejected") throw new Error(reason || "Reply rejected");
@@ -112,7 +93,7 @@ const send = (it, fields) => {
       render();
       return;
     }
-    forget(it); say(items.size === 0 ? "Inbox empty" : "", false);
+    forget(it); say("", false); render();
   }).catch((err) => {
     it.busy = false;
     setBusy(it, false);
@@ -124,7 +105,8 @@ const setBusy = (it, busy) => { for (const b of it.buttons) b.disabled = busy ||
 
 const build = (it) => {
   const li = document.createElement("li");
-  li.className = "p-" + (it.kind === "approval" ? "approval" : it.purpose);
+  const tone = it.kind === "approval" || it.purpose === "ask" ? " tone-warn" : it.purpose === "alert" ? " tone-err" : "";
+  li.className = "p-" + (it.kind === "approval" ? "approval" : it.purpose) + tone;
   const head = document.createElement("div");
   head.className = "head";
   head.appendChild(K.cell("span", it.kind === "approval" ? "approval" : it.purpose, "badge"));
@@ -155,7 +137,7 @@ const build = (it) => {
     if (it.holder !== null) act("Pass", "", () => send(it, { decision: "pass" }));
   } else {
     row.className = "actions";
-    act("Dismiss", "", () => { forget(it); say(items.size === 0 ? "Inbox empty" : "", false); });
+    act("Dismiss", "", () => { forget(it); say("", false); render(); });
   }
   li.appendChild(row);
   it.el = li;
@@ -189,16 +171,23 @@ const emptyFilterLine = () => {
   return li;
 };
 
+const emptyLine = () => {
+  const li = document.createElement("li");
+  li.className = "pane-empty";
+  li.textContent = "Inbox empty";
+  return li;
+};
+
 const render = () => {
   const sorted = [...items.values()].sort(rank);
   for (const it of sorted) {
     it.ageEl.textContent = it.kind === "approval" ? dueText(it) : K.age(Date.now() - it.createdAt);
   }
   const shown = filter === "all" ? sorted : sorted.filter((it) => it.kind === filter);
-  list.replaceChildren(...(shown.length === 0 && filter !== "all" ? [emptyFilterLine()] : shown.map((it) => it.el)));
+  // The compose card is the list's permanent first child (never rebuilt, so a draft and focus survive); only the cards after it change.
+  while (composeCard.nextSibling) composeCard.nextSibling.remove();
+  list.append(...(shown.length === 0 ? [filter === "all" ? emptyLine() : emptyFilterLine()] : shown.map((it) => it.el)));
   paintPending();
-  if (items.size > 0 && status.textContent === "Inbox empty") say("", false);
-  if (items.size === 0 && !status.textContent) say("Inbox empty", false);
   deepLink();
 };
 
@@ -232,7 +221,7 @@ const refreshApprovals = () => K.getJson(cfg.approvals + "?state=pending").then(
     build(it);
     items.set(key, it);
     }
-  if (status.className === "err" && /^Failed to load approvals/.test(status.textContent)) say("", false);
+  if (status.className === ERR && /^Failed to load approvals/.test(status.textContent)) say("", false);
   render();
 }).catch((err) => say(K.errorMessage("approvals", err), true));
 
@@ -261,7 +250,7 @@ const refreshEscalations = () => K.getJson(cfg.escalations + "?state=open").then
     build(it);
     items.set(key, it);
     }
-  if (status.className === "err" && /^Failed to load escalations/.test(status.textContent)) say("", false);
+  if (status.className === ERR && /^Failed to load escalations/.test(status.textContent)) say("", false);
   render();
 }).catch((err) => say(K.errorMessage("escalations", err), true));
 
@@ -331,7 +320,7 @@ let retryMs = 2000;
 const open = () => {
   const es = new EventSource(base + "?from=" + encodeURIComponent(String(lastSeq)));
   const badge = document.createElement("span");
-  es.onopen = () => { retryMs = 2000; K.setConn(badge, true); if (status.className === "err" && /^(Stream|Inbox stream)/.test(status.textContent)) say("", false); };
+  es.onopen = () => { retryMs = 2000; K.setConn(badge, true); if (status.className === ERR && /^(Stream|Inbox stream)/.test(status.textContent)) say("", false); };
   // TODO(inbox-stream-cause): the cause of the "Stream interrupted / reconnecting" notice is unconfirmed; the suspects are a 401, a 503 from the 64-stream SSE cap (MAX_SSE_STREAMS in packages/pomtreed/src/server.ts; each tab holds two streams) and a server close. Nobody has checked /live/messages in devtools. Trigger: the operator sees the notice again; first read the status and the close in the Network tab.
   es.onerror = () => {
     K.setConn(badge, false);
@@ -384,15 +373,17 @@ export function renderInboxPane(
     agents: ctx.agentsPath ?? "/v1/agents",
   });
   return `<div class="inbox pane">
-<style>${INBOX_CSS}</style>
-<div id="inbox-status" class="meta" role="status"></div>
-<form id="inbox-compose" class="compose" autocomplete="off">
+<div id="inbox-status" class="pane-notice" role="status" hidden></div>
+<ul id="inbox" class="card-list pane-body">
+<li id="inbox-compose-card" class="compose">
+<form id="inbox-compose" autocomplete="off">
 <input id="inbox-to" list="inbox-agents" placeholder="agent id" aria-label="Agent id">
 <datalist id="inbox-agents"></datalist>
 <textarea id="inbox-body" rows="2" maxlength="4000" placeholder="Message an agent" aria-label="Message"></textarea>
 <button id="inbox-send" class="btn" type="submit">Send</button>
 </form>
-<ul id="inbox"></ul>
+</li>
+</ul>
 </div>
 <script type="application/json" id="inbox-config">${cfg}</script>
 <script src="${INBOX_SCRIPT_URL}"></script>`;

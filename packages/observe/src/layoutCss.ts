@@ -16,16 +16,14 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .tile-focused { outline-width: 2px; outline-style: solid; outline-color: var(--chrome-accent, var(--accent, currentColor)); outline-offset: -2px; }
 .tile-bar { display: flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; min-height: 1.75rem; padding: 0.125rem 0.375rem; box-sizing: border-box; background: var(--chrome-bg, var(--surface-2, transparent)); color: var(--chrome-fg, inherit); border-bottom-width: 1px; border-bottom-style: solid; border-bottom-color: var(--chrome-border, var(--border, currentColor)); }
 .tile-focused > .tile-bar { background: var(--chrome-accent, var(--chrome-bg, var(--surface-2, transparent))); color: var(--chrome-accent-fg, var(--chrome-fg, inherit)); }
-.tile-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; font-weight: 600; }
+.tile-title { flex: 1 1 auto; min-width: 3.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; font-weight: 600; }
 .tile-view { flex: 0 1 8rem; min-width: 0; font: inherit; font-size: 0.8125rem; }
 .tile-btn { flex: 0 0 auto; min-width: 1.5rem; min-height: 1.5rem; padding: 0 0.25rem; font: inherit; line-height: 1; cursor: pointer; color: inherit; background: transparent; border-width: 1px; border-style: solid; border-color: transparent; border-radius: var(--radius-sm, 0.25rem); }
 .tile-btn:disabled { opacity: 0.4; cursor: default; }
 .tile-body { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; overflow: auto; }
-.tile-body > section { box-sizing: border-box; padding: 0.75rem; }
+.tile-body > section { box-sizing: border-box; padding: 0; height: 100%; }
 .tile-note { padding: 1rem; color: var(--muted, inherit); }
 .wm-mount { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; }
-.tile-body .wm-mount .pane:not(.pane-fill) { box-sizing: border-box; padding: 0.75rem; }
-.tile-body .wm-mount .pane button, .tile-body .wm-mount .pane a.btn { padding: 0.125rem 0.5rem; font-size: 0.8125rem; }
 .tile-body .wm-mount .pane.pane-fill { box-sizing: border-box; padding: 0; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .tile-body .pane.browser canvas { flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .tile-body .termwrap { flex: 1 1 auto; min-height: 0; }
@@ -38,15 +36,15 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .splitter[aria-orientation="horizontal"] { height: 8px; margin-top: -4px; cursor: row-resize; }
 .splitter:hover, .splitter:focus-visible { background: var(--chrome-accent, var(--accent, currentColor)); opacity: 0.5; }
 .wm-narrow .splitter { display: none; }
-.wm-narrow .tile-bar > :not(.tile-menus):not(.tile-overflow) { display: none; }
-.wm-narrow .tile-bar:not(:has(.tile-menus, .tile-overflow)) { display: none; }
+.wm-narrow .tile-bar > :not(.tile-menus):not(.tile-overflow):not(.tile-controls) { display: none; }
+.wm-narrow .tile-bar:not(:has(.tile-menus, .tile-overflow, .tile-controls)) { display: none; }
 .wm-narrow .tile-bar > .tile-overflow { margin-left: auto; }
 @media (max-width: 640px) {
   .tile { border-width: 0; }
   .tile-focused { outline-style: none; }
   .splitter { display: none; }
-  .tile-bar > :not(.tile-menus):not(.tile-overflow) { display: none; }
-  .tile-bar:not(:has(.tile-menus, .tile-overflow)) { display: none; }
+  .tile-bar > :not(.tile-menus):not(.tile-overflow):not(.tile-controls) { display: none; }
+  .tile-bar:not(:has(.tile-menus, .tile-overflow, .tile-controls)) { display: none; }
   .tile-bar > .tile-overflow { margin-left: auto; }
 }
 @media (pointer: coarse) {

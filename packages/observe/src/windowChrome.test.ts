@@ -702,6 +702,35 @@ test("controls: Escape clears the search and dispatches the empty string; on an 
   assert.equal(s.calls.length, 1);
 });
 
+test("controls: a search event after Enter with the same value does not dispatch again", () => {
+  const s = ctlSetup();
+  s.type("abc");
+  s.key(s.input, "Enter");
+  s.input.dispatch({ type: "search" });
+  assert.deepEqual(s.calls, [["audit.filter", "abc"]]);
+  s.timer.tick();
+  assert.equal(s.calls.length, 1, "the debounce was cancelled too");
+  s.type("abcd");
+  s.key(s.input, "Enter");
+  assert.deepEqual(s.calls.at(-1), ["audit.filter", "abcd"]);
+  assert.equal(s.calls.length, 2, "a changed value dispatches again");
+  s.type("abc");
+  s.key(s.input, "Enter");
+  assert.equal(s.calls.length, 3, "a value differing from the last dispatched one dispatches (negative control)");
+});
+
+test("controls: Escape clears and dispatches the empty string once even if a search event follows", () => {
+  const s = ctlSetup();
+  s.type("zzz");
+  s.key(s.input, "Enter");
+  s.key(s.input, "Escape");
+  s.input.dispatch({ type: "search" });
+  assert.deepEqual(s.calls, [
+    ["audit.filter", "zzz"],
+    ["audit.filter", ""],
+  ]);
+});
+
 test("controls: destroy cancels a pending debounce", () => {
   const s = ctlSetup();
   s.type("late");

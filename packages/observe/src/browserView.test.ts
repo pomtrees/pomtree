@@ -392,9 +392,10 @@ test("the view registers as 'browser' (multi), dials the browser route and title
   assert.equal(t.sockets[0]!.url, "ws://ui.test/v1/agents/agent-12345678-abcd/browser");
   assert.equal(t.sockets[0]!.binaryType, "arraybuffer");
   assert.deepEqual(t.titles, ["Browser · agent-12"]);
-  assert.ok(
+  assert.equal(
     t.find((n) => n.textContent === "Content controlled by the agent"),
-    "fixed agent-controlled note",
+    undefined,
+    "no permanent note row: the footer and Help menu carry it",
   );
   assert.equal(stateText(t), "connecting");
   assert.equal(
@@ -681,6 +682,30 @@ test("mounting without an agent throws a cause-and-action error and leaves the r
 test("the pane root is pane-fill and the canvas has no padding wrapper", () => {
   const t = setup();
   assert.equal(t.root.children[0]!.className, "browser pane pane-fill");
+});
+
+test("no note row sits above the canvas: the first visible child is the canvas, and the footer carries the agent-controlled note", () => {
+  const t = setup();
+  const kids = t.root.children[0]!.children;
+  const firstVisible = kids.find((n) => !n.hidden)!;
+  assert.equal(firstVisible.tagName, "canvas");
+  assert.ok(!kids.some((n) => n.tagName === "p" && !n.hidden));
+  const decl = t.kitK as unknown as { declaration(id: string): { status: { id: string; text?: string }[] } };
+  const slot = decl.declaration("browser").status.find((x) => x.id === "view-only")!;
+  assert.ok(/view-only/.test(slot.text ?? "") && /agent/.test(slot.text ?? ""), "the view-only slot text names the agent-controlled content");
+});
+
+test("a page title from the stream titles the tile as text; none keeps the id title, and no-browser restores it", () => {
+  const t = setup({ agent: "agent-12345678-abcd" });
+  const ws = t.sockets[0]!;
+  ws.open();
+  ws.text({ type: "status", state: "connecting" });
+  assert.deepEqual(t.titles, ["Browser · agent-12"], "no title yet: nothing invented");
+  ws.text(live);
+  assert.equal(t.titles.at(-1), "Browser · Example page");
+  assert.equal(t.last("url")!.text, "https://example.test/page", "the URL stays in the footer");
+  ws.text({ type: "status", state: "no-browser" });
+  assert.equal(t.titles.at(-1), "Browser · agent-12");
 });
 
 test("an agent that no longer exists shows the placeholder, hides the canvas and stops reconnecting", async () => {

@@ -9,7 +9,7 @@ import { BROWSER_DECLARATION } from "./viewMenus.ts";
 // "url"?,"title"?,"width"?,"height"?} or {"type":"closed","reason":"ended"|"local"|"error"}. The view never sends
 // anything (the daemon closes the socket with 1008 on any client data message).
 // Everything the page shows (url, title) is controlled by the agent: it is rendered as textContent only, and the
-// tile carries a fixed note saying so. Frames are decoded with createImageBitmap from a Blob (no blob: image URL, so
+// footer's view-only slot says so (no note row inside the pane). The page title names the tile. Frames are decoded with createImageBitmap from a Blob (no blob: image URL, so
 // the CSP is unchanged) and drawn on a canvas scaled to fit; while a decode is in flight only the newest frame waits.
 // Reconnect reuses TermKit's backoff and stop/retry decision. This is the thin DOM/WebSocket glue plus BrowserKit,
 // the pure logic (tested in browserView.test.ts). Plain JS, no backticks and no template interpolation in the
@@ -130,9 +130,8 @@ const mountBrowserInstance = (root, params, hostApi) => {
     if (text !== undefined) n.textContent = text;
     return n;
   };
+  const defaultTitle = "Browser \u00b7 " + agentId.slice(0, 8);
   const wrap = el("div", "browser pane pane-fill");
-  const noteEl = el("p", "meta", "Content controlled by the agent");
-  noteEl.setAttribute("role", "note");
   // Shown by the Help menu's "About view-only"; plain text, hidden until asked for.
   const aboutEl = el("p", "meta", "This view is view-only: it shows the agent's browser and cannot click or type. The agent controls the page, and everything it shows is untrusted.");
   aboutEl.setAttribute("role", "note");
@@ -146,7 +145,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
   canvas.style.height = "100%";
   canvas.style.minHeight = "12rem";
   canvas.style.display = "block";
-  for (const n of [noteEl, aboutEl, goneEl, canvas]) wrap.appendChild(n);
+  for (const n of [aboutEl, goneEl, canvas]) wrap.appendChild(n);
   root.appendChild(wrap);
 
   let active = true;
@@ -312,6 +311,10 @@ const mountBrowserInstance = (root, params, hostApi) => {
         if (m.type === "closed") { closedReason = m.reason; return; }
         setState(BrowserKit.stateLabel(m.state), m.state === "live" ? "s-running" : "s-pending");
         setPage(m.url || "");
+        // The title is agent-controlled text: it names the tile through the host (textContent there); absent keeps the last.
+        // TODO(browser-title-cap): the tile title from the agent-controlled page title has no length cap (textContent only).
+        if (m.title) hostApi.setTitle("Browser \u00b7 " + m.title);
+        else if (m.state === "no-browser") hostApi.setTitle(defaultTitle);
         if (m.state === "no-browser") { gate.reset(); epoch++; clearCanvas(); }
         return;
       }
@@ -336,7 +339,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
   };
 
   hostApi.setMenuState("browser.copy-url", { enabled: false });
-  hostApi.setTitle("Browser · " + agentId.slice(0, 8));
+  hostApi.setTitle(defaultTitle);
   setState("", "");
   connect();
   return { unmount, fit: draw };

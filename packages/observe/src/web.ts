@@ -111,8 +111,7 @@ export const scriptJson = (v: unknown) =>
 export function renderTreePane(ctx: { eventsPath?: string } = {}): string {
   const events = scriptJson(ctx.eventsPath ?? "events");
   return `<div class="tree pane">
-<div><a class="btn" href="#/new">+ New agent</a><span id="tree-conn" class="conn"></span></div>
-<div class="tablewrap"><table>
+<div class="tablewrap pane-body"><table>
 <thead><tr><th>AGENT</th><th>ID</th><th>STATE</th><th>AGE</th><th>LAST</th><th>ACTIVITY</th><th>TOKENS</th><th>COST</th><th>LEFT</th><th>WAIT</th><th>HOST</th><th>DEADLINE</th></tr></thead>
 <tbody id="tree-rows"></tbody>
 </table></div>
@@ -120,15 +119,27 @@ export function renderTreePane(ctx: { eventsPath?: string } = {}): string {
 <script>
 (() => {
 ${PANE_KIT_JS}
+// New agent and the connection badge live in the window chrome; the standalone page has no chrome and keeps its #tree-conn badge.
+K.declareSection({
+  id: "tree",
+  title: "Tree",
+  controls: [{ kind: "button", command: "tree.new", label: "New agent", primary: true }],
+  status: [{ id: "connection", title: "Connection" }, { id: "count", title: "Agents" }],
+});
+const win = K.sectionHost("tree");
+win.onCommand((command) => { if (command === "tree.new") location.hash = "#/new"; });
+const CONN_TONES = { ok: "ok", stale: "warn" };
+const connEl = typeof UI === "undefined" ? document.getElementById("tree-conn") : null;
+const badge = connEl || ((ok, text) => win.setStatus("connection", { text, tone: CONN_TONES[ok ? "ok" : "stale"] }));
 const COLS = ["name", "id", "state", "age", "last", "activity", "tokens", "cost", "left", "wait", "host", "deadline"];
 const tbody = document.getElementById("tree-rows");
-const conn = document.getElementById("tree-conn");
 let es = null;
 let lasts = [];
 const lastText = (r) => typeof r.lastTs === "number" ? K.age(Date.now() - r.lastTs) + " ago" : "";
 let ticker = null;
 const paint = (rows) => {
   lasts = [];
+  win.setStatus("count", { text: rows.length + (rows.length === 1 ? " agent" : " agents") });
   if (rows.length === 0) {
     const row = K.messageRow(COLS.length, "empty", "No agents yet \u2014 start one with \`pomtree spawn --task \\"...\\"\` or ");
     const cta = document.createElement("a");
@@ -145,7 +156,7 @@ const paint = (rows) => {
     for (const c of COLS) {
       const td = document.createElement("td");
       if (c === "name") {
-        td.style.paddingLeft = (r.depth * 1.5) + "em";
+        td.style.paddingLeft = "calc(var(--cell-x) + " + (r.depth * 1.5) + "em)";
         if (r.fullId) {
           const a = document.createElement("a");
           a.href = "#/terminal/" + encodeURIComponent(r.fullId);
@@ -164,7 +175,7 @@ const paint = (rows) => {
 };
 const open = () => {
   if (es) es.close();
-  es = K.stream(${events}, { rows: (ev) => paint(JSON.parse(ev.data)) }, conn);
+  es = K.stream(${events}, { rows: (ev) => paint(JSON.parse(ev.data)) }, badge);
   if (ticker === null) ticker = setInterval(() => { for (const l of lasts) l.td.textContent = lastText(l.r); }, 1000);
 };
 const close = () => { if (es) { es.close(); es = null; } if (ticker !== null) { clearInterval(ticker); ticker = null; } };
@@ -181,7 +192,7 @@ export function renderReportsPane(ctx: { reportsPath?: string; standalone?: bool
   const reports = scriptJson(ctx.reportsPath ?? "/v1/reports");
   const standalone = ctx.standalone === true;
   return `<div class="reports pane">
-<div class="tablewrap"><table>
+<div class="tablewrap pane-body"><table>
 <thead><tr><th>AGENT</th><th>NAME</th><th>TYPE</th><th>SIZE</th><th>AGE</th><th>ID</th><th></th></tr></thead>
 <tbody id="reports-rows"></tbody>
 </table></div>
@@ -189,6 +200,9 @@ export function renderReportsPane(ctx: { reportsPath?: string; standalone?: bool
 <script>
 (() => {
 ${PANE_KIT_JS}
+K.declareSection({ id: "reports", title: "Reports", status: [{ id: "count", title: "Reports" }] });
+const win = K.sectionHost("reports");
+const setCount = (n) => win.setStatus("count", { text: n === null ? "" : n + (n === 1 ? " report" : " reports") });
 const standalone = ${standalone};
 const rawUrl = (agent, id) => "/v1/agents/" + encodeURIComponent(agent) + "/reports/" + encodeURIComponent(id);
 const link = (href, text, download) => {
@@ -229,6 +243,7 @@ const empty = (cls, text) => {
   tbody.replaceChildren(tr);
 };
 const load = () => K.getJson(${reports}).then((rows) => {
+  setCount(rows.length);
   if (rows.length === 0) { empty("empty", "No reports published yet."); return; }
   tbody.replaceChildren(...rows.map(({ report, agent }) => {
     const tr = document.createElement("tr");
@@ -248,7 +263,7 @@ const load = () => K.getJson(${reports}).then((rows) => {
     tr.appendChild(dlTd);
     return tr;
   }));
-}).catch((err) => empty("error", K.errorMessage("reports", err)));
+}).catch((err) => { setCount(null); empty("error", K.errorMessage("reports", err)); });
 K.onActivate("reports", load);
 })();
 </script>${standalone ? "" : renderReportView()}`;
@@ -267,7 +282,7 @@ export function renderLivePage(opts: { title?: string; eventsPath?: string } = {
 </head>
 <body>
 <main class="page">
-<h1>${title}</h1>
+<h1>${title} <span id="tree-conn" class="conn"></span></h1>
 ${renderTreePane({ eventsPath: opts.eventsPath })}
 </main>
 </body>

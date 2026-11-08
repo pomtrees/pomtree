@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { renderShell } from "./shell.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
+import { PANE_CSS } from "./paneKit.ts";
 import { LAYOUT_SHELL_JS } from "./layoutShell.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { WINDOW_CHROME_JS } from "./windowChrome.ts";
@@ -837,9 +838,9 @@ test("layoutCss: narrow modes hide the tile bar's other children but keep the wi
   assert.doesNotMatch(LAYOUT_CSS, /\.tracegrp/);
   assert.doesNotMatch(LAYOUT_CSS, /\.tile-bar(, \.splitter)? \{ display: none; \}/, "the whole bar must not be hidden");
   assert.doesNotMatch(LAYOUT_CSS, /\.wm-narrow \.tile-bar, /);
-  const hideKids = LAYOUT_CSS.match(/\.tile-bar > :not\(\.tile-menus\):not\(\.tile-overflow\) \{ display: none; \}/g) ?? [];
+  const hideKids = LAYOUT_CSS.match(/\.tile-bar > :not\(\.tile-menus\):not\(\.tile-overflow\):not\(\.tile-controls\) \{ display: none; \}/g) ?? [];
   assert.equal(hideKids.length, 2, "once under .wm-narrow and once in the 640px media query");
-  const hideEmpty = LAYOUT_CSS.match(/\.tile-bar:not\(:has\(\.tile-menus, \.tile-overflow\)\) \{ display: none; \}/g) ?? [];
+  const hideEmpty = LAYOUT_CSS.match(/\.tile-bar:not\(:has\(\.tile-menus, \.tile-overflow, \.tile-controls\)\) \{ display: none; \}/g) ?? [];
   assert.equal(hideEmpty.length, 2);
   assert.match(LAYOUT_CSS, /\.wm-narrow \.splitter \{ display: none; \}/);
   const pushRight = LAYOUT_CSS.match(/\.tile-bar > \.tile-overflow \{ margin-left: auto; \}/g) ?? [];
@@ -859,17 +860,25 @@ test("layoutCss: an empty terminal note takes no space inside a tile", () => {
   assert.doesNotMatch(LAYOUT_CSS, /(^|\n)\.termnote:empty/, "scoped to tiles; standalone pages are unchanged");
 });
 
-test("layoutCss: mounted panes inside a tile get the section padding and compact controls, with no colour", () => {
-  assert.doesNotMatch(LAYOUT_CSS, /(^|\n)\.tile-body \.pane[ ,{]/, "tab sections already pad themselves, so an unscoped rule would pad them twice");
-  const pad = /\.tile-body \.wm-mount \.pane:not\(\.pane-fill\) \{([^}]*)\}/.exec(LAYOUT_CSS);
-  assert.ok(pad, "a .tile-body .wm-mount .pane:not(.pane-fill) rule: item views are excluded from the generic padding");
-  assert.match(pad[1]!, /box-sizing: border-box/);
-  assert.match(pad[1]!, /padding: 0\.75rem/);
-  const btn = /\.tile-body \.wm-mount \.pane button, \.tile-body \.wm-mount \.pane a\.btn \{([^}]*)\}/.exec(LAYOUT_CSS);
-  assert.ok(btn, "a compact .tile-body .wm-mount .pane button rule");
-  assert.match(btn[1]!, /padding: 0\.125rem 0\.5rem/);
-  assert.match(btn[1]!, /font-size: 0\.8125rem/);
-  assert.doesNotMatch(pad[1]! + btn[1]!, /color|background/, "colours stay with the theme tokens");
+test("layoutCss: panes fill their tile with no outer padding (the tile border is the only bezel), compact controls live in PANE_CSS, with no colour", () => {
+  const section = /\.tile-body > section \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(section, "a .tile-body > section rule");
+  assert.match(section[1]!, /padding: 0[;\s]/, "sections carry no bezel; text content insets itself with --pane-inset");
+  assert.match(section[1]!, /height: 100%/, "a section fills the tile body, so a pane's own scroller and its scrollbar sit at the tile bottom");
+  const title = /\.tile-title \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(title);
+  assert.match(title[1]!, /min-width: 3\.5rem/, "a controls-heavy bar squeezes the title last: the label stays readable in a half-width tile");
+  assert.doesNotMatch(LAYOUT_CSS, /\.wm-mount \.pane:not\(\.pane-fill\)/, "no generic mounted-pane padding any more");
+  assert.doesNotMatch(LAYOUT_CSS, /\.wm-mount \.pane button/, "compact controls are one rule in PANE_CSS, for every pane");
+  assert.match(PANE_CSS, /\.pane button, \.pane a\.btn \{[^}]*padding: 0\.125rem 0\.5rem/);
+  assert.match(PANE_CSS, /\.pane button, \.pane a\.btn \{[^}]*font-size: var\(--fs-sm\)/);
+  assert.match(PANE_CSS, /--fs-sm: 0\.8125rem/);
+  const fill = /(?:^|\n)\.pane \{([^}]*)\}/.exec(PANE_CSS);
+  assert.ok(fill, "the .pane root rule in PANE_CSS fills the tile");
+  assert.match(fill[1]!, /flex-direction: column/);
+  assert.match(fill[1]!, /height: 100%/);
+  assert.match(fill[1]!, /min-height: 0/);
+  assert.doesNotMatch(fill[1]! + section[1]!, /color|background/, "colours stay with the theme tokens");
 });
 
 test("layoutCss: a browser pane fills its tile and its canvas takes the remaining height, with no colour", () => {

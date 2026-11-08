@@ -18,12 +18,7 @@ import { TERMINAL_DECLARATION } from "./viewMenus.ts";
 export function renderAuditPane(ctx: { journalPath?: string } = {}): string {
   const journal = scriptJson(ctx.journalPath ?? "/v1/journal");
   return `<div class="audit pane">
-<div class="filters">
-  <input id="agent-filter" placeholder="agent">
-  <input id="kind-filter" placeholder="kind">
-  <button id="more">more</button>
-</div>
-<div class="tablewrap"><table>
+<div class="tablewrap pane-body"><table>
 <thead><tr><th>TS</th><th>AGENT</th><th>KIND</th><th>SUMMARY</th></tr></thead>
 <tbody id="audit-rows"></tbody>
 </table></div>
@@ -31,21 +26,37 @@ export function renderAuditPane(ctx: { journalPath?: string } = {}): string {
 <script>
 (() => {
 ${PANE_KIT_JS}
+K.declareSection({
+  id: "audit",
+  title: "Audit",
+  menus: [],
+  status: [{ id: "count", title: "Event count" }],
+  controls: [
+    { kind: "search", command: "audit.agent", label: "Filter by agent", placeholder: "agent" },
+    { kind: "search", command: "audit.kind", label: "Filter by kind", placeholder: "kind" },
+    { kind: "button", command: "audit.more", label: "More" },
+  ],
+});
+const win = K.sectionHost("audit");
 const tbody = document.getElementById("audit-rows");
-const agentInput = document.getElementById("agent-filter");
-const kindInput = document.getElementById("kind-filter");
-const more = document.getElementById("more");
 const LIMIT = 100;
 let from = 0;
 let shown = 0;
+let agentFilter = "";
+let kindFilter = "";
+const count = () => win.setStatus("count", { text: shown + " events" });
+let token = 0;
+let resetToken = 0;
 const load = (reset) => {
+  const mine = ++token;
+  if (reset) resetToken = mine;
+  const stale = () => mine < resetToken;
   if (reset) { tbody.replaceChildren(); from = 0; shown = 0; }
   const qs = new URLSearchParams({ from: String(from), limit: String(LIMIT) });
-  const agent = agentInput.value.trim();
-  const kind = kindInput.value.trim();
-  if (agent) qs.set("agent", agent);
-  if (kind) qs.set("kind", kind);
+  if (agentFilter) qs.set("agent", agentFilter);
+  if (kindFilter) qs.set("kind", kindFilter);
   K.getJson(${journal} + "?" + qs.toString()).then((rows) => {
+    if (stale()) return;
     for (const r of rows) {
       const tr = document.createElement("tr");
       tr.appendChild(K.cell("td", new Date(r.ts).toISOString()));
@@ -57,11 +68,16 @@ const load = (reset) => {
       if (typeof r.seq === "number") from = r.seq + 1;
     }
     if (shown === 0) tbody.replaceChildren(K.messageRow(4, "empty", "No journal entries yet."));
-  }).catch((err) => tbody.replaceChildren(K.messageRow(4, "error", K.errorMessage("journal", err))));
+    count();
+  }).catch((err) => { if (!stale()) tbody.replaceChildren(K.messageRow(4, "error", K.errorMessage("journal", err))); });
 };
-agentInput.addEventListener("change", () => load(true));
-kindInput.addEventListener("change", () => load(true));
-more.addEventListener("click", () => load(false));
+win.onCommand((command, arg) => {
+  if (command === "audit.agent" || command === "audit.kind") {
+    const text = typeof arg === "string" ? arg.trim() : "";
+    if (command === "audit.agent") agentFilter = text; else kindFilter = text;
+    load(true);
+  } else if (command === "audit.more") load(false);
+});
 K.onActivate("audit", () => load(true));
 })();
 </script>`;
@@ -510,22 +526,38 @@ export function renderEscalationsPane(ctx: { escalationsPath?: string; answerPat
   const escalations = scriptJson(ctx.escalationsPath ?? "/v1/escalations");
   const answerPath = scriptJson(ctx.answerPath ?? "/v1/escalations");
   return `<div class="escalations pane">
-<div id="escalations-status" class="meta"></div>
-<ul id="escalations"></ul>
+<div id="escalations-status" class="pane-notice" role="status" hidden></div>
+<ul id="escalations" class="card-list pane-body"></ul>
 </div>
 <script>
 (() => {
 ${PANE_KIT_JS}
+K.declareSection({ id: "escalations", title: "Escalations", menus: [], status: [{ id: "count", title: "Open escalations" }] });
+const win = K.sectionHost("escalations");
 const list = document.getElementById("escalations");
 const status = document.getElementById("escalations-status");
 const items = new Map();
+let emptyEl = null;
 const answer = (id, body) => fetch(${answerPath} + "/" + encodeURIComponent(id) + "/answer", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ body, idempotencyKey: K.uuid() }),
 });
+const emptyLi = () => {
+  const li = document.createElement("li");
+  li.className = "pane-empty";
+  li.textContent = "No open escalations";
+  return li;
+};
+// Keeps the empty-state row and the count in step with the open cards.
+const sync = () => {
+  if (items.size === 0 && !emptyEl) { emptyEl = emptyLi(); list.appendChild(emptyEl); }
+  if (items.size > 0 && emptyEl) { emptyEl.remove(); emptyEl = null; }
+  win.setStatus("count", { text: items.size + " open" });
+};
 const build = (e) => {
   const li = document.createElement("li");
+  li.className = "tone-warn";
   li.appendChild(K.cell("div", e.question));
   li.appendChild(K.cell("div", e.agent + " \u00b7 " + K.age(Date.now() - e.createdAt) + " \u00b7 " + (e.options ?? []).join(" / "), "meta"));
   const input = document.createElement("input");
@@ -537,7 +569,7 @@ const build = (e) => {
       K.check(res);
       li.remove();
       items.delete(e.id);
-      if (items.size === 0) status.textContent = "No open escalations";
+      sync();
     }).catch((err) => {
       li.appendChild(K.cell("div", (err && err.status === 401) ? K.errorMessage("", err) : "Failed to answer: " + String(err), "err"));
     });
@@ -557,11 +589,10 @@ const refresh = () => K.getJson(${escalations} + "?state=open").then((rows) => {
     items.set(e.id, li);
     list.appendChild(li);
   }
-  status.className = "meta";
-  status.textContent = items.size === 0 ? "No open escalations" : "";
+  K.notice(status, "meta", "");
+  sync();
 }).catch((err) => {
-  status.className = "err";
-  status.textContent = K.errorMessage("escalations", err);
+  K.notice(status, "err", K.errorMessage("escalations", err));
 });
 const poller = K.poll(refresh, 5000);
 K.onActivate("escalations", () => poller.start(), () => poller.stop());
@@ -573,25 +604,28 @@ K.onActivate("escalations", () => poller.start(), () => poller.stop());
 export function renderHostsPane(ctx: { placementPath?: string } = {}): string {
   const placement = scriptJson(ctx.placementPath ?? "/v1/placement");
   return `<div class="hosts pane">
-<pre id="hosts-status">loading\u2026</pre>
+<div class="tablewrap pane-body"><table>
+<thead><tr><th>Host</th><th>Max</th><th>Running</th><th>Queued</th><th>Running agents</th><th>Queue</th></tr></thead>
+<tbody id="hosts-rows"></tbody>
+</table></div>
 </div>
 <script>
 (() => {
 ${PANE_KIT_JS}
-const status = document.getElementById("hosts-status");
+K.declareSection({ id: "hosts", title: "Hosts", menus: [], status: [{ id: "count", title: "Load" }] });
+const win = K.sectionHost("hosts");
+const tbody = document.getElementById("hosts-rows");
 const refresh = () => K.getJson(${placement}).then((p) => {
   const running = p.running ?? [];
   const queue = p.queue ?? [];
-  const lines = ["host " + p.host + " \u00b7 max " + p.maxConcurrent];
-  lines.push("running: " + (running.length ? running.join(", ") : "(none)"));
-  lines.push("queue: " + (queue.length ? queue.map((q) => q.agent + " (p" + q.priority + ")").join(", ") : "(empty)"));
-  if (!running.length && !queue.length) lines.push("", "No agents yet \u2014 start one with \`pomtree spawn --task \\"...\\"\`");
-  status.className = "";
-  status.textContent = lines.join("\\n");
-}).catch((err) => {
-  status.className = "err";
-  status.textContent = K.errorMessage("placement", err);
-});
+  const tr = document.createElement("tr");
+  const cells = [p.host, p.maxConcurrent, running.length, queue.length, running.length ? running.join(", ") : "(none)", queue.length ? queue.map((q) => q.agent + " (p" + q.priority + ")").join(", ") : "(empty)"];
+  for (const v of cells) tr.appendChild(K.cell("td", v));
+  const rows = [tr];
+  if (!running.length && !queue.length) rows.push(K.messageRow(6, "empty", "No agents yet \u2014 start one with \`pomtree spawn --task \\"...\\"\`"));
+  tbody.replaceChildren(...rows);
+  win.setStatus("count", { text: running.length + " running, " + queue.length + " queued" });
+}).catch((err) => tbody.replaceChildren(K.messageRow(6, "error", K.errorMessage("placement", err))));
 const poller = K.poll(refresh, 5000);
 K.onActivate("hosts", () => poller.start(), () => poller.stop());
 })();
@@ -603,7 +637,7 @@ K.onActivate("hosts", () => poller.start(), () => poller.stop());
 export function renderSchedulesPane(ctx: { schedulesPath?: string } = {}): string {
   const schedules = scriptJson(ctx.schedulesPath ?? "/v1/schedules");
   return `<div class="schedules pane">
-<div class="tablewrap"><table>
+<div class="tablewrap pane-body"><table>
 <thead><tr><th>ID</th><th>CRON</th><th>TZ</th><th>TASK</th><th>STATE</th><th>MISSED</th><th>OVERLAP</th></tr></thead>
 <tbody id="schedules-rows"></tbody>
 </table></div>
@@ -611,6 +645,8 @@ export function renderSchedulesPane(ctx: { schedulesPath?: string } = {}): strin
 <script>
 (() => {
 ${PANE_KIT_JS}
+K.declareSection({ id: "schedules", title: "Schedules", menus: [], status: [{ id: "count", title: "Schedule count" }] });
+const win = K.sectionHost("schedules");
 const tbody = document.getElementById("schedules-rows");
 const stateOf = (s) => {
   if (s.paused) return "paused";
@@ -619,6 +655,7 @@ const stateOf = (s) => {
   return "active";
 };
 const load = () => K.getJson(${schedules}).then((rows) => {
+  win.setStatus("count", { text: rows.length + (rows.length === 1 ? " schedule" : " schedules") });
   if (rows.length === 0) { tbody.replaceChildren(K.messageRow(7, "empty", "No schedules \u2014 add one with \`pomtree sched add\`")); return; }
   tbody.replaceChildren(...rows.map((s) => {
     const tr = document.createElement("tr");

@@ -219,7 +219,8 @@ const TermKit = globalThis.TermKit || (globalThis.TermKit = (() => {
 `;
 
 export const TERM_CSS = `
-.pane .termhost { box-sizing: border-box; height: min(70vh, 48rem); min-height: 12rem; padding: 0.375rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; position: relative; }
+/* :where() keeps the standalone height at the lowest specificity so the tile rule in layoutCss (.tile-body .termhost) wins by specificity, not by order. */
+:where(.pane) .termhost { box-sizing: border-box; height: min(70vh, 48rem); min-height: 12rem; padding: 0.375rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; position: relative; }
 .pane .termhost .xterm { height: 100%; }
 .pane .termhost .xterm-viewport { background-color: transparent !important; }
 .pane .termnote { color: var(--muted); font-size: 0.875rem; min-height: 1.25rem; }
@@ -233,6 +234,6 @@ export const TERM_CSS = `
 .pane .keymenu { display: flex; flex-wrap: wrap; gap: 0.375rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
 .pane .keymenu[hidden] { display: none; }
 .pane .keybar button[aria-pressed="true"] { color: var(--accent-fg); background: var(--accent); border-color: transparent; }
-@media (max-width: 640px) { .pane .termhost { height: 50vh; } }
-.pane .state.s-pending, .pane .state.s-unknown { color: var(--muted); }
+@media (max-width: 640px) { :where(.pane) .termhost { height: 50vh; } }
+.pane .tracechip:empty { display: none; }
 `;

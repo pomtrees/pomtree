@@ -137,47 +137,70 @@ export function renderNewAgentPane(ctx: { agentsPath?: string; templatesPath?: s
   const agents = scriptJson(ctx.agentsPath ?? "/v1/agents");
   const templates = scriptJson(ctx.templatesPath ?? "/v1/templates");
   return `<div class="newagent pane">
-<h3>New agent</h3>
-<label for="new-task">Task *</label>
-<textarea id="new-task" placeholder="What should the agent do?"></textarea>
-<div id="new-task-err" class="err"></div>
-<label for="new-name">Name (optional)</label>
-<input id="new-name" placeholder="agent">
-<div id="new-template-wrap" hidden>
-  <label for="new-template">Template (optional)</label>
-  <select id="new-template"></select>
-  <div id="new-template-detail" class="meta"></div>
-  <div id="new-template-errors" class="err"></div>
+<div id="new-status" class="pane-notice" role="status"></div>
+<div class="pane-form pane-body">
+<div class="row">
+  <div>
+    <label for="new-task">Task *</label>
+    <textarea id="new-task" placeholder="What should the agent do?"></textarea>
+    <div id="new-task-err" class="err"></div>
+  </div>
+</div>
+<div class="row">
+  <div>
+    <label for="new-name">Name (optional)</label>
+    <input id="new-name" placeholder="agent">
+  </div>
+  <div id="new-template-wrap" hidden>
+    <label for="new-template">Template (optional)</label>
+    <select id="new-template"></select>
+    <div id="new-template-detail" class="meta"></div>
+    <div id="new-template-errors" class="err"></div>
+  </div>
+  <div id="new-model-wrap" hidden>
+    <label for="new-model">Model</label>
+    <select id="new-model"></select>
+    <div id="new-model-hint" class="meta"></div>
+    <div id="new-model-override" class="meta"></div>
+  </div>
 </div>
 <div id="new-template-notice" class="meta"></div>
-<div id="new-model-wrap" hidden>
-  <label for="new-model">Model</label>
-  <select id="new-model"></select>
-  <div id="new-model-hint" class="meta"></div>
-  <div id="new-model-override" class="meta"></div>
+<div class="row">
+  <div>
+    <label for="new-budget">Budget (USD)</label>
+    <input id="new-budget" placeholder="blank = the template's or default budget">
+    <div class="meta">USD; the agent is stopped when spend exceeds this. Blank uses the template's budget, else the daemon default.</div>
+    <div id="new-budget-err" class="err"></div>
+  </div>
+  <div>
+    <label for="new-deadline">Deadline</label>
+    <input id="new-deadline" placeholder="blank = default; e.g. 4h, 90m, 0 = unlimited">
+    <div class="meta">Session limit as a duration (4h, 90m, 45s, or milliseconds); 0 = unlimited.</div>
+    <div id="new-deadline-err" class="err"></div>
+  </div>
 </div>
-<label for="new-budget">Budget (USD)</label>
-<input id="new-budget" placeholder="blank = the template's or default budget">
-<div class="meta">USD; the agent is stopped when spend exceeds this. Blank uses the template's budget, else the daemon default.</div>
-<div id="new-budget-err" class="err"></div>
-<label for="new-deadline">Deadline</label>
-<input id="new-deadline" placeholder="blank = default; e.g. 4h, 90m, 0 = unlimited">
-<div class="meta">Session limit as a duration (4h, 90m, 45s, or milliseconds); 0 = unlimited.</div>
-<div id="new-deadline-err" class="err"></div>
 <details id="new-advanced">
 <summary>Advanced</summary>
-<label for="new-wrapup">Wrap-up time</label>
-<input id="new-wrapup" placeholder="blank = default; e.g. 45s">
-<div class="meta">Time allowed after the result to wrap up (positive duration).</div>
-<div id="new-wrapup-err" class="err"></div>
+<div class="row">
+  <div>
+    <label for="new-wrapup">Wrap-up time</label>
+    <input id="new-wrapup" placeholder="blank = default; e.g. 45s">
+    <div class="meta">Time allowed after the result to wrap up (positive duration).</div>
+    <div id="new-wrapup-err" class="err"></div>
+  </div>
+  <div>
+    <label for="new-fromcommit">From commit (optional)</label>
+    <input id="new-fromcommit" placeholder="commit to start the agent's branch from">
+  </div>
+  <div>
+    <label for="new-sessionref">Session reference (optional)</label>
+    <input id="new-sessionref" placeholder="Pi session to inherit">
+  </div>
+</div>
 <label><input type="checkbox" id="new-fork"> Fork (branch from the parent's latest session)</label>
-<label for="new-fromcommit">From commit (optional)</label>
-<input id="new-fromcommit" placeholder="commit to start the agent's branch from">
-<label for="new-sessionref">Session reference (optional)</label>
-<input id="new-sessionref" placeholder="Pi session to inherit">
 </details>
 <p><button id="new-submit" class="btn">Create agent</button></p>
-<div id="new-status" class="meta"></div>
+</div>
 </div>
 <script>
 (() => {
@@ -219,7 +242,7 @@ const loadModels = () => K.getJson(${models}).then((data) => { modelData = data;
 let lastSig = null;
 let key = null;
 let inflight = false;
-const say = (cls, text) => { status.className = cls; status.textContent = text; };
+const say = (cls, text) => K.notice(status, cls, text);
 const showTemplate = () => {
   const lines = N.templateLines(selectedTemplate());
   tplDetail.replaceChildren(...lines.map((l) => K.cell("div", l)));

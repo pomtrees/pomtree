@@ -12,9 +12,8 @@ import { renderReportsPane, renderTreePane } from "./web.ts";
 test("audit pane is fully inline, fetches the journal path, and has filter and more controls", () => {
   const html = renderAuditPane();
   assert.ok(html.includes('K.getJson("/v1/journal"'));
-  assert.ok(html.includes('id="agent-filter"'));
-  assert.ok(html.includes('id="kind-filter"'));
-  assert.ok(html.includes('id="more"'));
+  assert.ok(html.includes('"audit.agent"') && html.includes('"audit.kind"') && html.includes('"audit.more"'));
+  assert.ok(!html.includes('id="agent-filter"') && !html.includes('id="more"'));
   assert.ok(html.includes("<th>TS</th><th>AGENT</th><th>KIND</th><th>SUMMARY</th>"));
   assert.ok(html.includes('id="audit-rows"'));
   assert.ok(html.includes("textContent")); // rows render via textContent, never innerHTML
@@ -29,6 +28,195 @@ test("audit pane journal path is JSON-escaped and cannot close the script", () =
   assert.equal(html.match(/<\/script>/g)!.length, 1);
   assert.ok(!html.includes("\u2028"));
   assert.ok(html.includes('K.getJson("\\u003c/script>'));
+});
+
+// Shared skeleton: the four browsing panes share one root shape and one pane-body, with no row of their own above it.
+test("audit, hosts, schedules and escalations follow the shared pane skeleton", () => {
+  const panes: [string, string, string, string][] = [
+    ["audit", renderAuditPane(), 'class="audit pane"', '<div class="tablewrap pane-body">'],
+    ["hosts", renderHostsPane(), 'class="hosts pane"', '<div class="tablewrap pane-body">'],
+    ["schedules", renderSchedulesPane(), 'class="schedules pane"', '<div class="tablewrap pane-body">'],
+    ["escalations", renderEscalationsPane(), 'class="escalations pane"', '<ul id="escalations" class="card-list pane-body">'],
+  ];
+  for (const [name, html, root, body] of panes) {
+    assert.ok(html.startsWith("<div " + root.slice(0, -1) + '">') || html.startsWith("<div " + root + ">"), name + " root");
+    assert.equal(html.split("pane-body").length - 1, 1, name + " has exactly one pane-body");
+    assert.ok(html.includes(body), name + " body kind");
+    const markup = html.slice(0, html.indexOf("<script>"));
+    assert.ok(!/<h[1-6]/.test(markup), name + " has no heading");
+    assert.ok(!markup.includes("filters") && !markup.includes("<pre") && !markup.includes("<style"), name + " has no filters row, pre or style");
+    assert.ok(!html.includes("hosts-status") || name === "none", name + " no pre#hosts-status");
+  }
+  assert.ok(!renderHostsPane().includes("hosts-status"));
+});
+
+test("audit declares its filters and More in the window chrome, with a count slot", () => {
+  const { context } = runShell("#/audit");
+  const decl = JSON.parse(runInContext('JSON.stringify(PaneKit.sectionModel("audit").declaration)', context) as string) as {
+    controls: { kind: string; command: string; placeholder?: string; label: string }[];
+    status: { id: string }[];
+  };
+  assert.deepEqual(
+    decl.controls.map((c) => c.kind + ":" + c.command + ":" + (c.placeholder ?? "")),
+    ["search:audit.agent:agent", "search:audit.kind:kind", "button:audit.more:"],
+  );
+  assert.deepEqual(
+    decl.status.map((x) => x.id),
+    ["count"],
+  );
+});
+
+test("audit: a typed filter reloads from the start with the filter, More pages on from the cursor, count tracks rows", async () => {
+  const responses: Record<string, { body: Json }> = {
+    "/v1/journal": {
+      body: [
+        { seq: 4, ts: 0, agent: "a1", kind: "spawn", summary: "s" },
+        { seq: 5, ts: 1, agent: "a1", kind: "spawn", summary: "t" },
+      ],
+    },
+  };
+  const { doc, fetches, context } = runShell("#/audit", responses);
+  await flush();
+  const run = (cmd: string, arg?: string) =>
+    runInContext(`PaneKit.sectionModel("audit").invoke(${JSON.stringify(cmd)}, ${JSON.stringify(arg)}).ok`, context) as boolean;
+  const count = () => runInContext('PaneKit.sectionModel("audit").status().map((x) => x.id + "=" + x.text).join()', context) as string;
+  assert.equal(doc.getElementById("audit-rows")!.children.length, 2);
+  assert.equal(count(), "count=2 events");
+  assert.ok(run("audit.agent", "  a1 "));
+  await flush();
+  assert.ok(fetches.at(-1)!.url.includes("agent=a1") && fetches.at(-1)!.url.includes("from=0"), fetches.at(-1)!.url);
+  assert.ok(run("audit.kind", "spawn"));
+  await flush();
+  assert.ok(fetches.at(-1)!.url.includes("agent=a1") && fetches.at(-1)!.url.includes("kind=spawn"));
+  assert.ok(run("audit.more"));
+  await flush();
+  assert.ok(fetches.at(-1)!.url.includes("from=6"), fetches.at(-1)!.url);
+  assert.equal(doc.getElementById("audit-rows")!.children.length, 4);
+  assert.ok(run("audit.agent", ""));
+  await flush();
+  assert.ok(!fetches.at(-1)!.url.includes("agent="), "an emptied filter is dropped");
+});
+
+// Gated audit fetches: each journal request waits until the test settles it, so responses can arrive out of order.
+function gatedAudit() {
+  const pending: { url: string; ok: (rows: Json) => void; fail: () => void }[] = [];
+  const respond = (url: string) =>
+    new Promise<unknown>((resolve, reject) => {
+      pending.push({
+        url,
+        ok: (rows) => resolve({ ok: true, status: 200, json: async () => rows, text: async () => "", headers: { get: () => null } }),
+        fail: () => reject(new TypeError("fetch failed: ECONNREFUSED")),
+      });
+    });
+  const o = runShell("#/audit", { "/v1/journal": { body: [], respond } });
+  const run = (cmd: string, arg?: string) =>
+    runInContext(`PaneKit.sectionModel("audit").invoke(${JSON.stringify(cmd)}, ${JSON.stringify(arg)}).ok`, o.context) as boolean;
+  const count = () => runInContext('PaneKit.sectionModel("audit").status().map((x) => x.text).join()', o.context) as string;
+  const cells = () => o.doc.getElementById("audit-rows")!.children.map((tr) => tr.children.map((c) => c.textContent).join("|"));
+  const row = (seq: number, agent: string) => ({ seq, ts: 0, agent, kind: "k", summary: "s" + seq });
+  return { ...o, pending, run, count, cells, row };
+}
+
+test("audit: overlapping loads resolved out of order keep only the newest filter's rows", async () => {
+  const g = gatedAudit();
+  await flush();
+  g.pending[0]!.ok([]); // the activation load
+  await flush();
+  g.run("audit.agent", "a1");
+  g.run("audit.agent", "b2");
+  assert.equal(g.pending.length, 3);
+  g.pending[2]!.ok([g.row(1, "b2")]);
+  await flush();
+  g.pending[1]!.ok([g.row(1, "a1"), g.row(2, "a1")]); // the older request resolves last
+  await flush();
+  assert.deepEqual(
+    g.cells().map((c) => c.split("|")[1]),
+    ["b2"],
+  );
+  assert.equal(g.count(), "1 events");
+});
+
+test("audit: a More page that resolves after a filter change is dropped", async () => {
+  const g = gatedAudit();
+  await flush();
+  g.pending[0]!.ok([g.row(1, "x")]);
+  await flush();
+  g.run("audit.more");
+  g.run("audit.agent", "b2");
+  assert.equal(g.pending.length, 3);
+  g.pending[2]!.ok([g.row(1, "b2")]);
+  await flush();
+  g.pending[1]!.ok([g.row(2, "x"), g.row(3, "x")]);
+  await flush();
+  assert.deepEqual(
+    g.cells().map((c) => c.split("|")[1]),
+    ["b2"],
+  );
+  assert.ok(g.pending[2]!.url.includes("agent=b2") && g.pending[2]!.url.includes("from=0"));
+});
+
+test("audit: a failed stale request shows no error over newer rows; the newest failing does", async () => {
+  const g = gatedAudit();
+  await flush();
+  g.pending[0]!.ok([]);
+  await flush();
+  g.run("audit.agent", "a1");
+  g.run("audit.agent", "b2");
+  g.pending[2]!.ok([g.row(1, "b2")]);
+  await flush();
+  g.pending[1]!.fail();
+  await flush();
+  assert.deepEqual(
+    g.cells().map((c) => c.split("|")[1]),
+    ["b2"],
+  );
+  assert.equal(g.count(), "1 events");
+  // negative control: the newest request failing shows the error and keeps the last count
+  g.run("audit.agent", "c3");
+  g.pending[3]!.fail();
+  await flush();
+  assert.ok(g.cells()[0]!.includes("Failed to load journal"), g.cells().join());
+  assert.equal(g.count(), "1 events");
+});
+
+test("hosts renders one table row per host with its cells, and the empty hint", async () => {
+  const body = { host: "h1", maxConcurrent: 2, running: ["a1", "a2"], queue: [{ agent: "q1", priority: 3 }] };
+  const { doc } = runShell("#/hosts", { "/v1/placement": { body } });
+  await flush();
+  const rows = doc.getElementById("hosts-rows")!.children;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(
+    rows[0]!.children.map((c) => c.textContent),
+    ["h1", "2", "2", "1", "a1, a2", "q1 (p3)"],
+  );
+  const none = runShell("#/hosts", { "/v1/placement": { body: { host: "h1", maxConcurrent: 2, running: [], queue: [] } } });
+  await flush();
+  const hint = none.doc.getElementById("hosts-rows")!.children[1]!.children[0]!.textContent;
+  assert.ok(hint.startsWith("No agents yet") && hint.includes('pomtree spawn --task "..."'), hint);
+  assert.equal(runInContext('PaneKit.sectionModel("hosts").status().map((x) => x.text).join()', none.context), "0 running, 0 queued");
+  assert.equal(runInContext('PaneKit.sectionModel("hosts").status().map((x) => x.text).join()', runShell("#/hosts").context), "");
+});
+
+test("escalations: open cards are warn-toned and the empty state is a pane-empty row", async () => {
+  const responses: Record<string, { body: Json }> = {
+    "/v1/escalations": { body: [{ id: "e1", agent: "a", question: "q?", options: [], createdAt: Date.now() }] },
+  };
+  const { doc, context } = runShell("#/escalations", responses);
+  await flush();
+  const list = doc.getElementById("escalations")!;
+  assert.deepEqual(
+    list.children.map((c) => c.className),
+    ["tone-warn"],
+  );
+  assert.equal(doc.getElementById("escalations-status")!.hidden, true);
+  assert.equal(runInContext('PaneKit.sectionModel("escalations").status().map((x) => x.text).join()', context), "1 open");
+  const empty = runShell("#/escalations", { "/v1/escalations": { body: [] } });
+  await flush();
+  const li = empty.doc.getElementById("escalations")!.children;
+  assert.deepEqual(
+    li.map((c) => c.className + ":" + c.textContent),
+    ["pane-empty:No open escalations"],
+  );
 });
 
 test("escalations pane is fully inline, fetches open escalations, and answers via the operator route", () => {
@@ -357,7 +545,7 @@ function fakeHost(): FakeHost {
 
 function runShell(
   hash: string,
-  responses: Record<string, { ok?: boolean; status?: number; body: Json; fail?: boolean }> = {},
+  responses: Record<string, { ok?: boolean; status?: number; body: Json; fail?: boolean; respond?: (url: string) => Promise<unknown> }> = {},
   clock?: () => number,
   store: Record<string, string> = {},
 ) {
@@ -595,6 +783,7 @@ function runShell(
     fetch: (url: string, init?: { method?: string; body?: string }) => {
       fetches.push({ url, init });
       const r = responses[url.split("?")[0]!] ?? { body: [] };
+      if (r.respond) return r.respond(url) as Promise<never>;
       if (r.fail) return Promise.reject(new TypeError("fetch failed: ECONNREFUSED 127.0.0.1:1"));
       const status = r.status ?? 200;
       return Promise.resolve({ ok: r.ok ?? status < 400, status, json: async () => r.body, text: async () => String(r.body), headers: { get: () => null } });
@@ -1189,8 +1378,9 @@ test("tabs load on activation (reports empty state, audit empty state, hosts, sc
   }
   const { doc, intervals } = runShell("#/hosts", { "/v1/placement": { body: { host: "h1", maxConcurrent: 2, running: [], queue: [] } } });
   await flush();
-  const text = doc.getElementById("hosts-status")!.textContent;
-  assert.ok(text.includes("host h1") && text.includes("No agents yet"));
+  const hostRows = doc.getElementById("hosts-rows")!.children;
+  assert.equal(hostRows[0]!.children[0]!.textContent, "h1");
+  assert.ok(hostRows[1]!.children[0]!.textContent.startsWith("No agents yet"));
   assert.equal(intervals.length, 1); // polls while active
 });
 
@@ -1201,6 +1391,10 @@ test("401 maps to the not-signed-in message on every pane", async () => {
   const e = runShell("#/escalations", { "/v1/escalations": { status: 401, body: {} } });
   await flush();
   assert.equal(e.doc.getElementById("escalations-status")!.textContent, "Not signed in \u2014 reload to sign in");
+  assert.equal(e.doc.getElementById("escalations-status")!.className, "pane-notice err");
+  const h = runShell("#/hosts", { "/v1/placement": { status: 401, body: {} } });
+  await flush();
+  assert.equal(h.doc.getElementById("hosts-rows")!.children[0]!.children[0]!.textContent, "Not signed in \u2014 reload to sign in");
   const o = runShell("#/audit", { "/v1/journal": { status: 500, body: {} } });
   await flush();
   assert.equal(o.doc.getElementById("audit-rows")!.children[0]!.children[0]!.textContent, "Failed to load journal: Error: HTTP 500");
@@ -1211,28 +1405,47 @@ test("escalations: empty state, polling, refresh adds new asks and drops answere
   const { doc, intervals } = runShell("#/escalations", responses);
   await flush();
   const status = doc.getElementById("escalations-status")!;
-  assert.equal(status.textContent, "No open escalations");
+  assert.equal(status.textContent, "");
+  assert.equal(doc.getElementById("escalations")!.children[0]!.textContent, "No open escalations");
   assert.equal(intervals.length, 1);
   responses["/v1/escalations"] = { body: [{ id: "e1", agent: "a", question: "q?", options: [], createdAt: Date.now() }] };
   intervals[0]!.fn();
   await flush();
   assert.equal(doc.getElementById("escalations")!.children.length, 1);
+  assert.equal(doc.getElementById("escalations")!.children[0]!.className, "tone-warn", "the empty row is replaced by the card");
   assert.equal(status.textContent, "");
 });
 
 test("tree: rows link to #/terminal/<fullId>, empty state guides and links to #/new, SSE badge tracks errors", () => {
-  const { doc, es } = runShell("#/tree");
+  const { doc, es, context } = runShell("#/tree");
   const stream = es[0]!;
-  const conn = doc.getElementById("tree-conn")!;
-  assert.equal(conn.textContent, "connecting");
+  // The shell pane has no #tree-conn: the badge is the window's connection status slot (ok -> ok tone, stale -> warn tone).
+  assert.equal(doc.getElementById("tree-conn")?.textContent ?? "", "");
+  const model = (
+    context as {
+      PaneKit: {
+        sectionModel(id: string): {
+          status(): { id: string; text: string; tone?: string | null }[];
+          invoke(c: string): { ok: boolean };
+          controls(): { command: string; label: string; primary?: boolean }[];
+        };
+      };
+    }
+  ).PaneKit.sectionModel("tree");
+  const slot = (id: string) => {
+    const s = model.status().find((x) => x.id === id);
+    return s ? `${s.text}|${s.tone ?? ""}` : "";
+  };
+  assert.equal(slot("connection"), "connecting|warn");
   const rows = stream.handlers.get("rows")!;
   rows({ data: "[]" });
-  assert.equal(conn.textContent, "connected");
+  assert.equal(slot("connection"), "connected|ok");
+  assert.equal(slot("count"), "0 agents|");
   const empty = doc.getElementById("tree-rows")!.children[0]!.children[0]!;
   assert.ok(empty.textContent.includes("No agents yet"));
   assert.equal(empty.children[0]!.href, "#/new");
   stream.onerror!();
-  assert.equal(conn.textContent, "stale");
+  assert.equal(slot("connection"), "stale|warn");
   rows({
     data: JSON.stringify([
       {
@@ -1254,10 +1467,37 @@ test("tree: rows link to #/terminal/<fullId>, empty state guides and links to #/
   const tr = doc.getElementById("tree-rows")!.children[0]!;
   assert.equal(tr.className, "s-running");
   assert.equal(tr.children[0]!.children[0]!.href, "#/terminal/abcd1234-full%2Fx");
+  // the depth indent adds to the cell padding token; a bare em value would pull a depth-0 name flush against the tile border
+  assert.equal(tr.children[0]!.style.paddingLeft, "calc(var(--cell-x) + 1.5em)");
+  assert.equal(slot("count"), "1 agent|");
 });
 
-test("the tree pane has a '+ New agent' button", () => {
-  assert.ok(renderTreePane().includes('href="#/new">+ New agent'));
+test("the tree pane declares a primary 'New agent' control that navigates to #/new; the pane itself has no button row", () => {
+  const html = renderTreePane();
+  const markup = html.slice(0, html.indexOf("<script>"));
+  assert.ok(!markup.includes("New agent"));
+  assert.ok(!markup.includes('class="btn"'));
+  assert.ok(!markup.includes("tree-conn"));
+  const { context, location } = runShell("#/tree");
+  const model = (
+    context as {
+      PaneKit: {
+        sectionModel(id: string): {
+          controls(): { kind: string; command: string; label: string; primary?: boolean }[];
+          invoke(c: string): { ok: boolean };
+        };
+      };
+    }
+  ).PaneKit.sectionModel("tree");
+  assert.equal(
+    model
+      .controls()
+      .map((c) => `${c.kind}|${c.command}|${c.label}|${c.primary === true}`)
+      .join(","),
+    "button|tree.new|New agent|true",
+  );
+  assert.equal(model.invoke("tree.new").ok, true);
+  assert.equal(location.hash, "#/new");
 });
 
 // --- New agent form ---------------------------------------------------------
@@ -1551,7 +1791,7 @@ test("new-agent logic: server error text is verbatim, trimmed, control-stripped;
   const st = r.doc.getElementById("new-status")!;
   assert.equal(st.textContent, "HTTP 400: " + xss); // set as text, never parsed as HTML
   assert.equal(st.children.length, 0);
-  assert.equal(st.className, "err");
+  assert.equal(st.className, "pane-notice err");
   const net = runShell("#/new", { "/v1/agents": { body: null, fail: true } });
   await flush();
   net.doc.getElementById("new-task")!.value = "t";
@@ -1581,6 +1821,19 @@ test("new agent pane leaves the budget blank (template/default budget applies) a
     assert.ok(html.indexOf(`id="${id}"`) > html.indexOf('id="new-advanced"'), `${id} is under Advanced`);
   }
   assert.ok(html.indexOf('id="new-deadline"') < html.indexOf('id="new-advanced"'), "deadline stays visible");
+});
+
+test("new-agent pane: shared pane skeleton (root classes, no heading, notice then one body, no max-width or style)", () => {
+  const html = renderNewAgentPane();
+  const markup = html.slice(0, html.indexOf("<script>"));
+  assert.ok(markup.startsWith('<div class="newagent pane">'));
+  assert.doesNotMatch(markup, /<h[1-6][\s>]/);
+  assert.equal(markup.split("pane-body").length - 1, 1);
+  assert.match(markup, /<div id="new-status" class="pane-notice" role="status"><\/div>\s*<div class="pane-form pane-body">/);
+  assert.equal(markup.indexOf('id="new-status"'), markup.indexOf("<div", 10) + 5, "the notice is the first child");
+  assert.doesNotMatch(markup, /max-width|<style|style=/);
+  assert.match(markup, /<div class="row">/);
+  assert.ok(markup.indexOf('id="new-task"') > markup.indexOf('class="pane-form pane-body"'));
 });
 
 test("new-agent logic: deadline/wrapup/fork/fromCommit/sessionRef appear in the body only when set", () => {

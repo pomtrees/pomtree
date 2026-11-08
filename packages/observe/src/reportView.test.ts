@@ -22,8 +22,10 @@ interface N {
   setAttribute(k: string, v: string): void;
   addEventListener(t: string, f: (ev: unknown) => void): void;
   querySelector(sel: string): N | null;
+  click(): void;
   toString(): string;
 }
+const clicked: string[] = [];
 const makeNode = (tag: string): N => {
   const n: N = {
     tagName: tag,
@@ -54,6 +56,9 @@ const makeNode = (tag: string): N => {
     },
     querySelector(sel) {
       return walk(n).find((x) => x !== n && x.tagName === sel) ?? null;
+    },
+    click() {
+      clicked.push(n.href);
     },
     toString: () => `<${tag}>`,
   };
@@ -102,13 +107,27 @@ function setup(
   const def = kit.view("report")!;
   const titles: string[] = [];
   const root = makeNode("div");
-  const host = { setTitle: (t: string) => titles.push(t), navigate: () => {} };
+  const statuses: { slot: string; text: string; tone?: string }[] = [];
+  const menuStates: { command: string; state: string }[] = [];
+  let onCommand: (c: string, a?: unknown) => void = () => {};
+  const host = {
+    setTitle: (t: string) => titles.push(t),
+    navigate: () => {},
+    setStatus: (slot: string, v: { text: string; tone?: string }) => statuses.push({ slot, ...v }),
+    setMenuState: (command: string, st: Record<string, unknown>) => menuStates.push({ command, state: JSON.stringify(st) }),
+    onCommand: (f: typeof onCommand) => {
+      onCommand = f;
+    },
+  };
   const mount = () => def.mount(root, params, host);
   return {
     def,
     kit,
     root,
     titles,
+    statuses,
+    menuStates,
+    command: (c: string) => onCommand(c),
     fetches,
     mount,
     text: () =>
@@ -157,11 +176,10 @@ test("html renders in an iframe with an EMPTY sandbox that fills the window, a l
   assert.equal(frames[0]!.attrs.get("sandbox"), "");
   assert.ok(![...frames[0]!.attrs.values()].some((v) => v.includes("allow-")));
   assert.equal(frames[0]!.attrs.get("src"), `${BASE}/render`);
-  assert.ok(frames[0]!.style.cssText!.includes("height:100%"));
-  assert.ok(!frames[0]!.style.cssText!.includes("70vh"));
-  assert.ok(s.text().includes("Rendered in a locked sandbox: scripts and network are disabled."));
-  assert.ok(s.text().includes("Download") && s.text().includes("View source"));
-  assert.ok(nodes.some((n) => n.tagName === "a" && n.href === `${BASE}?raw=1`));
+  assert.equal(frames[0]!.className, "report-frame");
+  assert.deepEqual(frames[0]!.style, {}, "sizing comes from the shared CSS class, not inline style");
+  assert.ok(!nodes.some((n) => n.className === "report-banner"), "the banner row is gone: the footer carries it");
+  assert.deepEqual({ ...s.statuses.at(-1) }, { slot: "sandbox", text: "sandboxed", tone: "info" });
   assert.ok(!s.text().includes("scripts-enabled"));
 });
 
@@ -169,8 +187,8 @@ test("View source fetches the raw text into a <pre> via textContent", async () =
   const s = setup({ [BASE]: { body: { name: "x.html", mediaType: "text/html" } }, [`${BASE}?raw=1`]: { text: "<b>hi</b>" } });
   s.mount();
   await flush();
-  const src = walk(s.root).find((n) => n.tagName === "a" && n.textContent === "View source")!;
-  src.listeners.get("click")!({ preventDefault() {} });
+  assert.equal(s.menuStates.at(-1)!.state, '{"visible":true}', "View source shows for sandboxed types");
+  s.command("report.view-source");
   await flush();
   const pre = walk(s.root).find((n) => n.tagName === "pre")!;
   assert.equal(pre.textContent, "<b>hi</b>");
@@ -183,7 +201,8 @@ test("images use <img> via /render, filling the window", async () => {
   const nodes = walk(s.root);
   const img = nodes.find((n) => n.tagName === "img")!;
   assert.equal(img.attrs.get("src"), `${BASE}/render`);
-  assert.ok(img.style.cssText!.includes("height:100%"));
+  assert.equal(img.className, "report-img");
+  assert.deepEqual(img.style, {});
   assert.ok(!nodes.some((n) => n.tagName === "iframe"));
 });
 
@@ -200,7 +219,9 @@ test("markdown is fetched raw and rendered through MdKit; plain text and json go
   txt.mount();
   await flush();
   assert.equal(walk(txt.root).find((n) => n.tagName === "pre")!.textContent, "<script>x</script>");
-  assert.ok(walk(txt.root).some((n) => n.tagName === "a" && n.textContent === "Download"));
+  assert.ok(!walk(txt.root).some((n) => n.tagName === "a"), "no in-pane Download link: it is a View menu command");
+  assert.ok(!walk(txt.root).some((n) => n.tagName === "strong"));
+  assert.equal(txt.statuses.length, 0, "no sandbox status for text");
 });
 
 test("unknown types are download-only with the cannot-be-previewed note", async () => {
@@ -210,14 +231,14 @@ test("unknown types are download-only with the cannot-be-previewed note", async 
   const nodes = walk(s.root);
   assert.ok(!nodes.some((n) => n.tagName === "iframe" || n.tagName === "img"));
   assert.ok(s.text().includes("This report type (application/pdf) cannot be previewed; use Download."));
-  assert.ok(nodes.some((n) => n.tagName === "a" && n.href === `${BASE}?raw=1`));
 });
 
 test("the report name is rendered as text, never as markup", async () => {
   const s = setup({ [BASE]: { body: { name: "<img src=x onerror=1>", mediaType: "application/pdf" } } });
   s.mount();
   await flush();
-  assert.ok(walk(s.root).some((n) => n.tagName === "strong" && n.textContent === "<img src=x onerror=1>"));
+  assert.equal(s.titles.at(-1), "Report \u00b7 <img src=x onerror=1>", "the name reaches only the tile title (the host sets it as text)");
+  assert.ok(!walk(s.root).some((n) => n.textContent.includes("onerror")));
   assert.ok(!walk(s.root).some((n) => n.tagName === "img"));
 });
 
@@ -283,7 +304,13 @@ async function index(rows: unknown[], standalone = false) {
   const hrefs = walk(tbody)
     .filter((n) => n.tagName === "a")
     .map((n) => n.href);
-  return { hrefs, html };
+  const kit = (context as { PaneKit: { sectionModel(id: string): { status(): { id: string; text: string }[] } } }).PaneKit;
+  const count =
+    kit
+      .sectionModel("reports")
+      .status()
+      .find((x) => x.id === "count")?.text ?? "";
+  return { hrefs, html, count };
 }
 
 const row = { agent: "a b", report: { id: "r/1", agent: "a b", name: "x", mediaType: "text/html", sizeBytes: 3, createdAt: 0 } };
@@ -303,6 +330,14 @@ test("the index has no in-pane viewer, no hash route parsing and no hashchange l
   assert.ok(html.includes('id="reports-rows"'));
 });
 
+test("the index reports its row count in the window's count slot and fills the pane body", async () => {
+  assert.equal((await index([row])).count, "1 report");
+  assert.equal((await index([row, row])).count, "2 reports");
+  assert.equal((await index([])).count, "0 reports");
+  const { html } = await index([]);
+  assert.ok(html.startsWith('<div class="reports pane">\n<div class="tablewrap pane-body">'));
+});
+
 test("the standalone page has no window manager: its names link to the raw download and it ships no viewer", async () => {
   const r = await index([row], true);
   assert.deepEqual(r.hrefs, ["/v1/agents/a%20b/reports/r%2F1?raw=1", "/v1/agents/a%20b/reports/r%2F1?raw=1"]);
@@ -314,4 +349,90 @@ test("the Reports tab ships the report view once, and the shell finds it with th
   assert.equal(html.split('K.registerView({ id: "report"').length - 1, 1);
   assert.ok(html.includes('data-tab="reports"'));
   assert.ok(!html.includes('data-tab="report"') && !html.includes('data-nav="report"'));
+});
+
+test("the report pane has no title row, no banner and no report-head; the body fills the window", async () => {
+  const s = setup({ [BASE]: { body: { name: "x.html", mediaType: "text/html" } } });
+  s.mount();
+  await flush();
+  const nodes = walk(s.root);
+  assert.ok(!nodes.some((n) => ["report-head", "report-name", "report-banner", "report-actions"].includes(n.className)));
+  const wrap = s.root.children[0]!;
+  assert.deepEqual(
+    wrap.children.map((n) => n.className),
+    ["report-body"],
+  );
+  assert.ok(!nodes.some((n) => Object.keys(n.style).length > 0), "no inline style anywhere");
+});
+
+test("markdown and text content get a token inset on the inner content only, not the body", async () => {
+  const md = setup({ [BASE]: { body: { name: "n.md", mediaType: "text/markdown" } }, [`${BASE}?raw=1`]: { text: "# T" } });
+  md.mount();
+  await flush();
+  const nodes = walk(md.root);
+  assert.deepEqual(nodes.find((n) => n.className === "md")!.style, {}, "the inset is the shared .report-body .md rule");
+  assert.deepEqual(nodes.find((n) => n.className === "report-body")!.style, {});
+});
+
+test("the report declaration's commands each have a handler; Download opens the raw file, unknown commands do nothing", async () => {
+  const { REPORT_DECLARATION } = await import("./viewMenus.ts");
+  const s = setup({ [BASE]: { body: { name: "x.html", mediaType: "text/html" } }, [`${BASE}?raw=1`]: { text: "src" } });
+  s.mount();
+  await flush();
+  const cmds = (REPORT_DECLARATION.menus ?? []).flatMap((m) => m.items.filter((i) => i.kind !== "separator").map((i) => (i as { command: string }).command));
+  const reg = s.kit as unknown as { declaration(id: string): { menus: { items: { command?: string }[] }[]; status: { id: string }[] } };
+  assert.equal(JSON.stringify(reg.declaration("report").status.map((x) => x.id)), '["sandbox"]');
+  assert.equal(
+    JSON.stringify(
+      reg
+        .declaration("report")
+        .menus.flatMap((m) => m.items.map((i) => i.command ?? ""))
+        .filter(Boolean),
+    ),
+    JSON.stringify(cmds),
+    "the registered declaration is REPORT_DECLARATION",
+  );
+  for (const c of cmds) assert.doesNotThrow(() => s.command(c), c);
+  clicked.length = 0;
+  s.command("report.download");
+  assert.deepEqual(clicked, [`${BASE}?raw=1`]);
+  clicked.length = 0;
+  assert.doesNotThrow(() => s.command("report.nope"));
+  assert.deepEqual(clicked, []);
+});
+
+const enabledOf = (s: ReturnType<typeof setup>, command: string) => {
+  const last = s.menuStates.filter((m) => m.command === command && m.state.includes("enabled")).at(-1);
+  return last ? (JSON.parse(last.state) as { enabled: boolean }).enabled : undefined;
+};
+
+test("Download and View source are disabled before the report loads and enabled after it loads", async () => {
+  const s = setup({ [BASE]: { body: { name: "x.html", mediaType: "text/html" } }, [`${BASE}?raw=1`]: { text: "src" } });
+  s.mount();
+  assert.equal(enabledOf(s, "report.download"), false);
+  assert.equal(enabledOf(s, "report.view-source"), false);
+  clicked.length = 0;
+  s.command("report.download");
+  s.command("report.view-source");
+  await Promise.resolve();
+  assert.deepEqual(clicked, [], "a disabled Download downloads nothing");
+  assert.ok(!s.fetches.includes(`${BASE}?raw=1`), "a disabled View source fetches nothing");
+  await flush();
+  assert.equal(enabledOf(s, "report.download"), true);
+  assert.equal(enabledOf(s, "report.view-source"), true);
+  s.command("report.download");
+  assert.deepEqual(clicked, [`${BASE}?raw=1`]);
+});
+
+test("Download and View source stay disabled when the report failed to load, and downloading does nothing", async () => {
+  for (const status of [404, 500]) {
+    const s = setup({ [BASE]: { status } });
+    s.mount();
+    await flush();
+    assert.equal(enabledOf(s, "report.download"), false, String(status));
+    assert.equal(enabledOf(s, "report.view-source"), false, String(status));
+    clicked.length = 0;
+    s.command("report.download");
+    assert.deepEqual(clicked, []);
+  }
 });

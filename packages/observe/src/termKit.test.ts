@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { UI_CSS } from "./shell.ts";
-import { TERM_LOGIC_JS, TERMINAL_WS_PATH } from "./termKit.ts";
+import { LAYOUT_CSS } from "./layoutCss.ts";
+import { TERM_CSS, TERM_LOGIC_JS, TERMINAL_WS_PATH } from "./termKit.ts";
 import { THEME_CSS } from "./themeCss.ts";
 
 interface Mods {
@@ -383,4 +384,14 @@ test("the 16 dark ANSI colours are pairwise distinct (RGB distance >= 40 of 441)
       const d = Math.hypot(...a.map((v, k) => v - (b[k] as number)));
       assert.ok(d >= 40, `ANSI ${i} ${ansiDark[i]} and ${j} ${ansiDark[j]} are ${d.toFixed(1)} apart`);
     }
+});
+
+test("TERM_CSS has no orphaned .state rule, and the tile height rule wins by specificity", () => {
+  assert.ok(!TERM_CSS.includes(".state.s-"), "no producer sets class state with s-pending or s-unknown");
+  // Standalone heights sit at the lowest specificity (:where), so .tile-body .termhost beats them whatever the composition order.
+  assert.ok(TERM_CSS.includes(":where(.pane) .termhost { box-sizing"));
+  assert.ok(TERM_CSS.includes("@media (max-width: 640px) { :where(.pane) .termhost { height: 50vh; } }"));
+  assert.ok(!/^\.pane \.termhost \{/m.test(TERM_CSS) && !TERM_CSS.includes("{ .pane .termhost {"));
+  assert.ok(LAYOUT_CSS.includes(".tile-body .termhost { height: 100%"));
+  assert.ok(TERM_CSS.includes(".pane .tracechip:empty { display: none; }"), "an empty trace chip collapses");
 });

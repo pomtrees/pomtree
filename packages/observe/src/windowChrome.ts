@@ -65,6 +65,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return e;
     };
     const controlsEl = el("div", "tile-controls");
+    // TODO(pane-controls-keyboard): role=toolbar has no arrow-key navigation (every control is tabbable), and the scrollable .pane-notice is not keyboard-focusable.
     controlsEl.setAttribute("role", "toolbar");
     controlsEl.setAttribute("aria-label", title + " controls");
     const menusEl = el("div", "tile-menus");
@@ -267,7 +268,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
 
     const buildControls = () => {
       ctlRecs = model.controls().map((c) => {
-        const rec = { ctl: c, el: null, shown: c.kind === "search" ? c.value : "" };
+        const rec = { ctl: c, el: null, shown: c.kind === "search" ? c.value : "", sent: null };
         if (c.kind === "button") {
           rec.el = el("button", "tile-ctl" + (c.primary ? " primary" : ""), c.label);
           rec.el.setAttribute("type", "button");
@@ -281,7 +282,13 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
           input.value = c.value;
           let timer = null;
           const stop = () => { if (timer !== null) { clearT(timer); timer = null; } };
-          const send = () => { stop(); if (!destroyed) run(c.command, input.value, c.label); };
+          // Idempotent: Chrome also fires a search event after Enter and after the clear button, so an unchanged value is skipped.
+          const send = () => {
+            stop();
+            if (destroyed || input.value === rec.sent) return;
+            rec.sent = input.value;
+            run(c.command, input.value, c.label);
+          };
           rec.stop = stop;
           input.addEventListener("input", () => {
             stop();
@@ -311,7 +318,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
         if (c.kind === "button") rec.el.textContent = c.label;
         else if (c.value !== rec.shown) {
           rec.shown = c.value;
-          if (rec.el.value !== c.value) rec.el.value = c.value;
+          if (rec.el.value !== c.value) { rec.el.value = c.value; rec.sent = null; }
         }
       });
       controlsEl.hidden = !any;

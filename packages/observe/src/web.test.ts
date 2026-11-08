@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LiveStream, displayRows, encodeSseFrame, renderLivePage, renderReportsPage } from "./web.ts";
+import { LiveStream, displayRows, encodeSseFrame, renderLivePage, renderReportsPage, renderTreePane } from "./web.ts";
 import type { DisplayRow } from "./web.ts";
 import { buildTree } from "./tree.ts";
 import { agent, entry } from "./fixtures.ts";
@@ -107,4 +107,32 @@ test("the reports page title is HTML-escaped and the reports path cannot close t
   assert.equal(html.match(/<\/script>/g)!.length, 1);
   assert.ok(!html.includes("\u2028"));
   assert.ok(html.includes('K.getJson("\\u003c/script>'));
+});
+
+test("tree pane markup is the shared skeleton: one pane-body tablewrap, no toolbar row, no New agent link, no connection element", () => {
+  const html = renderTreePane();
+  const pane = html.slice(0, html.indexOf("<script>"));
+  assert.ok(pane.startsWith('<div class="tree pane">\n<div class="tablewrap pane-body"><table>'));
+  assert.equal(pane.match(/pane-body/g)?.length, 1);
+  assert.ok(!pane.includes("New agent"));
+  assert.ok(!pane.includes("tree-conn"));
+  assert.ok(html.includes("K.declareSection({"));
+  assert.ok(html.includes('command: "tree.new", label: "New agent", primary: true'));
+  assert.ok(html.includes('{ id: "connection", title: "Connection" }'));
+  assert.ok(html.includes('{ ok: "ok", stale: "warn" }'));
+});
+
+test("standalone live page keeps its #tree-conn badge in the heading and offers no New agent", () => {
+  const html = renderLivePage();
+  assert.ok(html.includes('<h1>pomtree live <span id="tree-conn" class="conn"></span></h1>'));
+  assert.ok(!html.includes("+ New agent"));
+  assert.ok(!html.includes('<a class="btn"'));
+});
+
+test("reports pane markup: reports root with one pane-body tablewrap and a count slot", () => {
+  const html = renderReportsPage();
+  const pane = html.slice(html.indexOf('<div class="reports pane">'), html.indexOf("<script>"));
+  assert.ok(pane.startsWith('<div class="reports pane">\n<div class="tablewrap pane-body"><table>'));
+  assert.equal(pane.match(/pane-body/g)?.length, 1);
+  assert.ok(html.includes('K.declareSection({ id: "reports", title: "Reports", status: [{ id: "count", title: "Reports" }] })'));
 });

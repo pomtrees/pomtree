@@ -171,3 +171,17 @@ test("auth guard fires once on a 401 fetch and probes on EventSource error", asy
   await g.fetch("/x");
   assert.equal(fired, 1);
 });
+
+test("tree and reports panes ship the shared skeleton and declare their window sections", () => {
+  const html = renderShell({
+    tabs: [
+      { id: "tree", title: "Tree", render: () => renderTreePane() },
+      { id: "reports", title: "Reports", render: () => renderReportsPane() },
+    ],
+  });
+  assert.ok(html.includes('<div class="tree pane">\n<div class="tablewrap pane-body">'));
+  assert.ok(html.includes('<div class="reports pane">\n<div class="tablewrap pane-body">'));
+  assert.ok(html.includes('id: "tree"'));
+  assert.ok(html.includes('id: "reports"'));
+  assert.ok(!html.includes("+ New agent"));
+});
