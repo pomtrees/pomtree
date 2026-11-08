@@ -9,7 +9,7 @@ test("renderShell emits the launcher bar, the hidden sections, and the UI runtim
     title: "observe",
     tabs: [
       { id: "live", title: "Live", render: () => "<table></table>" },
-      { id: "reports", title: "Reports", shortTitle: "Rep", render: () => "<p>r</p>" },
+      { id: "reports", title: "Reports", render: () => "<p>r</p>" },
     ],
   });
   assert.ok(html.includes("<title>observe</title>"));

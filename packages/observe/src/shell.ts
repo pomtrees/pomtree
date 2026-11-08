@@ -22,8 +22,6 @@ export interface UiTabCtx {
 export interface UiTab {
   id: string;
   title: string;
-  shortTitle?: string;
-  nav?: "main" | "more";
   render(ctx: UiTabCtx): string;
 }
 

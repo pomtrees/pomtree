@@ -43,7 +43,6 @@ export const INBOX_CSS = `
 .pane .compose button { flex: 0 0 auto; min-height: 2.75rem; }
 .pane #inbox-status { position: sticky; top: 3.25rem; z-index: 5; }
 .pane #inbox-status:not(:empty) { padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
-nav a .unread { display: inline-block; min-width: 1.1em; margin-left: 0.375rem; padding: 0 0.375rem; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 0.75rem; line-height: 1.4; text-align: center; }
 `;
 
 /** The Inbox pane's browser script, served as a static asset at INBOX_SCRIPT_URL (config is read from the #inbox-config JSON block). */
@@ -55,22 +54,11 @@ const status = document.getElementById("inbox-status");
 const MAX_MESSAGES = 200;
 const items = new Map(); // key -> { key, kind, id, replyTo, purpose, agent, subject, createdAt, deadlineAt, seq, el, ageEl, busy, pending }
 let active = false;
-let unread = new Set();
 let lastApprovals = [];
 let lastEscalations = null;
 let lastSeq = 0;
 
 const say = (text, bad) => { status.className = bad ? "err" : "meta"; status.textContent = text; };
-
-const paintBadge = () => {
-  for (const a of document.querySelectorAll('nav a[data-nav="inbox"]')) {
-    let b = null;
-    for (const c of (a.children || [])) if (c.className === "unread") b = c;
-    if (unread.size === 0) { if (b) b.remove(); continue; }
-    if (!b) { b = K.cell("span", "", "unread"); a.appendChild(b); }
-    b.textContent = String(unread.size);
-  }
-};
 
 const pinned = (it) => it.kind === "approval" || it.purpose === "ask";
 const rank = (a, b) => {
@@ -84,7 +72,7 @@ const dollars = (micros) => "$" + (micros / 1e6).toFixed(Math.round(micros / 1e4
 
 const dueText = (it) => it.deadlineAt ? "due in " + K.age(Math.max(0, it.deadlineAt - Date.now())) : "";
 
-const forget = (it) => { it.el.remove(); items.delete(it.key); unread.delete(it.key); };
+const forget = (it) => { it.el.remove(); items.delete(it.key); };
 
 // POST one reply. The idempotency key is issued once per distinct payload and reused if the same click is retried.
 const send = (it, fields) => {
@@ -160,7 +148,7 @@ const build = (it) => {
     if (it.holder !== null) act("Pass", "", () => send(it, { decision: "pass" }));
   } else {
     row.className = "actions";
-    act("Dismiss", "", () => { forget(it); say(items.size === 0 ? "Inbox empty" : "", false); paintBadge(); });
+    act("Dismiss", "", () => { forget(it); say(items.size === 0 ? "Inbox empty" : "", false); });
   }
   li.appendChild(row);
   it.el = li;
@@ -188,7 +176,6 @@ const render = () => {
   list.replaceChildren(...sorted.map((it) => it.el));
   if (items.size > 0 && status.textContent === "Inbox empty") say("", false);
   if (items.size === 0 && !status.textContent) say("Inbox empty", false);
-  paintBadge();
   deepLink();
 };
 
@@ -204,7 +191,6 @@ const addMessage = (m) => {
   }
   build(it);
   items.set(key, it);
-  if (!active) unread.add(key);
   let msgs = [...items.values()].filter((x) => x.kind === "message").sort(rank);
   for (const old of msgs.slice(MAX_MESSAGES)) if (!pinned(old)) forget(old);
 };
@@ -222,8 +208,7 @@ const refreshApprovals = () => K.getJson(cfg.approvals + "?state=pending").then(
       subject: a.summary, actionKind: a.kind, requestedMicros: a.requestedMicros, deadlineAt: a.deadlineAt, createdAt: 0, seq: 0, busy: false, pending: null };
     build(it);
     items.set(key, it);
-    if (!active) unread.add(key);
-  }
+    }
   if (status.className === "err" && /^Failed to load approvals/.test(status.textContent)) say("", false);
   render();
 }).catch((err) => say(K.errorMessage("approvals", err), true));
@@ -252,8 +237,7 @@ const refreshEscalations = () => K.getJson(cfg.escalations + "?state=open").then
       subject: e.question, options: e.options, holder: e.holder, createdAt: e.createdAt, seq: 0, busy: false, pending: null };
     build(it);
     items.set(key, it);
-    if (!active) unread.add(key);
-  }
+    }
   if (status.className === "err" && /^Failed to load escalations/.test(status.textContent)) say("", false);
   render();
 }).catch((err) => say(K.errorMessage("escalations", err), true));
@@ -338,7 +322,7 @@ const open = () => {
 open();
 
 const poller = K.poll(refresh, 5000);
-K.onActivate("inbox", () => { active = true; unread = new Set(); poller.start(); refreshAgents(); render(); }, () => { active = false; poller.stop(); });
+K.onActivate("inbox", () => { active = true; poller.start(); refreshAgents(); render(); }, () => { active = false; poller.stop(); });
 addEventListener("hashchange", deepLink);
 })();`;
 
