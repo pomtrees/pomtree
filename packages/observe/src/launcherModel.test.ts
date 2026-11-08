@@ -271,14 +271,14 @@ test("buildItems hides disabled actions", () => {
   assert.equal(has(solo, "Split right"), true);
 });
 
-test("buildItems caps agent-derived items and skips reaped and shown agents", () => {
+test("the unfiltered list caps agent-derived items and skips reaped and shown agents", () => {
   const agents = Array.from({ length: 500 }, (_, i) => ag(`a${i}`, `n${i}`));
-  const items = K.buildItems(ctx({ agents, leaves: [leaf("t1", "agent", "a0")] }));
+  const items = K.rank(K.buildItems(ctx({ agents, leaves: [leaf("t1", "agent", "a0")] })), "");
   const fresh = items.filter((i) => i.kind === "new" && i.run.type === "open" && i.run.agent !== undefined);
   assert.equal(fresh.length, 200);
   // the cap is per multi-instance view type, not cumulative
   const two = [...VIEWS, { id: "log", title: "Log", multi: true }];
-  const perView = K.buildItems(ctx({ agents, views: two, leaves: [leaf("t1", "tree")] }));
+  const perView = K.rank(K.buildItems(ctx({ agents, views: two, leaves: [leaf("t1", "tree")] })), "");
   const count = (v: string) => perView.filter((i) => i.run.type === "open" && i.run.view === v && i.run.agent).length;
   assert.equal(count("agent"), 200);
   assert.equal(count("log"), 200);
@@ -295,6 +295,25 @@ test("buildItems caps agent-derived items and skips reaped and shown agents", ()
     K.buildItems(ctx({ agents: [ag("z", "")] })).some((i) => i.label === "Agent: z"),
     true,
   );
+});
+
+test("an agent past the cap is found by exact name, prefix or id, once", () => {
+  const agents = Array.from({ length: 250 }, (_, i) => ag(`a${i}`, `n${i}`));
+  const items = K.buildItems(ctx({ agents, leaves: [leaf("t1", "tree")] }));
+  const isA = (i: { run: { type: string; agent?: string } }, id: string) => i.run.type === "open" && i.run.agent === id;
+  assert.equal(
+    K.rank(items, "").some((i) => isA(i, "a229")),
+    false,
+  );
+  const exact = K.rank(items, "Agent: n229");
+  assert.ok(isA(exact[0]!, "a229"));
+  assert.equal(exact.filter((i) => isA(i, "a229")).length, 1);
+  const prefix = K.rank(items, "n229");
+  assert.ok(isA(prefix[0]!, "a229"));
+  assert.equal(prefix.filter((i) => isA(i, "a229")).length, 1);
+  assert.ok(K.rank(items, "a229").some((i) => isA(i, "a229")));
+  // a broad query is still cut to the cap per view type
+  assert.equal(K.rank(items, "n").filter((i) => i.run.type === "open" && i.run.agent).length, 200);
 });
 
 test("parseQuery", () => {

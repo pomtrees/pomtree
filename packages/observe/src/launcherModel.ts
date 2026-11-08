@@ -11,8 +11,9 @@
 // - Matching is case-insensitive and token-wise: every space-separated token must match the label, kind or hint;
 //   a word-start match outranks a plain substring match. No fuzzy subsequence matching.
 // - The open key is Alt+Shift+P, read from the physical key code so it works with any layout.
-// - At most MAX_AGENT_ITEMS agent entries are offered per multi-instance view type; agents beyond the cap are
-//   reachable only by opening a window for them elsewhere (for example from the tree).
+// - buildItems returns every agent entry; rank cuts the result list to MAX_AGENT_ITEMS agent entries per
+//   multi-instance view type, after matching. So the unfiltered list is capped, while an agent beyond the cap is
+//   still found by a name, prefix or id query.
 // - One window-list entry per tile (a layout holds at most 16), in reading order, scrolling sideways; above 6
 //   entries the list is compact (shorter labels).
 
@@ -170,7 +171,7 @@ export interface LauncherKitApi {
 export const LAUNCHER_LOGIC_JS = `
 const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
   "use strict";
-  // TODO(omnibar-agent-cap): the omnibar list is cut to MAX_AGENT_ITEMS entries per item view type before ranking, so past 200 agents some are not listed and no query can reach them. Trigger: a fleet routinely exceeds 200 agents per view type.
+  // TODO(omnibar-agent-cap): the unfiltered omnibar list is cut to MAX_AGENT_ITEMS entries per item view type, so past 200 agents some are not listed; exact, prefix and id queries still reach every one. Trigger: a fleet routinely exceeds 200 agents per view type.
   const MAX_AGENT_ITEMS = 200;
   const COMPACT_AT = 6;
   const FAIL_OFFLINE_AT = 3;
@@ -305,16 +306,13 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
       });
     }
     for (const v of ctx.views) {
-      let derived = 0; // the cap is per multi-instance view type
       if (!v.multi) {
         if (!shownViews[v.id]) items.push({ key: "new:" + v.id, kind: "new", label: v.title === "" ? v.id : v.title, hint: v.id, dot: "none", run: { type: "open", view: v.id } });
         continue;
       }
       const t = v.title === "" ? v.id : v.title;
       for (const a of ctx.agents) {
-        if (derived >= MAX_AGENT_ITEMS) break;
         if (a.state === "reaped" || shownAgents[v.id + "/" + a.id]) continue;
-        derived++;
         items.push({ key: "new:" + v.id + "/" + a.id, kind: "new", label: t + ": " + (a.name === "" ? a.id : a.name), hint: a.id + " " + v.id, dot: agentDot(a), run: { type: "open", view: v.id, agent: a.id } });
       }
     }
@@ -379,7 +377,18 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
       scored.push({ it, idx, sum });
     });
     scored.sort((a, b) => b.sum - a.sum || a.idx - b.idx);
-    return scored.map((s) => s.it);
+    // the cap applies after ranking, per multi-instance view type
+    const derived = {};
+    const out = [];
+    for (const s of scored) {
+      const r = s.it.run;
+      if (r.type === "open" && isStr(r.agent)) {
+        derived[r.view] = (derived[r.view] || 0) + 1;
+        if (derived[r.view] > MAX_AGENT_ITEMS) continue;
+      }
+      out.push(s.it);
+    }
+    return out;
   }
   function isOpenShortcut(ev) {
     return ev.altKey === true && ev.shiftKey === true && ev.ctrlKey !== true && ev.metaKey !== true && ev.code === "KeyP";
