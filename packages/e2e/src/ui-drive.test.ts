@@ -5,10 +5,10 @@ import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { run } from "@pomtree/pomtree";
 import type { Io } from "@pomtree/pomtree";
+import { httpTransport } from "../../pomtree/src/client.ts";
 import { LAYOUT_LOGIC_JS } from "../../observe/src/layout.ts";
 import { UI_COMMAND_JS, UI_STREAM_PATH } from "../../observe/src/uiCommand.ts";
 import { UI_DRIVER_JS } from "../../observe/src/uiDriver.ts";
-import { handle } from "../../pomtreed/src/api.ts";
 import { issueUiCookie } from "../../pomtreed/src/auth.ts";
 import { makeServer } from "../../pomtreed/src/server.ts";
 import { SECRET, op, setup, until } from "../../pomtreed/src/test-setup.ts";
@@ -26,21 +26,26 @@ const VIEWS = [
   { id: "tree", title: "Tree", multi: false, subject: null },
 ];
 
-// The CLI's transport forwards in-process to the daemon handler, as the unix socket would.
+// The CLI's real HTTP client (httpTransport, so the headers it sets) talks to the real server (makeServer, so its request guards
+// run, including the X-Pomtree-UI check) over a loopback port: nothing is forwarded around either end.
 const cli = async (t: T, argv: string[]) => {
   const out: string[] = [];
   const err: string[] = [];
+  const { server, port } = await listen0(t);
+  const call = httpTransport(`http://127.0.0.1:${port}`, op);
   const io: Io = {
-    call: async (r) => {
-      const res = await handle(t.daemon, { method: r.method, url: r.path, body: r.body, token: op });
-      return { status: res.status, body: res.body };
-    },
+    call,
     out: (s) => void out.push(s),
     err: (s) => void err.push(s),
     version: "0",
   };
-  const code = await run(argv, io);
-  return { code, out: out.join("\n"), err: err.join("\n") };
+  try {
+    const code = await run(argv, io);
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  } finally {
+    server.close();
+    server.closeAllConnections();
+  }
 };
 const uiRows = async (t: T) => (await t.journal.read({})).filter((e) => e.payload.kind === "ext.observe.ui_command");
 const rowCommands = async (t: T) => (await uiRows(t)).map((e) => JSON.stringify((e.payload as unknown as { command: unknown }).command));

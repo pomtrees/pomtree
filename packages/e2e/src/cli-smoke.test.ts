@@ -503,6 +503,8 @@ const dummy: Ids = Object.fromEntries(
 ) as unknown as Ids;
 
 // ---- blank world: empty / ragged-data variants ----
+// The smoke daemon has no /live/ui tab, so the daemon records each ui command and the CLI exits 3; a connected tab (exit 0) is covered in ui-drive.test.ts.
+const NO_UI_TAB = /ui command \d+ was recorded but no UI tab is connected/;
 const BLANK: Case[] = [
   { name: "ps (empty)", covers: ["ps"], scope: "operator", argv: () => ["ps"], out: /^\S+\s+root\s+running\s/m },
   { name: "ps --json (empty)", scope: "operator", argv: () => ["--json", "ps"], json: { each: AGENT_KEYS, len: 1 } },
@@ -537,6 +539,45 @@ const BLANK: Case[] = [
   },
   { name: "spend --json (empty)", scope: "operator", argv: () => ["spend", "--json"], json: SPEND_KEYS },
   { name: "doctor (blank)", covers: ["doctor"], scope: "operator", argv: () => ["doctor"], out: /^ok\n\s+host:\s+h1$/m },
+  {
+    name: "ui open (no tab connected)",
+    covers: ["ui open"],
+    scope: "operator",
+    argv: () => ["ui", "open", "terminal", "a1"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
+  {
+    name: "ui focus (no tab connected)",
+    covers: ["ui focus"],
+    scope: "operator",
+    argv: () => ["ui", "focus", "terminal", "a1"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
+  {
+    name: "ui focus --dir (no tab connected)",
+    scope: "operator",
+    argv: () => ["ui", "focus", "--dir", "left"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
+  {
+    name: "ui close (no tab connected)",
+    covers: ["ui close"],
+    scope: "operator",
+    argv: () => ["ui", "close", "terminal", "a1"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
+  {
+    name: "ui follow --views --of (no tab connected)",
+    covers: ["ui follow"],
+    scope: "operator",
+    argv: () => ["ui", "follow", "on", "--views", "terminal,browser", "--of", "a1"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
   { name: "doctor --json (blank)", scope: "operator", argv: () => ["doctor", "--json"], json: DOCTOR_KEYS, after: doctorHealthy },
   { name: "peers (no peers)", covers: ["peers"], scope: "agent", as: "root", argv: () => ["peers"], out: /^\S+\s+root\s+running$/m },
   { name: "peers --json (no peers)", scope: "agent", as: "root", argv: () => ["peers", "--json"], json: { each: PEER_KEYS, len: 1 } },
@@ -609,6 +650,11 @@ const USAGE_ERRORS: Case[] = [
   ["report", "show", "X"],
   ["report", "rm", "X"],
   ["bogus-command"],
+  ["ui"],
+  ["ui", "open"],
+  ["ui", "focus"],
+  ["ui", "close"],
+  ["ui", "follow"],
   ["spawn", "--task"],
   ["spawn", "--task", "t", "--disposition", "keep"],
   ["spawn", "--task", "t", "--disposition", "reap-on-exit", "--ttl", "1h"],
