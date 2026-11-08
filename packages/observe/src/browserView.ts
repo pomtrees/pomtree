@@ -122,29 +122,35 @@ const wsPath = ${wsPath};
 // TODO(browser-agent-notified): nothing tells the agent that an operator touched the page, so its snapshot assumptions can go stale. Trigger: after browser-controller-role; it needs a message or tool-result contract, which is a change in packages/core that lands on its own.
 // TODO(ui-window-read-only): the browser view is view-only by decision, and the terminal accepts input; nothing is enforced per window. Trigger: making read-only enforceable, or any new view that takes operator input (a per-window flag enforced in the daemon, see docs/ui-vision.md).
 const mountBrowserInstance = (root, params, hostApi) => {
+  const agentId = String(params && params.agent || "");
+  if (!agentId) throw new Error("browser needs an agent id; open it from the Tree or the top bar");
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const wrap = el("div", "browser pane");
+  const wrap = el("div", "browser pane pane-fill");
   const noteEl = el("p", "meta", "Content controlled by the agent");
   noteEl.setAttribute("role", "note");
   // Shown by the Help menu's "About view-only"; plain text, hidden until asked for.
   const aboutEl = el("p", "meta", "This view is view-only: it shows the agent's browser and cannot click or type. The agent controls the page, and everything it shows is untrusted.");
   aboutEl.setAttribute("role", "note");
   aboutEl.hidden = true;
+  // Shown instead of the canvas when the agent no longer exists; textContent only.
+  const goneEl = el("p", "meta pane-note", "This agent is no longer available.");
+  goneEl.setAttribute("role", "status");
+  goneEl.hidden = true;
   const canvas = el("canvas");
   canvas.style.width = "100%";
   canvas.style.height = "100%";
   canvas.style.minHeight = "12rem";
   canvas.style.display = "block";
-  for (const n of [noteEl, aboutEl, canvas]) wrap.appendChild(n);
+  for (const n of [noteEl, aboutEl, goneEl, canvas]) wrap.appendChild(n);
   root.appendChild(wrap);
 
-  const agentId = String(params && params.agent || "");
   let active = true;
+  let gone = false;
   let gen = 0;
   let epoch = 0; // bumped on no-browser, reconnect and unmount: an older in-flight decode is stale and must not draw or touch the gate
   let ws = null, openedAt = 0, shown = false;
@@ -243,6 +249,8 @@ const mountBrowserInstance = (root, params, hostApi) => {
     if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
     if (tickTimer !== null) { clearInterval(tickTimer); tickTimer = null; }
   };
+  // TODO(browser-agent-gone): the agent is only looked up after the socket closes (the daemon's close reasons ended/local/error
+  // do not say "agent removed"), so a removed agent is detected on the next close, not while a stream stays open; there is no poll.
   // Agent record -> { state } | { missing } | null (lookup failed; treated as unknown, so it retries).
   const lookup = (id) => K.getJson(base + "/" + encodeURIComponent(id)).then((a) => ({ state: a && a.state }))
     .catch((err) => (err && err.status === 404) ? { missing: true } : null);
@@ -253,6 +261,16 @@ const mountBrowserInstance = (root, params, hostApi) => {
     const g = gen;
     lookup(agentId).then((agent) => {
       if (g !== gen || !active || ws) return;
+      if (agent && agent.missing) {
+        // The agent was removed: replace the canvas with the placeholder and stop (no retry timer is armed).
+        gone = true;
+        clearCanvas();
+        canvas.hidden = true;
+        goneEl.hidden = false;
+        setState(BrowserKit.stopLabel({ conn: "no agent", label: "agent not found" }), "s-exited");
+        setInfo("", false);
+        return;
+      }
       const d = TermKit.decide({ attempt, agent, frozen: shown, rand: Math.random() });
       if (d.action === "stop") {
         setState(BrowserKit.stopLabel(d), "s-exited");
@@ -270,7 +288,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
   };
   const connect = () => {
     clearRetry();
-    if (!active || !agentId) return;
+    if (!active || gone) return;
     closedReason = "";
     openedAt = 0;
     gate.reset();
@@ -318,14 +336,13 @@ const mountBrowserInstance = (root, params, hostApi) => {
   };
 
   hostApi.setMenuState("browser.copy-url", { enabled: false });
-  hostApi.setTitle(agentId ? "Browser · " + agentId.slice(0, 8) : "Browser");
+  hostApi.setTitle("Browser · " + agentId.slice(0, 8));
   setState("", "");
-  if (!agentId) setInfo("no agent selected — open #/browser/<id> or pick an agent in the Tree", false);
-  else connect();
+  connect();
   return { unmount, fit: draw };
 };
 // A mount that throws after building markup would leave it in root, so setup failures clear root and rethrow for the
-// host's failed-view placeholder.
+// host's failed-view placeholder (a missing agent id throws before any markup is built).
 const mountBrowser = (root, params, hostApi) => {
   try { return mountBrowserInstance(root, params, hostApi); }
   catch (e) { root.replaceChildren(); throw e; }

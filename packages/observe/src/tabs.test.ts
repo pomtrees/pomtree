@@ -855,12 +855,64 @@ test("terminal: a reaped agent says no live terminal; an unknown state still ret
   assert.match(role(odd.doc, "note")!.textContent, /disconnected \u2014 reconnecting \(attempt 1\)/);
 });
 
-test("terminal: an unknown agent (404) stops with 'agent not found'", async () => {
-  const { doc, sockets } = runShell("#/terminal/zz", { "/v1/agents/zz": { status: 404, body: {} } });
+test("terminal: an unknown agent (404) shows the 'no longer available' placeholder and stops dialling", async () => {
+  const { doc, sockets, timeouts, intervals, host } = runShell("#/terminal/zz", { "/v1/agents/zz": { status: 404, body: {} } });
   await flush();
   sockets[0]!.drop();
   await flush();
-  assert.match(role(doc, "note")!.textContent, /agent not found/);
+  assert.equal(role(doc, "note")!.textContent, "This agent is no longer available.");
+  assert.equal(role(doc, "wrap")!.style.display, "none", "the terminal host is hidden");
+  assert.equal(sockets.length, 1, "no reconnect");
+  assert.equal(timeouts.filter((t) => !t.cleared && t.ms >= 375).length, 0, "no reconnect timer left armed");
+  assert.ok(
+    intervals.every((i) => i.cleared),
+    "polling and countdown timers stopped",
+  );
+  assert.equal(reconnectOffered(host), false);
+});
+
+test("terminal: an agent that disappears while connected is caught by the poll and stops everything", async () => {
+  const responses: Record<string, { status?: number; body: unknown }> = { "/v1/agents/a1": { body: { state: "running" } } };
+  const r = runShell("#/terminal/a1", responses);
+  await flush();
+  r.sockets[0]!.open();
+  const pollTimer = r.intervals.find((i) => i.ms === 5000);
+  assert.ok(pollTimer, "the lookup poll is running");
+  // negative control: a present agent keeps its terminal
+  pollTimer.fn();
+  await flush();
+  assert.notEqual(role(r.doc, "note")!.textContent, "This agent is no longer available.");
+  assert.equal(r.sockets[0]!.closed, false);
+  // the agent is removed: the next poll sees 404
+  responses["/v1/agents/a1"] = { status: 404, body: {} };
+  pollTimer.fn();
+  await flush();
+  assert.equal(role(r.doc, "note")!.textContent, "This agent is no longer available.");
+  assert.equal(role(r.doc, "wrap")!.style.display, "none");
+  assert.equal(r.sockets[0]!.closed, true, "the socket is closed");
+  r.sockets[0]!.drop(); // the late close must not schedule a reconnect
+  await flush();
+  assert.equal(r.sockets.length, 1);
+  assert.ok(r.intervals.every((i) => i.cleared));
+});
+
+test("terminal: mounting without an agent throws a cause-and-action error and leaves the root empty", () => {
+  const { doc, context, sockets } = runShell("#/tree");
+  const def = runInContext('PaneKit.view("terminal")', context) as { mount: (root: unknown, params: unknown, base: object) => unknown };
+  for (const params of [{}, undefined, { agent: "" }]) {
+    const root = doc.createElement("div");
+    assert.throws(
+      () => def.mount(root, params, {}),
+      (e: Error) => e.message === "terminal needs an agent id; open it from the Tree or the top bar",
+    );
+    assert.equal(root.firstChild, null, "root holds no half-built markup");
+  }
+  assert.equal(sockets.length, 0);
+});
+
+test("terminal pane: its template root is pane-fill so the item window fills edge to edge", () => {
+  assert.ok(renderTerminalPane().includes('<div class="term pane pane-fill">'));
+  assert.ok(renderTerminalPane().includes('data-role="wrap" class="termwrap"'));
 });
 
 test("terminal: an agent-less hash opens nothing, and leaving the tab closes the socket and disposes the terminal", async () => {

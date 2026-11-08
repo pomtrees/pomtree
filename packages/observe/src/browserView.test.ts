@@ -158,7 +158,9 @@ function walk(n: Node_, fn: (x: Node_) => void): void {
   for (const c of n.children) walk(c, fn);
 }
 
-function setup(opts: { agent?: string; clipboardFails?: boolean; responses?: Record<string, { status?: number; body: unknown }> } = {}) {
+function setup(
+  opts: { agent?: string; params?: { agent?: string }; clipboardFails?: boolean; responses?: Record<string, { status?: number; body: unknown }> } = {},
+) {
   const ctx2d: Ctx2d = {
     draws: [],
     clears: 0,
@@ -308,10 +310,8 @@ function setup(opts: { agent?: string; clipboardFails?: boolean; responses?: Rec
   const windowModel = menuKit.createWindowModel(menuKit.declareView(BROWSER_DECLARATION));
   const root = makeNode("div");
   const def = kitK.view("browser")!;
-  const handle = def.mount(
-    root,
-    { agent: opts.agent ?? "agent-1" },
-    {
+  const mount = () =>
+    def.mount(root, ("params" in opts ? opts.params : { agent: opts.agent ?? "agent-1" }) as { agent: string }, {
       setTitle: (t: string) => titles.push(t),
       navigate: () => {},
       // The REAL status validator (the window model the chrome gives a view), so a bad tone fails the mount like in the browser.
@@ -323,8 +323,14 @@ function setup(opts: { agent?: string; clipboardFails?: boolean; responses?: Rec
       onCommand: (f: typeof onCommand) => {
         onCommand = f;
       },
-    },
-  );
+    });
+  let handle: ReturnType<typeof mount>;
+  try {
+    handle = mount();
+  } catch (e) {
+    (e as { root?: Node_ }).root = root;
+    throw e;
+  }
   const find = (pred: (n: Node_) => boolean): Node_ | undefined => {
     let hit: Node_ | undefined;
     walk(root, (n) => {
@@ -657,12 +663,42 @@ test("a decode that finishes after unmount is closed, never drawn", async () => 
   assert.equal(t.ctx2d.draws.length, 0);
 });
 
-test("no agent selected: no socket, a hint, and the plain title", () => {
-  const t = setup({ agent: "" });
-  assert.equal(t.sockets.length, 0);
-  assert.equal(t.titles.join("|"), "Browser");
-  assert.ok(streamText(t).startsWith("no agent selected"));
-  t.handle.unmount();
+test("mounting without an agent throws a cause-and-action error and leaves the root empty", () => {
+  for (const params of [{}, undefined, { agent: "" }]) {
+    let thrown: unknown;
+    try {
+      setup({ agent: "", params });
+    } catch (e) {
+      thrown = e;
+    }
+    assert.equal((thrown as Error).message, "browser needs an agent id; open it from the Tree or the top bar");
+    assert.equal((thrown as { root?: Node_ }).root!.children.length, 0, "root holds no half-built markup");
+  }
+  const probe = setup({ agent: "agent-1" }); // negative control: with an agent the same harness mounts fine
+  assert.equal(probe.sockets.length, 1);
+});
+
+test("the pane root is pane-fill and the canvas has no padding wrapper", () => {
+  const t = setup();
+  assert.equal(t.root.children[0]!.className, "browser pane pane-fill");
+});
+
+test("an agent that no longer exists shows the placeholder, hides the canvas and stops reconnecting", async () => {
+  const gone = setup({ responses: { "/v1/agents/agent-1": { status: 404, body: {} } } });
+  gone.sockets[0]!.drop();
+  await gone.flush();
+  const ph = gone.find((n) => n.textContent === "This agent is no longer available.");
+  assert.ok(ph, "placeholder text");
+  assert.ok(!ph.hidden);
+  assert.equal(gone.find((n) => n.tagName === "canvas")!.hidden, true);
+  assert.equal(gone.timeouts.length, 0);
+  assert.equal(gone.sockets.length, 1);
+  // negative control: a present agent keeps its canvas and shows no placeholder
+  const here = setup({ responses: { "/v1/agents/agent-1": { body: { state: "pending" } } } });
+  here.sockets[0]!.drop();
+  await here.flush();
+  assert.ok(!here.find((n) => n.tagName === "canvas")!.hidden);
+  assert.equal(here.find((n) => n.textContent === "This agent is no longer available.")!.hidden, true);
 });
 
 // ---- shipping --------------------------------------------------------------------------------------------------

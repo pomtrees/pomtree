@@ -758,8 +758,8 @@ test("layoutCss: an empty terminal note takes no space inside a tile", () => {
 
 test("layoutCss: mounted panes inside a tile get the section padding and compact controls, with no colour", () => {
   assert.doesNotMatch(LAYOUT_CSS, /(^|\n)\.tile-body \.pane[ ,{]/, "tab sections already pad themselves, so an unscoped rule would pad them twice");
-  const pad = /\.tile-body \.wm-mount \.pane \{([^}]*)\}/.exec(LAYOUT_CSS);
-  assert.ok(pad, "a .tile-body .wm-mount .pane rule");
+  const pad = /\.tile-body \.wm-mount \.pane:not\(\.pane-fill\) \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(pad, "a .tile-body .wm-mount .pane:not(.pane-fill) rule: item views are excluded from the generic padding");
   assert.match(pad[1]!, /box-sizing: border-box/);
   assert.match(pad[1]!, /padding: 0\.75rem/);
   const btn = /\.tile-body \.wm-mount \.pane button, \.tile-body \.wm-mount \.pane a\.btn \{([^}]*)\}/.exec(LAYOUT_CSS);
@@ -770,8 +770,8 @@ test("layoutCss: mounted panes inside a tile get the section padding and compact
 });
 
 test("layoutCss: a browser pane fills its tile and its canvas takes the remaining height, with no colour", () => {
-  const pane = /\.tile-body \.pane\.browser \{([^}]*)\}/.exec(LAYOUT_CSS);
-  assert.ok(pane, "a .tile-body .pane.browser rule");
+  const pane = /\.tile-body \.wm-mount \.pane\.pane-fill \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(pane, "a .tile-body .wm-mount .pane.pane-fill rule");
   assert.match(pane[1]!, /display: flex/);
   assert.match(pane[1]!, /flex-direction: column/);
   assert.match(pane[1]!, /height: 100%/);
@@ -784,7 +784,28 @@ test("layoutCss: a browser pane fills its tile and its canvas takes the remainin
   assert.match(canvas[1]!, /height: 100%/);
   assert.match(canvas[1]!, /object-fit: contain/, "the frame keeps its aspect ratio instead of stretching");
   assert.match(canvas[1]!, /display: block/);
-  assert.doesNotMatch(pane[1]! + canvas[1]!, /color|background|border/, "geometry only");
+  assert.doesNotMatch(pane[1]! + canvas[1]!, /color|background|border-(width|style|color)/, "geometry only");
+});
+
+test("layoutCss: pane-fill (the root of an item view) has zero padding and fills the tile body; the generic padding rule excludes it", () => {
+  const fill = /\.tile-body \.wm-mount \.pane\.pane-fill \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(fill, "a .tile-body .wm-mount .pane.pane-fill rule");
+  assert.match(fill[1]!, /padding: 0;/);
+  assert.match(fill[1]!, /box-sizing: border-box/);
+  assert.match(fill[1]!, /display: flex/);
+  assert.match(fill[1]!, /flex-direction: column/);
+  assert.match(fill[1]!, /height: 100%/);
+  assert.match(fill[1]!, /min-height: 0/);
+  assert.doesNotMatch(fill[1]!, /color|background|border-(width|style)/, "geometry only");
+  // negative control: a bare generic padding rule (no :not) would also pad item views
+  assert.doesNotMatch(LAYOUT_CSS, /\.tile-body \.wm-mount \.pane \{[^}]*padding/);
+  const termhost = /\.tile-body \.pane-fill \.termhost \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(termhost, "the terminal host loses its own padding and frame inside an item window");
+  assert.match(termhost[1]!, /padding: 0/);
+  const note = /\.tile-body \.pane-fill \.termnote, \.tile-body \.pane-fill \.pane-note \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(note, "note elements keep a small padding of their own so text is not glued to the edge");
+  assert.match(note[1]!, /padding: 0\.25rem 0\.5rem/);
+  assert.ok(LAYOUT_CSS.indexOf(".pane-fill .termnote,") < LAYOUT_CSS.indexOf(".termnote:empty"), "the empty-note rule comes later and wins the tie");
 });
 
 test("tiles put .tile-focused on the .tile element and splitters carry aria-orientation by split direction", () => {

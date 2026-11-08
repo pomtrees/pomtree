@@ -88,11 +88,11 @@ export function renderTerminalPane(ctx: { agentsBase?: string; terminalPath?: st
   const vendor = scriptJson(ctx.vendorPath ?? "/ui/vendor");
   const menus = scriptJson(TERMINAL_DECLARATION.menus);
   const status = scriptJson(TERMINAL_DECLARATION.status);
-  return `<template data-view-template="terminal"><div class="term pane">
+  return `<template data-view-template="terminal"><div class="term pane pane-fill">
 <div data-role="trace-confirm" class="tracemenu" role="alertdialog" aria-label="Confirm raw trace" hidden><span class="warn">Raw trace skips secret redaction. Tokens or keys that an agent printed will be included. Continue?</span><span><button type="button" data-role="trace-confirm-ok">Include raw output</button> <button type="button" data-role="trace-confirm-cancel">Cancel</button></span></div>
 <div data-role="trace-chip" class="tracechip" role="status" tabindex="-1"></div>
 <div data-role="note" class="termnote" role="status" aria-live="polite"></div>
-<div class="termwrap"><div data-role="host" class="termhost"></div><button type="button" data-role="bottom" class="termbottom" hidden>↓ bottom</button></div>
+<div data-role="wrap" class="termwrap"><div data-role="host" class="termhost"></div><button type="button" data-role="bottom" class="termbottom" hidden>↓ bottom</button></div>
 <div class="keywrap" data-role="keywrap">
 <div data-role="keys" class="keybar" role="toolbar" aria-label="Terminal keys"><button type="button" data-key="Esc">Esc</button><button type="button" data-key="Tab">Tab</button><button type="button" data-key="Shift+Tab">Shift+Tab</button><button type="button" data-key="Enter">Enter</button><button type="button" data-key="Shift+Enter">Shift+Enter</button><button type="button" data-role="alt" data-key="Alt" aria-pressed="false">Alt</button><button type="button" data-role="ctrl" data-key="Ctrl" aria-pressed="false">Ctrl</button><button type="button" data-key="ArrowLeft" aria-label="Left">←</button><button type="button" data-key="ArrowDown" aria-label="Down">↓</button><button type="button" data-key="ArrowUp" aria-label="Up">↑</button><button type="button" data-key="ArrowRight" aria-label="Right">→</button><button type="button" data-key="Paste">Paste</button><button type="button" data-key="SendKey" aria-expanded="false">Send key…</button></div>
 <div data-role="keymenu" class="keymenu" role="menu" aria-label="Send key" hidden><button type="button" role="menuitem" data-sendkey="Esc">Esc</button><button type="button" role="menuitem" data-sendkey="Ctrl+C">Ctrl+C</button><button type="button" role="menuitem" data-sendkey="Ctrl+D">Ctrl+D</button><button type="button" role="menuitem" data-sendkey="Ctrl+L">Ctrl+L</button><button type="button" role="menuitem" data-sendkey="Ctrl+O">Ctrl+O</button><button type="button" role="menuitem" data-sendkey="Ctrl+P">Ctrl+P</button><button type="button" role="menuitem" data-sendkey="Ctrl+Shift+P">Ctrl+Shift+P</button><button type="button" role="menuitem" data-sendkey="Ctrl+T">Ctrl+T</button><button type="button" role="menuitem" data-sendkey="Ctrl+W">Ctrl+W</button><button type="button" role="menuitem" data-sendkey="Ctrl+N">Ctrl+N</button></div></div>
@@ -154,6 +154,8 @@ let instances = 0;
 // One terminal instance: clones the template into root and owns all of its state. Every element lookup is scoped to
 // root by data-role, and unmount() releases the socket, observer, listeners, timers and xterm.
 const mountTerminalInstance = (root, params, hostApi) => {
+  const agentId = String(params && params.agent || "");
+  if (!agentId) throw new Error("terminal needs an agent id; open it from the Tree or the top bar");
   const self = {};
   const tpl = document.querySelector('template[data-view-template="terminal"]');
   if (!tpl) throw new Error("terminal view: its template is missing from the page, so the terminal cannot open; reload the page and report this if it persists");
@@ -162,15 +164,17 @@ const mountTerminalInstance = (root, params, hostApi) => {
   const host = $("host");
   const noteEl = $("note");
   const bottomBtn = $("bottom");
+  const wrapEl = $("wrap");
+  const keywrapEl = $("keywrap");
   const keysEl = $("keys");
   const ctrlBtn = $("ctrl");
   const altBtn = $("alt");
   const keyMenu = $("keymenu");
   keysEl.id = "term-keys-" + (++instances);
 
-  const agentId = String(params && params.agent || "");
   let active = true;
   let gen = 0;
+  let gone = false;
   let term = null, fit = null, webgl = null, ro = null, mq = null, mqFn = null;
   let ws = null, openedAt = 0, shown = false;
   let attempt = 0, retryTimer = null, tickTimer = null;
@@ -280,14 +284,30 @@ const mountTerminalInstance = (root, params, hostApi) => {
     return { state: a && a.state };
   }).catch((err) => (err && err.status === 404) ? { missing: true } : null);
 
+  // The agent was removed: say so in the note, hide the screen and key bar, and stop the poll, countdown and socket.
+  const markGone = () => {
+    if (gone) return;
+    gone = true;
+    gen++;
+    clearRetry();
+    if (poller) poller.stop();
+    if (ws) { const s = ws; ws = null; try { s.close(); } catch (e) {} }
+    wrapEl.style.display = "none";
+    keywrapEl.style.display = "none";
+    setConn("", "");
+    hostApi.setMenuState("terminal.reconnect", { visible: false });
+    note("This agent is no longer available.", false);
+  };
+
   const afterClose = () => {
-    if (!active) return;
+    if (!active || gone) return;
     setConn("disconnected", "stale");
     hostApi.setMenuState("terminal.reconnect", { visible: true });
     attempt = TermKit.nextAttempt(attempt, openedAt ? Date.now() - openedAt : 0);
     const g = gen;
     lookup(agentId).then((agent) => {
       if (g !== gen || !active || ws) return;
+      if (agent && agent.missing) { markGone(); return; }
       const d = TermKit.decide({ attempt, agent, frozen: shown, rand: Math.random() });
       if (d.action === "stop") { setConn(d.conn, "stale"); note(d.label + (closedReason ? " [session closed: " + closedReason + "]" : ""), false); return; }
       attempt++;
@@ -300,7 +320,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
   };
   const connect = () => {
     clearRetry();
-    if (!active || !agentId || !term) return;
+    if (!active || gone || !term) return;
     closedReason = "";
     openedAt = 0;
     const sock = new WebSocket(TermKit.wsUrl(location, wsPath, agentId));
@@ -349,7 +369,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
   };
 
   const reconnect = () => {
-    if (!active || !term || ws) return;
+    if (!active || gone || !term || ws) return;
     clearRetry();
     attempt = 0;
     connect();
@@ -407,7 +427,6 @@ const mountTerminalInstance = (root, params, hostApi) => {
   const traceOpts = (short) => ({ short, children: traceKids, raw: traceRaw });
   const traceSay = (text, bad) => { traceChip.textContent = text; traceChip.className = bad ? "tracechip err" : "tracechip"; };
   const runTrace = (short) => {
-    if (!agentId) return;
     traceSay("Collecting trace…", false);
     T.copyTrace(traceDeps(), base, agentId, traceOpts(short)).then((r) => {
       if (!active) return; // unmounted while the copy was in flight: do not open a modal on a gone view
@@ -417,7 +436,6 @@ const mountTerminalInstance = (root, params, hostApi) => {
     });
   };
   const viewTrace = () => {
-    if (!agentId) return;
     // T.viewer reuses a live viewer: only the instance that created it owns it (and dismisses it on unmount).
     const v = T.viewer(traceDeps(), base, agentId, traceOpts(false), traceChip);
     if (v !== viewerObj) { viewerObj = v; viewerOwner = self; }
@@ -437,7 +455,6 @@ const mountTerminalInstance = (root, params, hostApi) => {
   rawCancel.addEventListener("click", closeRawConfirm);
   rawConfirm.addEventListener("keydown", (ev) => { if (ev && ev.key === "Escape") closeRawConfirm(); });
   const downloadTrace = () => {
-    if (!agentId) return;
     const o = traceOpts(false);
     fetch(T.url(base, agentId, o)).then((res) => { if (!res.ok) throw new Error("HTTP " + res.status); return res.text(); })
       .then((text) => { traceSay("Downloaded " + T.download(traceDeps(), text, T.filename(agentId, o)), false); })
@@ -458,22 +475,18 @@ const mountTerminalInstance = (root, params, hostApi) => {
   };
   hostApi.onCommand((command, arg) => { if (active && Object.prototype.hasOwnProperty.call(COMMANDS, command)) COMMANDS[command](arg); });
 
-  hostApi.setTitle(agentId ? "Terminal · " + agentId.slice(0, 8) : "Terminal");
+  hostApi.setTitle("Terminal · " + agentId.slice(0, 8));
   paintAgent("");
   setConn("", "");
-  if (!agentId) {
-    note("no agent selected — open #/terminal/<id> or pick an agent in the Tree");
-  } else {
-    note("loading terminal…");
-    libs().then(() => {
-      if (!active) return;
-      note("");
-      mountXterm();
-      connect();
-      poller = K.poll(() => { lookup(agentId); }, 5000);
-      poller.start();
-    }).catch((err) => { if (active) note("Failed to load the terminal: " + String(err && err.message ? err.message : err), true); });
-  }
+  note("loading terminal…");
+  libs().then(() => {
+    if (!active || gone) return;
+    note("");
+    mountXterm();
+    connect();
+    poller = K.poll(() => { lookup(agentId).then((a) => { if (active && a && a.missing) markGone(); }); }, 5000);
+    poller.start();
+  }).catch((err) => { if (active) note("Failed to load the terminal: " + String(err && err.message ? err.message : err), true); });
   return { unmount, fit: scheduleFit };
 };
 // A mount that throws after cloning the template would leave its half-built markup in root (the host drops the tile
