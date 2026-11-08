@@ -122,6 +122,7 @@ export interface WindowList {
   compact: boolean;
   attention: number; // entries whose dot is err or warn
   label: string; // accessible name of the list, e.g. "Open windows, 2 need attention"
+  emptyHint: string; // visible text when there are no windows, "" otherwise
 }
 
 export interface ConnState {
@@ -319,7 +320,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     }
     let label = "Open windows";
     if (attention > 0) label += ", " + attention + (attention === 1 ? " needs attention" : " need attention");
-    return { entries, compact: entries.length > COMPACT_AT, attention, label };
+    return { entries, compact: entries.length > COMPACT_AT, attention, label, emptyHint: entries.length === 0 ? "No windows open" : "" };
   }
 
   function buildItems(ctx) {

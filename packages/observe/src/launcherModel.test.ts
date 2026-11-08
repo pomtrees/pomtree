@@ -262,6 +262,16 @@ test("windowList entries, attention, compact", () => {
   assert.equal(K.windowList([leaf("q", "agent", "nope")], "q", VIEWS, [], 0).entries[0]?.title, "Agent: nope (unknown)");
 });
 
+test("windowList with zero windows: no entries, not compact, no attention, and the hint text", () => {
+  const w = plain(K.windowList([], "", VIEWS, [], 0));
+  assert.deepEqual(w.entries, []);
+  assert.equal(w.compact, false);
+  assert.equal(w.attention, 0);
+  assert.equal(w.label, "Open windows");
+  assert.equal(w.emptyHint, "No windows open");
+  assert.equal(plain(K.windowList([leaf("t1", "tree")], "t1", VIEWS, [], 0)).emptyHint, "");
+});
+
 test("buildItems order, kinds, dots, runs, unique keys", () => {
   const items = K.buildItems(ctx({ inboxCount: 1 }));
   assert.deepEqual(labels(items), [

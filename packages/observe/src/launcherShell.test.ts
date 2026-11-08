@@ -361,6 +361,64 @@ test("the window list is rebuilt on layout change and clicking an entry focuses 
   assert.equal(h.wins()[0]!.getAttribute("aria-pressed"), "false");
 });
 
+const hints = (h: H) => h.winlist.byClass("lb-empty");
+
+test("zero windows: one text-only hint in the window list; Start, omnibox, status chip and badge still work", async () => {
+  const h = await up({ leaves: [] });
+  assert.equal(h.wins().length, 0);
+  assert.equal(hints(h).length, 1);
+  const hint = hints(h)[0]!;
+  assert.equal(hint.textContent, "No windows open");
+  assert.equal(hint.tagName, "span");
+  assert.equal(hint.children.length, 0);
+  assert.equal(hint.getAttribute("role"), null);
+  assert.equal(hint.getAttribute("tabindex"), null);
+  assert.equal(h.winlist.getAttribute("aria-label"), "Open windows");
+  openStart(h);
+  assert.equal(h.launcher.hidden, false);
+  assert.ok(h.labels().includes("Tree"));
+  h.type("tree");
+  h.key("Enter");
+  assert.deepEqual(h.calls, ["open:tree:"]);
+  h.net.set(LAUNCHER_PATHS.approvals, { status: 200, body: [1, 2] });
+  await h.tick();
+  assert.equal(h.badge.children[1]!.textContent, "2");
+  assert.equal(h.connLabel(), "connected");
+  assert.equal(hints(h).length, 1);
+});
+
+test("the empty hint tracks the window list: back and forth through zero windows (signature cache)", async () => {
+  const h = await up();
+  assert.equal(hints(h).length, 0);
+  const fire = () => {
+    for (const f of h.changeFns) f();
+  };
+  h.wm.leaves = [];
+  h.wm.focus = "";
+  fire();
+  assert.equal(h.wins().length, 0);
+  assert.equal(hints(h).length, 1);
+  h.wm.leaves = [{ id: "l9", view: "tree", params: {} }];
+  h.wm.focus = "l9";
+  fire();
+  assert.equal(h.wins().length, 1);
+  assert.equal(hints(h).length, 0);
+  h.wm.leaves = [];
+  h.wm.focus = "";
+  fire();
+  assert.equal(h.wins().length, 0);
+  assert.equal(hints(h).length, 1);
+  await h.tick();
+  assert.equal(hints(h).length, 1, "a poll with the same data does not duplicate the hint");
+});
+
+test("narrow mode with zero windows renders the hint and does not throw", async () => {
+  const h = await up({ leaves: [], narrow: true });
+  assert.equal(hints(h).length, 1);
+  assert.equal(h.wins().length, 0);
+  assert.doesNotMatch(LAUNCHER_CSS, /@media \(max-width: 640px\)[^@]*\.lb-winlist[^}]*display: none/);
+});
+
 test("an unchanged window list keeps its buttons across polls (focus is not lost)", async () => {
   const h = await up();
   const before = h.wins()[0]!;

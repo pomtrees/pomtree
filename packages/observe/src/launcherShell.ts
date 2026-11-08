@@ -56,6 +56,7 @@ export const LAUNCHER_CSS = `
 .lb-item.sel { background: var(--hover, transparent); }
 .lb-item .lb-hint { color: var(--muted, inherit); font-size: 0.75rem; }
 .lb-kind { margin-left: auto; font-size: 0.6875rem; color: var(--muted, inherit); text-transform: uppercase; letter-spacing: 0.05em; }
+.lb-winlist .lb-empty { align-self: center; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .lb-empty { padding: 0.5rem; color: var(--muted, inherit); font-size: 0.875rem; }
 @media (max-width: 640px) {
   .lb-conn { position: relative; }
@@ -471,6 +472,7 @@ function createLauncherBar(wm, cfg) {
     winlist.className = "lb-winlist" + (wl.compact ? " compact" : "");
     winlist.setAttribute("aria-label", wl.label);
     winlist.replaceChildren();
+    if (wl.emptyHint) winlist.appendChild(el("span", "lb-empty", wl.emptyHint));
     wl.entries.forEach((entry) => {
       const b = el("button", "lb-win" + (entry.focused ? " on" : ""));
       b.type = "button";
