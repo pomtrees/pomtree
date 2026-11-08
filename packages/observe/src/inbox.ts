@@ -327,11 +327,23 @@ const refreshAgents = () => K.getJson(cfg.agents).then((rows) => {
 }).catch(() => {}); // autocomplete is a convenience; the input still takes a typed id
 
 const base = cfg.messages;
+let retryMs = 2000;
 const open = () => {
   const es = new EventSource(base + "?from=" + encodeURIComponent(String(lastSeq)));
   const badge = document.createElement("span");
-  es.onopen = () => { K.setConn(badge, true); if (status.className === "err" && /^Stream/.test(status.textContent)) say("", false); };
-  es.onerror = () => { K.setConn(badge, false); say("Stream interrupted \\u2014 reconnecting", true); };
+  es.onopen = () => { retryMs = 2000; K.setConn(badge, true); if (status.className === "err" && /^(Stream|Inbox stream)/.test(status.textContent)) say("", false); };
+  // TODO(inbox-stream-cause): the cause of the "Stream interrupted / reconnecting" notice is unconfirmed; the suspects are a 401, a 503 from the 64-stream SSE cap (MAX_SSE_STREAMS in packages/pomtreed/src/server.ts; each tab holds two streams) and a server close. Nobody has checked /live/messages in devtools. Trigger: the operator sees the notice again; first read the status and the close in the Network tab.
+  es.onerror = () => {
+    K.setConn(badge, false);
+    if (es.readyState === 2) {
+      // CLOSED for good (the browser will not retry itself): say so, and reopen on a capped backoff.
+      say("Inbox stream closed (the server refused it, e.g. sign-in expired or too many streams) \\u2014 reload the page", true);
+      es.close();
+      const wait = retryMs;
+      retryMs = Math.min(retryMs * 2, 30000);
+      setTimeout(open, wait);
+    } else say("Stream interrupted \\u2014 reconnecting", true);
+  };
   es.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }

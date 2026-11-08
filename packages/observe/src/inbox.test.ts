@@ -126,10 +126,17 @@ function run(
   const byId = new Map<string, N>();
   const store = opts.store ?? {};
   const fetches: { url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }[] = [];
-  const sources: { url: string; onmessage?: (ev: { data: string }) => void; onerror?: () => void; onopen?: () => void }[] = [];
+  const sources: { url: string; readyState: number; closed: boolean; onmessage?: (ev: { data: string }) => void; onerror?: () => void; onopen?: () => void }[] =
+    [];
   class EventSource {
     url: string;
+    readyState = 0;
+    closed = false;
     onmessage?: (ev: { data: string }) => void;
+    close() {
+      this.closed = true;
+      this.readyState = 2;
+    }
     constructor(url: string) {
       this.url = url;
       sources.push(this);
@@ -137,6 +144,7 @@ function run(
   }
   const hashListeners: (() => void)[] = [];
   const intervals: (() => void)[] = [];
+  const timeouts: { fn: () => void; ms: number }[] = [];
   const location = { hash: opts.hash ?? "" };
   const sandbox = {
     document: {
@@ -189,6 +197,10 @@ function run(
       return intervals.length;
     },
     clearInterval: () => {},
+    setTimeout: (fn: () => void, ms: number) => {
+      timeouts.push({ fn, ms });
+      return timeouts.length;
+    },
     addEventListener: (t: string, f: () => void) => {
       if (t === "hashchange") hashListeners.push(f);
     },
@@ -239,6 +251,7 @@ K.sectionHost = (id) => ({ setMenuState: () => {}, setStatus: __section.setStatu
     location,
     hashListeners,
     intervals,
+    timeouts,
     list: () => byId.get("inbox")!,
     status: () => byId.get("inbox-status")!,
   };
@@ -669,4 +682,64 @@ test("inbox about: a textContent note in the status line", () => {
   f.command("inbox.about");
   assert.match(f.status().textContent, /^The Inbox lists agent messages/);
   assert.equal(f.status().className, "meta");
+});
+
+const STREAM_CLOSED = /^Inbox stream closed \(the server refused it, e\.g\. sign-in expired or too many streams\)/;
+
+test("inbox stream: a CLOSED source shows the closed message and reopens with capped exponential backoff", () => {
+  const f = run();
+  const first = f.sources[0]!;
+  first.readyState = 2;
+  first.onerror!();
+  assert.equal(STREAM_CLOSED.test(f.status().textContent), true);
+  assert.equal(/reconnecting/.test(f.status().textContent), false);
+  assert.equal(f.status().className, "err");
+  assert.equal(first.closed, true);
+  assert.deepEqual(
+    f.timeouts.map((t) => t.ms),
+    [2000],
+  );
+  f.timeouts[0]!.fn();
+  assert.equal(f.sources.length, 2);
+  assert.equal(f.sources[1]!.url, "/live/messages?from=0");
+  const delays: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const s = f.sources.at(-1)!;
+    s.readyState = 2;
+    s.onerror!();
+    delays.push(f.timeouts.at(-1)!.ms);
+    f.timeouts.at(-1)!.fn();
+  }
+  assert.deepEqual(delays, [4000, 8000, 16000, 30000, 30000, 30000]);
+});
+
+test("inbox stream: a CONNECTING error keeps the reconnecting message and does not reopen", () => {
+  const f = run();
+  f.sources[0]!.readyState = 0;
+  f.sources[0]!.onerror!();
+  assert.equal(f.status().textContent, "Stream interrupted \u2014 reconnecting");
+  assert.equal(f.status().className, "err");
+  assert.equal(f.sources[0]!.closed, false);
+  assert.equal(f.timeouts.length, 0);
+  assert.equal(f.sources.length, 1);
+});
+
+test("inbox stream: onopen clears either message and resets the backoff", () => {
+  const f = run();
+  f.sources[0]!.readyState = 0;
+  f.sources[0]!.onerror!();
+  f.sources[0]!.onopen!();
+  assert.equal(f.status().textContent, "");
+  f.sources[0]!.readyState = 2;
+  f.sources[0]!.onerror!();
+  f.timeouts[0]!.fn();
+  f.sources[1]!.readyState = 2;
+  f.sources[1]!.onerror!();
+  assert.equal(f.timeouts[1]!.ms, 4000);
+  f.timeouts[1]!.fn();
+  f.sources[2]!.onopen!();
+  assert.equal(f.status().textContent, "");
+  f.sources[2]!.readyState = 2;
+  f.sources[2]!.onerror!();
+  assert.equal(f.timeouts[2]!.ms, 2000);
 });
