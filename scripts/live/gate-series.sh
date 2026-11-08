@@ -16,6 +16,7 @@
 SP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 set -u
 source "$SP/results-row.sh"
+source "$SP/../image-sources.sh"
 
 SOFT=2000000; HARD=2500000; STOP_SPEND=50000   # SOFT: the standing authorization; HARD: the total these constants allow, only warned about
 
@@ -132,7 +133,7 @@ leakcheck() {
 
 # Preflight and smoke: zero spend, each failure a refusal naming the cause and the action. Real runs only; a dry run prints the plan and checks none of this.
 preflight() {
-  local v kf="$POMTREED_MODEL_KEY_FILE" mode lbl full drift IMGSRC IMG_WHY
+  local v kf="$POMTREED_MODEL_KEY_FILE" mode lbl full drift IMG_WHY
   docker info >/dev/null 2>&1 || die "Docker is not reachable; start the daemon (or fix DOCKER_HOST) and rerun"
   docker image inspect "$POMTREED_AGENT_IMAGE" >/dev/null 2>&1 || die "agent image '$POMTREED_AGENT_IMAGE' is not present locally; build it from the committed HEAD (scripts/live/README.md) and rerun"
   lbl="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$POMTREED_AGENT_IMAGE" 2>/dev/null | tr -d '\r\n')"; full="$(git -C "$REPO" rev-parse HEAD)"
@@ -140,11 +141,7 @@ preflight() {
   # series: recording a results row moves HEAD, so the next item refused to start and the rule "commit after each item" and
   # this check could not both be honoured. So accept a label that is an ancestor of HEAD when nothing the image is built from
   # changed in between; a docs or results-log commit is then fine, while a change to the image's own sources still refuses.
-  # IMGSRC is everything the image is built from: the Dockerfile's COPY set (agent-image, sandbox-docker's proxy sources,
-  # packages/pomtree, and packages/harness-pi/src/agent-guide.md), pomtree's one workspace dep (packages/core), and the two root
-  # files build.ts reads (tsconfig.base.json for the bundle compile, package.json for the version it bakes). Widen it if the
-  # build context widens. packages/observe is deliberately NOT here: pomtree does not depend on it, so it is not in the image.
-  IMGSRC="packages/agent-image packages/sandbox-docker packages/pomtree packages/core packages/harness-pi/src/agent-guide.md tsconfig.base.json package.json"
+  # IMGSRC (scripts/image-sources.sh) is everything the image is built from; widen it there if the build context widens.
   case "$full" in
     "${lbl:-no-label}"*) IMG_WHY="revision label matches HEAD (${COMMIT%+dirty})" ;;
     *)

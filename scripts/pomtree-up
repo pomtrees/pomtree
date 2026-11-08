@@ -29,6 +29,7 @@ USAGE
 }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$root/scripts/image-sources.sh"
 path="." state="" port=8787 fresh=0 yes=0 init=0 no_build=0 rebuild=0 print_env=0 show_token=0 open_link=0
 model_base_url="${POMTREED_MODEL_BASE_URL:-}" model_key_file="${POMTREED_MODEL_UPSTREAM_KEY_FILE:-}" provider="${POMTREED_PI_PROVIDER:-}"
 while [ $# -gt 0 ]; do
@@ -105,7 +106,8 @@ if ! git -C "$repo" rev-parse --verify -q HEAD >/dev/null; then
 fi
 
 # Agent image. Smart build decision: rebuild when missing, when --rebuild forces it, or (by default)
-# when the image carries a known revision label that differs from this checkout's HEAD. An unlabelled
+# when the image carries a known revision label that is not current (image_label_current: HEAD, or an ancestor with no change to the
+# image's sources since, so a docs-only or observe-only commit is not stale). An unlabelled
 # image has unknown provenance and is never rebuilt automatically (warn only).
 image="${POMTREED_AGENT_IMAGE:-pomtree/agent:dev}"
 command -v docker >/dev/null || die "docker CLI not found; install Docker (Docker Desktop or Engine) and put docker on PATH"
@@ -122,11 +124,11 @@ else
   img_rev="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
   if [ "$rebuild" -eq 1 ]; then
     need_build=1; build_reason="forced (--rebuild)"
-  elif [ "$no_build" -eq 0 ] && [ -n "$img_rev" ] && [ "$img_rev" != "$src_sha" ]; then
+  elif [ "$no_build" -eq 0 ] && [ -n "$img_rev" ] && ! image_label_current "$root" "$img_rev"; then
     need_build=1; build_reason="stale (image $img_rev vs source $src_sha)"
   elif [ -z "$img_rev" ]; then
     echo "pomtree-up: warning: image $image has no org.opencontainers.image.revision label; cannot verify it matches source $src_sha (build with --rebuild to force)" >&2
-  elif [ "$img_rev" != "$src_sha" ]; then
+  elif ! image_label_current "$root" "$img_rev"; then
     echo "pomtree-up: warning: image $image revision $img_rev differs from source $src_sha (client/server mismatch likely; rebuild with: scripts/pomtree-up \"$repo\" --rebuild)" >&2
   fi
 fi

@@ -168,6 +168,7 @@ export function onboardingSteps(facts: SetupFacts): OnboardingStep[] {
     {
       id: "build-image",
       title: "Build the agent image",
+      // TODO(image-revision-wording): `scripts/pomtree-up` now treats an image label as current when it is HEAD or an ancestor with no change to the image sources since (`scripts/image-sources.sh`); this prose still says the preflight warns when the label differs from the checkout. Reword it, then run `pnpm gen:getting-started`.
       prose: `One image (default tag \`${facts.defaultImage}\`) runs both the agent and its egress proxy sidecar, and it must be built from this checkout (pinned Pi release, checksum-verified; buildx and network). Preflight blocks when the image is missing or lacks the egress proxy, and warns when its revision label differs from the checkout or is absent. Rebuild with the first command below for a stack started by \`scripts/pomtree-up\` (the development launcher, described in docs/operating.md under "Try it locally"), or the second otherwise. After a rebuild, restart the daemon. If the egress proxy image decision is pre-set in your shell, unset it (the last command below), or update it to the new image id by re-running \`pomtreed init\`. If you build under another tag, say so in the interview.`,
       commands: [
         { run: "scripts/pomtree-up <repo> --rebuild", note: "for a pomtree-up stack", network: true, confirm: true },

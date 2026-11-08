@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 // with a PATH of symlinks to the needed system tools plus an optional fake `docker`. No real docker, pomtreed or model.
 
 const realScript = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/pomtree-up");
+const realImageSources = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/image-sources.sh");
 const SECRET = "sk-TESTSECRET-do-not-print";
 const TOOLS = [
   "bash",
@@ -60,16 +61,24 @@ interface Fixture {
   repo: string;
   state: string;
   key: string;
+  root: string;
+  // Run git in the fixture checkout (the script's own tree, where the image label is compared); returns trimmed stdout.
+  gitc: (...a: string[]) => string;
+  // Write a file in the checkout and commit it; returns the new short sha.
+  commitFile: (rel: string, body?: string) => string;
+  // Set the revision label the fake docker reports for the image.
+  setLabel: (label: string) => void;
   run: (args?: string[], env?: Record<string, string>) => { out: string; status: number | null };
 }
 
-function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?: boolean }): Fixture {
+function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?: boolean; checkoutGit?: boolean }): Fixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "pomtree-up-test-")));
   cleanup.push(dir);
   const root = join(dir, "checkout");
   mkdirSync(join(root, "scripts"), { recursive: true });
   copyFileSync(realScript, join(root, "scripts/pomtree-up"));
   chmodSync(join(root, "scripts/pomtree-up"), 0o755);
+  copyFileSync(realImageSources, join(root, "scripts/image-sources.sh"));
   mkdirSync(join(root, "packages/pomtreed/src"), { recursive: true });
   mkdirSync(join(root, "packages/pomtree/src"), { recursive: true });
   const pomtreedBody = opts.pomtreedStderr
@@ -97,16 +106,34 @@ function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?
   }
   if (opts.docker !== "none") {
     const info = opts.docker === "ok" ? "exit 0" : "exit 1";
-    writeFileSync(join(bin, "docker"), `#!/bin/sh\ncase "$1" in info) ${info} ;; image) case "$*" in *'{{.Id}}'*) echo ${IMAGE_ID} ;; esac ;; esac\nexit 0\n`, {
-      mode: 0o755,
-    });
+    // The revision label comes from <dir>/label (empty when unset), so a test can set it after making commits.
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/bin/sh\ncase "$1" in info) ${info} ;; image) case "$*" in *'{{.Id}}'*) echo ${IMAGE_ID} ;; *'org.opencontainers.image.revision'*) cat ${join(dir, "label")} ;; esac ;; esac\nexit 0\n`,
+      { mode: 0o755 },
+    );
   }
+  writeFileSync(join(dir, "label"), "");
 
   const repo = join(dir, "repo");
   mkdirSync(repo);
   const git = (...a: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@localhost", ...a]);
   git("init", "-q");
   git("commit", "--allow-empty", "-q", "-m", "init");
+  const gitc = (...a: string[]) =>
+    spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", ...a], { encoding: "utf8" }).stdout.trim();
+  const commitFile = (rel: string, body = "x\n") => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), body);
+    gitc("add", rel);
+    gitc("commit", "-q", "-m", `change ${rel}`);
+    return gitc("rev-parse", "--short", "HEAD");
+  };
+  if (opts.checkoutGit) {
+    gitc("init", "-q");
+    gitc("add", "scripts", "packages");
+    gitc("commit", "-q", "-m", "base");
+  }
   const state = opts.longState ? join(dir, "s".repeat(80), "state") : join(dir, "state");
   const key = join(dir, "key");
   writeFileSync(key, `${SECRET}\n`, { mode: 0o600 });
@@ -116,6 +143,10 @@ function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?
     repo,
     state,
     key,
+    root,
+    gitc,
+    commitFile,
+    setLabel: (label) => writeFileSync(join(dir, "label"), `${label}\n`),
     run: (args = [], env = {}) => {
       const r = spawnSync(
         "bash",
@@ -352,4 +383,88 @@ test("short state path: POMTREE_SOCKET stays unset for pomtree (default socket i
   const f = fixture({ docker: "ok" });
   assert.equal(f.run(["--no-build"]).status, 0);
   assert.equal(readFileSync(join(f.state, "pomtree-seen-sock"), "utf8"), "");
+});
+
+// Image revision label: only a label that is current (HEAD, or an ancestor with no image-source change since) is silent.
+const STALE_WARN = /differs from source/;
+const BUILDING = /building image .*stale/;
+
+function labelled(): { f: Fixture; base: string } {
+  const f = fixture({ docker: "ok", checkoutGit: true });
+  const base = f.gitc("rev-parse", "--short", "HEAD");
+  f.setLabel(base);
+  return { f, base };
+}
+
+// A successful run leaves a socket in the state dir, so each run of a case gets its own fixture, built by `setup`.
+function eachRun(setup: (f: Fixture, base: string) => void, args: string[][], check: (r: { out: string; status: number | null }, a: string[]) => void): void {
+  for (const a of args) {
+    const { f, base } = labelled();
+    setup(f, base);
+    check(f.run(a), a);
+  }
+}
+
+test("image label equal to HEAD: silent, no build attempt", () => {
+  eachRun(
+    () => {},
+    [["--no-build"], []],
+    (r) => {
+      assert.equal(r.status, 0, r.out);
+      assert.doesNotMatch(r.out, STALE_WARN);
+      assert.doesNotMatch(r.out, /building image|image build failed/);
+    },
+  );
+});
+
+test("image label is an ancestor and only a docs file changed since: not stale, no warning, no build", () => {
+  eachRun(
+    (f) => {
+      f.commitFile("docs/note.md");
+      f.commitFile("packages/observe/src/x.ts");
+    },
+    [["--no-build"], []],
+    (r) => {
+      assert.equal(r.status, 0, r.out);
+      assert.doesNotMatch(r.out, STALE_WARN);
+      assert.doesNotMatch(r.out, /building image|image build failed/);
+    },
+  );
+});
+
+test("image label is an ancestor but a file under packages/agent-image changed: stale (warns with --no-build, builds without)", () => {
+  eachRun(
+    (f) => f.commitFile("packages/agent-image/Dockerfile"),
+    [["--no-build"], []],
+    (r, a) => {
+      if (a.length) {
+        assert.equal(r.status, 0, r.out);
+        assert.match(r.out, STALE_WARN);
+        assert.doesNotMatch(r.out, /building image/);
+      } else {
+        assert.equal(r.status, 1);
+        assert.match(r.out, BUILDING);
+        assert.match(r.out, /image build failed/);
+      }
+    },
+  );
+});
+
+test("image label is not an ancestor of HEAD: stale", () => {
+  eachRun(
+    (f) => {
+      f.gitc("checkout", "-q", "--orphan", "other");
+      f.commitFile("docs/other.md");
+    },
+    [["--no-build"], []],
+    (r, a) => assert.match(r.out, a.length ? STALE_WARN : BUILDING),
+  );
+});
+
+test("image label that names no commit: stale", () => {
+  eachRun(
+    (f) => f.setLabel("deadbee"),
+    [["--no-build"], []],
+    (r, a) => assert.match(r.out, a.length ? STALE_WARN : BUILDING),
+  );
 });

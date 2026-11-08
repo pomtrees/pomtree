@@ -56,7 +56,7 @@ A `pomtree wait` that outlasts `wait.yieldMs` (`POMTREED_WAIT_YIELD_MS`) yields:
 
 ## Image identity
 
-Every agent image carries two labels that say which source and which Pi it contains: `org.opencontainers.image.revision` (the short git revision the image was built from) and `org.pomtree.pi.version` (the Pi version pinned in `packages/agent-image/scripts/build.ts`). The Pi version is read from the image, never assumed from the build script. `pomtree doctor` reports the daemon's git sha, the image's revision and whether they mismatch, and `scripts/pomtree-up` warns when the image it is about to use was built from a different revision than the checkout.
+Every agent image carries two labels that say which source and which Pi it contains: `org.opencontainers.image.revision` (the short git revision the image was built from) and `org.pomtree.pi.version` (the Pi version pinned in `packages/agent-image/scripts/build.ts`). The Pi version is read from the image, never assumed from the build script. `pomtree doctor` reports the daemon's git sha, the image's revision and whether they mismatch, and `scripts/pomtree-up` warns when the image it is about to use was built from a revision that is not the checkout's HEAD or an ancestor of it with no change to the image sources since (a docs-only commit is not stale).
 
 ## Reading a run
 
