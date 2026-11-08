@@ -144,9 +144,10 @@ test("the observe builtin registers the /live, /live/events, /v1/tree, and /repo
   assert.ok(routes.includes("GET /live"));
   assert.ok(routes.includes("GET /reports"));
   assert.ok(routes.includes("GET /v1/tree"));
+  assert.ok(routes.includes("POST /v1/ui/command"));
   assert.deepEqual(
     t.extensions.streams().map((s) => `${s.method} ${s.path}`),
-    ["GET /live/events", "GET /live/messages"],
+    ["GET /live/events", "GET /live/messages", "GET /live/ui"],
   );
 });
 

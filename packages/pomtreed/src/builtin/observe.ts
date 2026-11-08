@@ -1,5 +1,6 @@
 import type { AgentId, Extension, ExtensionDeps, ExtensionHost, Journal, WaitCondition } from "@pomtree/core";
 import { buildTree, displayRows, encodeSseFrame, LiveStream, OtlpExporter, renderLivePage, renderReportsPage } from "@pomtree/observe";
+import { registerUiDrive } from "./uiDrive.ts";
 import type { OtlpExporterOptions, RunHandle } from "@pomtree/observe";
 
 // The built-in observe extension: the operator-facing live view (GET /live, GET /live/events, GET /live/messages) and
@@ -40,7 +41,7 @@ export function createObserveExtension(opts: ObserveExtensionOptions = {}): Exte
   let host: ExtensionHost | null = null;
   let otlpRun: RunHandle | null = null;
   return {
-    manifest: { name: "observe", entry: "builtin", capabilities: { routes: true }, deps: ["registry", "journal"] },
+    manifest: { name: "observe", entry: "builtin", capabilities: { routes: true, journalKinds: true }, deps: ["registry", "journal", "record"] },
     init(h) {
       host = h;
       const waits = async (): Promise<ReadonlyMap<AgentId, WaitCondition>> => (opts.waits ? await opts.waits() : new Map<AgentId, WaitCondition>());
@@ -113,6 +114,8 @@ export function createObserveExtension(opts: ObserveExtensionOptions = {}): Exte
           })().catch((err) => h.log(`live messages stream failed: ${String(err)}`));
         },
       });
+
+      registerUiDrive(h);
 
       h.route({
         method: "GET",

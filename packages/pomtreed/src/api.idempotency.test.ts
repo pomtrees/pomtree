@@ -46,6 +46,7 @@ interface World {
 const ROWS: Row[] = [
   { name: "drain", method: "POST", who: "operator", url: () => "/v1/drain", body: () => ({ deadline: 1 }) },
   { name: "peers send", method: "POST", who: "agent", url: (w) => `/v1/peers/${w.child.id}/send`, body: () => ({ generation: 0, body: "hi" }) },
+  { name: "ui command", method: "POST", who: "operator", url: () => "/v1/ui/command", body: () => ({ command: { kind: "x" } }), ext: true },
   { name: "ui reply", method: "POST", who: "operator", url: () => "/v1/ui/reply", body: () => ({ replyTo: "es-x", body: "yes" }) },
   {
     name: "messages (host)",
@@ -175,7 +176,7 @@ test("an empty or non-string idempotencyKey is refused like a missing one", asyn
 // The router is an if-chain, so the exhaustiveness check reads its source: every `m === "POST|PUT|PATCH|DELETE"` guard in api.ts and
 // state-routes.ts, and every `method: "..."` route registration in the builtin extensions, must be accounted for by a row. A new mutating
 // route fails here until it has a row, and so a key check.
-const ROUTE_SOURCES = ["api.ts", "state-routes.ts", "builtin/cron.ts", "builtin/reports.ts", "transfer-route.ts"];
+const ROUTE_SOURCES = ["api.ts", "state-routes.ts", "builtin/cron.ts", "builtin/reports.ts", "builtin/uiDrive.ts", "transfer-route.ts"];
 // Files that register routes but only GET (no key to require); a mutating route added to one moves it to ROUTE_SOURCES.
 const READ_ONLY_ROUTE_FILES = ["builtin/observe.ts"];
 const MUTATING = /^\s*(?:if \(.*\b(?:m|method) === "(?:POST|PUT|PATCH|DELETE)"|method: "(?:POST|PUT|PATCH|DELETE)",?\s*$)/gm;
