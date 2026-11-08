@@ -31,8 +31,10 @@ export type LayoutNode = LeafNode | SplitNode;
 export interface Layout {
   version: 1;
   next: number;
+  // "" when the layout is empty.
   focus: string;
-  root: LayoutNode;
+  // Null for an empty layout (every window closed); an empty layout is valid, stored and parsed like any other.
+  root: LayoutNode | null;
 }
 export interface Rect {
   x: number;
@@ -125,10 +127,11 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     else { leavesOf(n.children[0], out); leavesOf(n.children[1], out); }
     return out;
   };
-  const leaves = (layout) => leavesOf(layout.root, []);
+  const leaves = (layout) => (layout.root ? leavesOf(layout.root, []) : []);
 
   // Nodes from the root down to the node with this id, or null.
   const pathTo = (n, id, acc) => {
+    if (!n) return null;
     acc.push(n);
     if (n.id === id) return acc;
     if (n.kind === "split" && (pathTo(n.children[0], id, acc) || pathTo(n.children[1], id, acc))) return acc;
@@ -173,8 +176,9 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
   };
 
   // Closing the focused leaf moves focus to the sibling subtree's leaf nearest to where it was (first leaf if it
-  // was the first child, else last); closing any other leaf keeps focus.
+  // was the first child, else last); closing any other leaf keeps focus. Closing the only leaf leaves an empty layout.
   const close = (layout, leafId) => {
+    if (layout.root && layout.root.kind === "leaf" && layout.root.id === leafId) return { version: VERSION, next: layout.next, focus: "", root: null };
     const d = detach(layout, leafId);
     if (!d) return layout;
     let focus = layout.focus;
@@ -240,7 +244,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
         go(n.children[1], x, y + h1, w, h - h1);
       }
     };
-    go(layout.root, 0, 0, 1, 1);
+    if (layout.root) go(layout.root, 0, 0, 1, 1);
     return out;
   };
 
@@ -290,6 +294,11 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
 
   const open = (layout, view, params, multi) => {
     if (leafProblem(view, params)) return layout;
+    if (!layout.root) {
+      if (layout.next + 1 > MAX_NEXT) return layout;
+      const nl = mkLeaf("t" + layout.next, view, params);
+      return { version: VERSION, next: layout.next + 1, focus: nl.id, root: nl };
+    }
     const id = find(layout, view, params, multi);
     return id ? focus(layout, id) : setView(layout, layout.focus, view, params);
   };
@@ -338,7 +347,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     };
     let root;
     try {
-      root = node(raw.root, 0, "root");
+      root = raw.root === null ? null : node(raw.root, 0, "root");
       if (typeof raw.next !== "number" || !Number.isInteger(raw.next) || raw.next <= maxNum || raw.next > MAX_NEXT) {
         bad("next is " + show(raw.next) + ", which must be an integer above every used id number (" + maxNum + ") and at most " + MAX_NEXT);
       }
@@ -346,10 +355,10 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
       if (e && e.layoutError) return fail("Layout is invalid: " + e.layoutError + RESET + ".");
       throw e;
     }
-    const first = leavesOf(root, [])[0].id;
-    const focusId = typeof raw.focus === "string" && ids[raw.focus] === "leaf" ? raw.focus : first;
+    const all = root ? leavesOf(root, []) : [];
+    const focusId = typeof raw.focus === "string" && ids[raw.focus] === "leaf" ? raw.focus : all.length ? all[0].id : "";
     const known = opts && Array.isArray(opts.views) ? opts.views : null;
-    const unknown = known ? leavesOf(root, []).filter((l) => known.indexOf(l.view) < 0).map((l) => l.id) : [];
+    const unknown = known ? all.filter((l) => known.indexOf(l.view) < 0).map((l) => l.id) : [];
     return { ok: true, layout: { version: VERSION, next: raw.next, focus: focusId, root }, unknown };
   };
 

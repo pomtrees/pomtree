@@ -115,6 +115,8 @@ function createWindowManager(tabs, storageKey) {
   let narrowLayout = null;
   const layout = () => (narrow ? narrowLayout : desktop);
   const focusedLeaf = (l) => LK.leaves(l).find((x) => x.id === l.focus);
+  // The single window narrow mode shows: the focused one, else the default view when the desktop layout is empty.
+  const narrowOf = () => { const f = focusedLeaf(desktop); return f ? single(f.view, f.params) : single(defaultView); };
 
   const save = () => {
     try {
@@ -187,7 +189,11 @@ function createWindowManager(tabs, storageKey) {
   const syncHash = () => {
     const l = layout();
     const lf = l && focusedLeaf(l);
-    if (!lf) return;
+    if (!lf) {
+      // An empty layout names no window, so a stale hash would reopen the last one on reload.
+      if (l && !LK.leaves(l).length && hashTarget(location.hash)) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
+      return;
+    }
     const t = hashTarget(location.hash);
     const want = hashFor(lf.view, lf.params);
     if (t && hashFor(t.view, t) === want) return;
@@ -401,6 +407,7 @@ function createWindowManager(tabs, storageKey) {
   };
 
   const listeners = new Set();
+  let emptyEl = null;
   const render = () => {
     const l = layout();
     const leaves = LK.leaves(l);
@@ -434,10 +441,14 @@ function createWindowManager(tabs, storageKey) {
       rec.el.style.height = pct(r.h);
       rec.el.className = lf.id === l.focus ? "tile tile-focused" : "tile";
       if (rec.sel) rec.sel.value = lf.view;
-      rec.bClose.disabled = leaves.length < 2;
+      rec.bClose.disabled = narrow; // the one narrow window is the desktop layout's focus, not a tile to close
       geom += lf.id + ":" + rec.el.style.left + "," + rec.el.style.top + "," + rec.el.style.width + "," + rec.el.style.height + ";";
     }
-    splitInfo = splitsOf(l.root, 0, 0, 1, 1, new Map());
+    if (leaves.length === 0) {
+      if (!emptyEl) { emptyEl = make("div", "wm-empty"); emptyEl.textContent = "No windows open: use the launcher (Alt+Shift+P) to open one."; }
+      if (!emptyEl.parent) root.appendChild(emptyEl);
+    } else if (emptyEl && emptyEl.parent) emptyEl.remove();
+    splitInfo = l.root ? splitsOf(l.root, 0, 0, 1, 1, new Map()) : new Map();
     for (const [id, el] of [...splitEls]) if (!splitInfo.has(id)) { el.remove(); splitEls.delete(id); }
     for (const s of splitInfo.values()) {
       let el = splitEls.get(s.id);
@@ -466,6 +477,7 @@ function createWindowManager(tabs, storageKey) {
       notify("open", "Cannot open " + (titles.get(view) || view) + " without " + needText(view) + ". Open it from the Tree, the top bar or a link that names it.");
       return;
     }
+    if (LK.leaves(l).length === 0) { commit(LK.open(l, view, params, multiOf(view))); return; }
     const rects = LK.rects(l);
     const box = root.getBoundingClientRect ? root.getBoundingClientRect() : null;
     const bw = box && box.width > 0 && box.height > 0 ? box.width : 1;
@@ -489,7 +501,7 @@ function createWindowManager(tabs, storageKey) {
   const applyNarrow = (on) => {
     if (on === narrow) return;
     narrow = on;
-    if (on) { const f = focusedLeaf(desktop); narrowLayout = single(f.view, f.params); }
+    if (on) narrowLayout = narrowOf();
     else narrowLayout = null;
     render();
     syncHash();
@@ -505,7 +517,7 @@ function createWindowManager(tabs, storageKey) {
   if (stored && start && !startItem) desktop = LK.open(stored, start.view, {}, false);
   if (narrow) {
     if (stored && startItem) narrowLayout = single(start.view, startParams);
-    else { const f = focusedLeaf(desktop); narrowLayout = single(f.view, f.params); }
+    else narrowLayout = narrowOf();
   }
   render();
   if (stored && desktop !== stored) save();

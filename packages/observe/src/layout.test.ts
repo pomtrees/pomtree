@@ -116,9 +116,38 @@ test("close of an unfocused leaf keeps focus; sibling subtree edge leaf is chose
   assert.equal(K.close(K.focus(four, "t1"), "t1").focus, "t2");
 });
 
-test("close no-ops on the last leaf or an unknown id", () => {
+test("close of the last leaf leaves an empty layout that every operation tolerates and open refills", () => {
   const one = solo("tree");
-  assert.equal(K.close(one, "t1"), one);
+  const e = K.close(one, "t1");
+  assert.deepEqual(plain(e), { version: 1, next: 2, focus: "", root: null });
+  assert.deepEqual(plain(K.leaves(e)), []);
+  assert.deepEqual(plain(K.rects(e)), {});
+  assert.equal(K.close(e, "t1"), e);
+  assert.equal(K.split(e, "t1", "row", "tree"), e);
+  assert.equal(K.focus(e, "t1"), e);
+  assert.equal(K.focusDir(e, "left"), e);
+  assert.equal(K.move(e, "t1", "t2", "left"), e);
+  assert.equal(K.setView(e, "t1", "hosts"), e);
+  assert.equal(K.find(e, "tree"), null);
+  const back = K.open(e, "hosts");
+  assert.deepEqual(plain(back), { version: 1, next: 3, focus: "t2", root: { kind: "leaf", id: "t2", view: "hosts", params: {} } });
+  assert.equal(K.open(e, "Bad View"), e);
+});
+
+test("an empty layout serializes and parses back, with focus empty and no unknown views", () => {
+  const e = K.close(solo("tree"), "t1");
+  const r = K.parse(K.serialize(e), { views: ["tree"] });
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.deepEqual(plain(r.layout), plain(e));
+    assert.deepEqual(plain(r.unknown), []);
+  }
+  assert.equal(K.parse('{"version":1,"next":1,"focus":"","root":null}').ok, true);
+  assert.equal(K.parse('{"version":1,"next":0,"focus":"","root":null}').ok, false, "next must stay a positive integer");
+  assert.equal(K.parse('{"version":1,"next":2,"focus":""}').ok, false, "a missing root is still invalid; only null means empty");
+});
+
+test("close no-ops on an unknown id", () => {
   const l = two();
   assert.equal(K.close(l, "t9"), l);
   assert.equal(K.close(l, "s3"), l);

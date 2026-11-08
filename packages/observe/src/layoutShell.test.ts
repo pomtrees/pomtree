@@ -172,6 +172,8 @@ function boot(o: Opts = {}) {
   const hist = { length: 1 };
   let curHash = o.hash ?? "";
   const location = {
+    pathname: "/ui/",
+    search: "",
     get hash() {
       return curHash;
     },
@@ -231,7 +233,7 @@ function boot(o: Opts = {}) {
     history: {
       replaceState: (_s: unknown, _t: string, url: string) => {
         replaced.push(url);
-        curHash = url;
+        curHash = url.startsWith("#") ? url : ""; // a URL without a fragment clears the hash, as in a browser
       },
     },
     document: {
@@ -428,7 +430,99 @@ test("split creates two visible tiles with both singletons active; close deactiv
   assert.equal(s.tiles().length, 1);
   assert.equal(s.sections[1]!.parent, s.stash);
   assert.equal(s.sections[1]!.hidden, true);
-  assert.equal(s.btn(s.tiles()[0]!, "Close tile").disabled, true, "the last tile cannot be closed");
+  assert.equal(s.btn(s.tiles()[0]!, "Close tile").disabled, false, "the last tile can be closed too");
+});
+
+const EMPTY_TEXT = "No windows open: use the launcher (Alt+Shift+P) to open one.";
+
+test("closing the last window leaves an empty workspace with a visible empty state, an empty saved layout and no hash", () => {
+  const s = boot();
+  s.btn(s.tiles()[0]!, "Close tile").click();
+  assert.equal(s.tiles().length, 0);
+  assert.deepEqual(
+    s.root.byClass("wm-empty").map((n) => n.textContent),
+    [EMPTY_TEXT],
+  );
+  assert.deepEqual(s.log, ["+tree", "-tree"], "the closed view is deactivated");
+  assert.equal(s.sections[0]!.parent, s.stash);
+  assert.deepEqual(stored(s.store), { version: 1, next: 2, focus: "", root: null });
+  assert.equal(s.location.hash, "", "no window, so no window in the hash");
+  assert.deepEqual(s.api.state().leaves, []);
+  assert.equal(s.api.state().focus, "");
+  assert.deepEqual(s.noticeTexts(), []);
+});
+
+test("an empty workspace tolerates every window action and the launcher api reopens a window", () => {
+  const s = boot();
+  s.api.closeFocused();
+  assert.equal(s.tiles().length, 0);
+  s.api.closeFocused();
+  s.api.splitFocused("row");
+  s.api.focusDom();
+  assert.equal(s.tiles().length, 0);
+  s.api.openView("hosts");
+  assert.equal(s.tiles().length, 1);
+  assert.deepEqual(s.root.byClass("wm-empty"), [], "the empty state goes away when a window opens");
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+  );
+  assert.equal(stored(s.store).root.view, "hosts");
+  assert.equal(s.location.hash, "#/hosts");
+  s.api.closeFocused();
+  s.api.openView("terminal", "a1");
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view + ":" + l.params.agent),
+    ["terminal:a1"],
+  );
+});
+
+test("a stored empty layout is restored as empty, not rejected, and an explicit hash then opens that window", () => {
+  const empty = JSON.stringify({ version: 1, next: 5, focus: "", root: null });
+  const a = boot({ store: { "pomtree.layout": empty } });
+  assert.equal(a.tiles().length, 0);
+  assert.deepEqual(a.root.byClass("wm-empty").length, 1);
+  assert.deepEqual(a.noticeTexts(), [], "an empty layout is valid, so no stale-layout message");
+  assert.equal(a.writes.length, 0);
+  const b = boot({ store: { "pomtree.layout": empty }, hash: "#/hosts" });
+  assert.deepEqual(
+    b.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+  );
+  const c = boot({ store: { "pomtree.layout": empty }, hash: "#/terminal/a1" });
+  assert.deepEqual(
+    c.api.state().leaves.map((l) => l.view + ":" + l.params.agent),
+    ["terminal:a1"],
+  );
+});
+
+test("narrow mode never shows an empty workspace: it falls back to the default view and keeps its close button disabled", () => {
+  const empty = JSON.stringify({ version: 1, next: 5, focus: "", root: null });
+  const n = boot({ narrow: true, store: { "pomtree.layout": empty } });
+  assert.deepEqual(
+    n.api.state().leaves.map((l) => l.view),
+    ["tree"],
+  );
+  assert.equal(n.btn(n.tiles()[0]!, "Close tile").disabled, true);
+  n.api.closeFocused();
+  assert.equal(n.tiles().length, 1);
+  const w = boot({ store: { "pomtree.layout": empty } });
+  w.mq.matches = true;
+  for (const fn of w.mqListeners) fn({ matches: true });
+  assert.deepEqual(
+    w.api.state().leaves.map((l) => l.view),
+    ["tree"],
+  );
+  for (const fn of w.mqListeners) fn({ matches: false });
+  assert.equal(w.tiles().length, 0);
+  assert.equal(w.root.byClass("wm-empty").length, 1);
+});
+
+test("the empty state has a CSS rule that fills the workspace in normal flow, without colour literals", () => {
+  const rule = /\.wm-empty \{([^}]*)\}/.exec(LAYOUT_CSS)![1]!;
+  assert.match(rule, /padding:/);
+  assert.match(rule, /color: var\(--muted/);
+  assert.doesNotMatch(rule, /#[0-9a-fA-F]{3,8}\b|rgb\(/);
 });
 
 test("split down makes a horizontal splitter and changing a tile's view deactivates the old singleton", () => {
@@ -1030,8 +1124,8 @@ test("api.splitFocused and api.closeFocused act on the focused tile and are no-o
   assert.equal(s.tiles().length, 2);
   s.api.closeFocused();
   assert.equal(s.tiles().length, 1);
-  s.api.closeFocused(); // last tile cannot close
-  assert.equal(s.tiles().length, 1);
+  s.api.closeFocused(); // the last tile closes too, leaving an empty workspace
+  assert.equal(s.tiles().length, 0);
   const n = boot({ narrow: true });
   n.api.splitFocused("row");
   n.api.closeFocused();

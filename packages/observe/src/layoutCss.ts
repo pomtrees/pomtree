@@ -11,6 +11,7 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .wm-notice { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem var(--pad, 1rem); border-bottom-width: 1px; border-bottom-style: solid; border-bottom-color: var(--chrome-border, var(--border, currentColor)); background: var(--chrome-bg, var(--surface-2, transparent)); color: var(--chrome-fg, inherit); font-size: 0.875rem; }
 .wm-notice > span { flex: 1 1 auto; min-width: 0; }
 .wm-root { position: relative; width: 100%; height: 100%; min-height: 0; }
+.wm-empty { box-sizing: border-box; padding: 2rem var(--pad, 1rem); text-align: center; color: var(--muted, inherit); }
 .tile { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-width: 1px; border-style: solid; border-color: var(--chrome-border, var(--border, currentColor)); background: var(--surface, transparent); }
 .tile-focused { outline-width: 2px; outline-style: solid; outline-color: var(--chrome-accent, var(--accent, currentColor)); outline-offset: -2px; }
 .tile-bar { display: flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; min-height: 1.75rem; padding: 0.125rem 0.375rem; box-sizing: border-box; background: var(--chrome-bg, var(--surface-2, transparent)); color: var(--chrome-fg, inherit); border-bottom-width: 1px; border-bottom-style: solid; border-bottom-color: var(--chrome-border, var(--border, currentColor)); }
