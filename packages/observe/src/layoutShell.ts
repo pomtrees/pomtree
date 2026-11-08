@@ -455,14 +455,34 @@ function createWindowManager(tabs, storageKey) {
     for (const fn of [...listeners]) { try { fn(); } catch (e) { notify("launcher", "The top bar failed to update (" + errText(e) + "). Reload the page; the layout is unaffected."); } }
   };
 
-  // Shows a view: focuses the tile that shows it, else (narrow) replaces the single window, else splits the focused tile to
-  // the right. The one path for api.openView and for an item view named by the hash.
+  // Shows a view: focuses the tile that shows it, else (narrow) replaces the single window, else splits the largest tile that
+  // can still be split, along its longer side. The one path for api.openView and for an item view named by the hash.
   const showView = (view, params) => {
     const l = layout();
     const at = LK.find(l, view, params, multiOf(view));
     if (at) { focusLeaf(at); return; }
-    if (narrow) commit(LK.setView(l, l.focus, view, params));
-    else splitLeaf(l.focus, "row", view, params);
+    if (narrow) { commit(LK.setView(l, l.focus, view, params)); return; }
+    if (!hasSubject(view, params)) {
+      notify("open", "Cannot open " + (titles.get(view) || view) + " without " + needText(view) + ". Open it from the Tree, the top bar or a link that names it.");
+      return;
+    }
+    const rects = LK.rects(l);
+    const box = root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+    const bw = box && box.width > 0 && box.height > 0 ? box.width : 1;
+    const bh = box && box.width > 0 && box.height > 0 ? box.height : 1;
+    const cands = LK.leaves(l).map((lf, i) => {
+      const r = rects[lf.id];
+      return { id: lf.id, i, w: r.w * bw, h: r.h * bh, area: r.w * bw * r.h * bh };
+    });
+    cands.sort((a, b) => b.area - a.area || (b.id === l.focus ? 1 : 0) - (a.id === l.focus ? 1 : 0) || a.i - b.i);
+    for (const c of cands) {
+      if (commit(LK.split(l, c.id, c.w >= c.h ? "row" : "col", view, params))) return;
+    }
+    const atLeaves = LK.leaves(l).length >= LK.MAX_LEAVES;
+    notify("limit", atLeaves
+      ? "Cannot open another window: a layout holds at most " + LK.MAX_LEAVES + " tiles. Close a tile first."
+      : "Cannot open another window: every tile is already nested " + LK.MAX_DEPTH + " levels deep. Close a tile first.");
+    syncHash();
   };
 
   // ---- narrow fallback: one view at a time, never persisted ----

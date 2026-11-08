@@ -516,12 +516,19 @@ function createLauncherBar(wm, cfg) {
     );
   }
   // Report entries come from GET /v1/reports, read once each time the launcher panel opens (no poll). A failure leaves
-  // the report entries absent and never touches the agent entries or the connection pill; the next open tries again.
+  // the report entries absent, tells the operator once in the launcher notice, and never touches the agent entries or the
+  // connection pill; the next open tries again and clears that notice.
+  let reportsNoticed = false;
   function loadReports() {
     const seq = ++reportsSeq;
+    if (reportsNoticed) { reportsNoticed = false; setNotice(""); }
     return fetchJson(cfg.paths.reports).then((r) => {
       if (seq !== reportsSeq) return;
       data.reports = r.err ? [] : K.normalizeReports(r.v);
+      if (r.err) {
+        reportsNoticed = true;
+        setNotice("Reports could not be listed (" + r.err + "); reopen the launcher to retry.");
+      }
       if (omni.open) renderOmni();
     });
   }

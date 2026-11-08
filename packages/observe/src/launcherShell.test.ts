@@ -826,13 +826,14 @@ test("choosing a report entry opens the view with the agent and the report id", 
   assert.deepEqual(h.calls, ["open:report:a2:r-8"]);
 });
 
-test("a failed report fetch shows no report entries, no banner, and leaves agent entries usable", async () => {
+test("a failed report fetch shows no report entries, one notice naming cause and action, and leaves agent entries usable", async () => {
   for (const reply of [{ status: 500 }, new Error("refused")] as Reply[]) {
     const h = await up();
     h.net.set(LAUNCHER_PATHS.reports, reply);
     openStart(h);
     await settle();
-    assert.equal(h.notice.hidden, true);
+    assert.equal(h.notice.hidden, false);
+    assert.match(h.notice.textContent, /^Reports could not be listed \(.+\); reopen the launcher to retry\.$/);
     assert.equal(
       h.labels().some((l) => l.startsWith("Open report")),
       false,
@@ -858,4 +859,6 @@ test("report entries recover on the next open after a failed fetch", async () =>
   openStart(h);
   await settle();
   assert.ok(h.labels().includes("Open report notes (alpha)"), "recovered on the next open");
+  assert.equal(h.notice.hidden, true, "the failure notice is cleared by the next open");
+  assert.equal(h.notice.textContent, "");
 });

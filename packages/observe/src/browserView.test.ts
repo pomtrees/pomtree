@@ -690,14 +690,14 @@ test("an agent that no longer exists shows the placeholder, hides the canvas and
   const ph = gone.find((n) => n.textContent === "This agent is no longer available.");
   assert.ok(ph, "placeholder text");
   assert.ok(!ph.hidden);
-  assert.equal(gone.find((n) => n.tagName === "canvas")!.hidden, true);
+  assert.equal(gone.find((n) => n.tagName === "canvas")!.style.display, "none");
   assert.equal(gone.timeouts.length, 0);
   assert.equal(gone.sockets.length, 1);
   // negative control: a present agent keeps its canvas and shows no placeholder
   const here = setup({ responses: { "/v1/agents/agent-1": { body: { state: "pending" } } } });
   here.sockets[0]!.drop();
   await here.flush();
-  assert.ok(!here.find((n) => n.tagName === "canvas")!.hidden);
+  assert.equal(here.find((n) => n.tagName === "canvas")!.style.display, "block");
   assert.equal(here.find((n) => n.textContent === "This agent is no longer available.")!.hidden, true);
 });
 

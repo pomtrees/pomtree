@@ -265,7 +265,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
         // The agent was removed: replace the canvas with the placeholder and stop (no retry timer is armed).
         gone = true;
         clearCanvas();
-        canvas.hidden = true;
+        canvas.style.display = "none";
         goneEl.hidden = false;
         setState(BrowserKit.stopLabel({ conn: "no agent", label: "agent not found" }), "s-exited");
         setInfo("", false);

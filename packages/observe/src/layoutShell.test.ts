@@ -980,7 +980,7 @@ test("api.state and api.views report the layout and the openable views as plain 
   assert.equal(boot({ narrow: true }).api.state().narrow, true);
 });
 
-test("api.openView splits the focused tile with the view, focuses an already shown one, and names an unavailable view", () => {
+test("api.openView splits a tile with the view, focuses an already shown one, and names an unavailable view", () => {
   const s = boot();
   s.api.openView("hosts");
   assert.equal(s.tiles().length, 2);
@@ -1010,7 +1010,7 @@ test("api.openView at the tile limit shows the existing limit notice and adds no
   const n = s.api.state().leaves.length;
   s.api.openView("terminal", "zzz");
   assert.equal(s.api.state().leaves.length, n);
-  assert.match(s.noticeTexts().join("|"), /Cannot split further/);
+  assert.match(s.noticeTexts().join("|"), /Cannot open another window: a layout holds at most 16 tiles\. Close a tile first\./);
 });
 
 test("api.openView in narrow mode replaces the single view and never persists", () => {
@@ -1254,14 +1254,14 @@ test("a malformed or incomplete item hash is ignored at start-up and on hashchan
   assert.equal(ok.mounts.length, 1);
 });
 
-test("an item hash splits the focused tile to the right and leaves it as it was, instead of retargeting it", () => {
+test("an item hash splits the largest tile that can be split and leaves the others as they were, instead of retargeting", () => {
   const s = boot();
   s.hashchange("#/terminal/a1");
   assert.equal(subjectsOf(s), "tree:: terminal:a1:");
   assert.equal(s.api.state().focus, "t2");
   assert.deepEqual(s.log, ["+tree"], "the tree stayed active and mounted");
   s.hashchange("#/report/a1/r1");
-  assert.equal(subjectsOf(s), "tree:: terminal:a1: report:a1:r1", "split the focused terminal tile, which stays");
+  assert.equal(subjectsOf(s), "tree:: terminal:a1: report:a1:r1", "split the focused terminal tile (tied for largest), which stays");
   assert.equal(s.mounts[0]!.unmounted, false);
   assert.equal(stored(s.store).root.children.length, 2, "the new layout is saved");
   // a browsing view still retargets or focuses as before
@@ -1321,14 +1321,73 @@ test("a hash opening at 16 tiles shows the limit notice and adds nothing", () =>
     s.api.state().leaves.some((l) => l.params.agent === "zzz"),
     false,
   );
-  assert.match(s.noticeTexts().join("|"), /Cannot split further/);
+  assert.match(s.noticeTexts().join("|"), /Cannot open another window: a layout holds at most 16 tiles\. Close a tile first\./);
   const r = boot({ store: { "pomtree.layout": full16("report") } });
   r.api.openView("report", "a", "last");
   assert.equal(r.api.state().leaves.length, 16);
-  assert.match(r.noticeTexts().join("|"), /Cannot split further/);
+  assert.match(r.noticeTexts().join("|"), /Cannot open another window: a layout holds at most 16 tiles/);
   const third = r.api.state().leaves[2]!; // negative control: an open subject is still focused at the limit
   r.api.openView("report", "a", third.params.report);
   assert.equal(r.api.state().focus, third.id);
+});
+
+test("repeated item hashes from a Tree-only layout split the largest tile: none is refused before 16 tiles, the Tree stays, the 17th shows the notice", () => {
+  for (const zero of [false, true]) {
+    const s = boot();
+    if (zero) s.root.rect = { left: 0, top: 0, width: 0, height: 0 };
+    for (let i = 1; i <= 15; i++) {
+      s.hashchange(`#/terminal/n${i}`);
+      assert.equal(s.api.state().leaves.length, i + 1, `zero=${zero} open ${i}`);
+      assert.equal(
+        s.api.state().leaves.some((l) => l.params.agent === `n${i}`),
+        true,
+        `zero=${zero} open ${i} shown`,
+      );
+      assert.equal(s.noticeTexts().length, 0, `zero=${zero} no notice at ${i}`);
+    }
+    assert.equal(
+      s.api.state().leaves.some((l) => l.view === "tree"),
+      true,
+      "the Tree tile still exists",
+    );
+    s.hashchange("#/terminal/n16");
+    assert.equal(s.api.state().leaves.length, 16);
+    assert.equal(
+      s.api.state().leaves.some((l) => l.params.agent === "n16"),
+      false,
+    );
+    assert.match(s.noticeTexts().join("|"), /Cannot open another window: a layout holds at most 16 tiles\. Close a tile first\./);
+  }
+});
+
+test("a leaf at the depth limit is skipped when it is the largest and focused: the next largest is split instead", () => {
+  let n = 0;
+  const chain = (k: number): unknown => {
+    if (k === 8) return { kind: "split", id: `s${100 + k}`, dir: "row", ratio: 0.15, children: [lf("t8", "tree"), lf("t9", "hosts")] };
+    return { kind: "split", id: `s${100 + k}`, dir: "row", ratio: 0.15, children: [lf(`t${++n}`, "reports"), chain(k + 1)] };
+  };
+  const layout = JSON.stringify({ version: 1, next: 200, focus: "t9", root: chain(1) });
+  const s = boot({ store: { "pomtree.layout": layout } });
+  assert.equal(s.api.state().leaves.length, 9);
+  assert.equal(s.api.state().focus, "t9");
+  s.hashchange("#/terminal/deep");
+  assert.equal(s.api.state().leaves.length, 10, "opened although the largest, focused leaf is at the depth limit");
+  assert.equal(s.noticeTexts().length, 0);
+  assert.equal(
+    s.api.state().leaves.some((l) => l.params.agent === "deep"),
+    true,
+  );
+});
+
+test("a hash opening that fails at the limit restores the focused tile's hash so the same link fires again and shows the notice again", () => {
+  const s = boot({ store: { "pomtree.layout": full16("terminal") } });
+  assert.equal(s.location.hash, "#/terminal/a1");
+  s.hashchange("#/terminal/zzz");
+  assert.equal(s.location.hash, "#/terminal/a1", "the refused link's hash is replaced");
+  assert.equal(s.noticeTexts().length, 1);
+  s.hashchange("#/terminal/zzz");
+  assert.equal(s.location.hash, "#/terminal/a1");
+  assert.match(s.noticeTexts().join("|"), /Cannot open another window/);
 });
 
 test("api.openView opens and focuses an item per subject and refuses an item view without its subject", () => {

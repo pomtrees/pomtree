@@ -52,12 +52,12 @@ const mountReportInstance = (root, params, hostApi) => {
   wrap.appendChild(head);
   wrap.appendChild(body);
   root.appendChild(wrap);
-  hostApi.setTitle("Report \u00b7 " + id.slice(0, 8));
+  hostApi.setTitle("Report \\u00b7 " + id.slice(0, 8));
 
   K.getJson(base).then((report) => {
     if (!active) return;
     title.textContent = report.name;
-    hostApi.setTitle("Report \u00b7 " + report.name);
+    hostApi.setTitle("Report \\u00b7 " + report.name);
     const type = String(report.mediaType).split(";")[0].trim().toLowerCase();
     const isActive = ACTIVE.includes(type);
     if (isActive || IMG.includes(type)) {
@@ -94,7 +94,7 @@ const mountReportInstance = (root, params, hostApi) => {
             body.appendChild(pre);
           }).catch((err) => { if (active) body.appendChild(note(K.errorMessage("source", err))); });
         });
-        actions.appendChild(document.createTextNode(" \u00b7 "));
+        actions.appendChild(document.createTextNode(" \\u00b7 "));
         actions.appendChild(src);
       }
     } else if (type === "text/markdown" || type === "text/plain" || type === "application/json") {
