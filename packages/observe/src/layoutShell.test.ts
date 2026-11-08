@@ -117,6 +117,7 @@ interface Opts {
   registry?: boolean;
   throwingView?: boolean;
   menus?: boolean; // the terminal view (and the inbox section) declare menus and status
+  controlsOnly?: boolean; // the hosts section declares only controls (no menus, no status)
   noChromeKit?: boolean; // ChromeKit is not loaded
   badChrome?: "destroy-missing"; // deliberately wrong fake used to prove a check can fail
 }
@@ -140,7 +141,7 @@ function boot(o: Opts = {}) {
   const html = renderShell({ tabs: tabIds.map((id) => ({ id, title: id.toUpperCase(), render: () => "" })) });
   // the real ChromeKit (windowChrome.ts) is replaced by a fake in the sandbox so these tests do not depend on it
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!.replace(WINDOW_CHROME_JS, ""));
-  const chromes: { model: any; menus: Node_; overflow: Node_; footer: Node_; destroyed: number }[] = [];
+  const chromes: { model: any; controls: Node_; menus: Node_; overflow: Node_; footer: Node_; destroyed: number }[] = [];
   const models: any[] = [];
   const ids = ["wm-root", "wm-notices", "wm-stash"];
   const byId = new Map(ids.map((i) => [i, new Node_("div")]));
@@ -293,6 +294,7 @@ function boot(o: Opts = {}) {
                 declaration: {
                   menus: o.menus && id === "terminal" ? [{ id: "view", items: [] }] : [],
                   status: o.menus && id === "terminal" ? [{ id: "connection" }] : [],
+                  controls: [],
                 },
               };
               models.push(m);
@@ -300,8 +302,14 @@ function boot(o: Opts = {}) {
             },
             windowHost: (m: any, base: object) => ({ ...base, model: m, setMenuState() {}, setStatus() {}, onCommand() {} }),
             sectionModel: (id: string) => {
-              if (!o.menus || id !== "hosts") return undefined;
-              if (!sectionModelOf) sectionModelOf = { id, declaration: { menus: [{ id: "view", items: [] }], status: [] } };
+              if (!(o.menus || o.controlsOnly) || id !== "hosts") return undefined;
+              if (!sectionModelOf)
+                sectionModelOf = {
+                  id,
+                  declaration: o.controlsOnly
+                    ? { menus: [], status: [], controls: [{ kind: "button", command: "x.go", label: "Go" }] }
+                    : { menus: [{ id: "view", items: [] }], status: [], controls: [] },
+                };
               return sectionModelOf;
             },
           },
@@ -316,6 +324,7 @@ function boot(o: Opts = {}) {
             };
             const c = {
               model,
+              controls: mk("div", "tile-controls"),
               menus: mk("div", "tile-menus"),
               overflow: mk("span", "tile-overflow"),
               footer: mk("div", "tile-foot"),
@@ -1245,6 +1254,23 @@ test("closing a terminal tile destroys its chrome; a second terminal tile gets i
     s.chromes.map((c) => c.destroyed),
     [1, 0],
   );
+});
+
+test("a section declaring only controls still gets chrome: controls and the overflow button sit between title and selector, no menus, no footer", () => {
+  const s = boot({ hash: "#/hosts", controlsOnly: true });
+  const t = s.tiles()[0]!;
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-controls", "tile-overflow", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(
+    t.children.map((c) => c.className),
+    ["tile-bar", "tile-body"],
+  );
+  assert.equal(s.chromes.length, 1);
+});
+
+test("a view whose declaration has menus but no controls adds no empty controls strip", () => {
+  const s = boot({ hash: "#/hosts", menus: true });
+  assert.equal(s.tiles()[0]!.byClass("tile-controls").length, 0);
+  assert.equal(s.tiles()[0]!.byClass("tile-menus").length, 1);
 });
 
 test("a section view with a section model gets chrome, the model persists across rebuilds and the chrome is destroyed on release", () => {

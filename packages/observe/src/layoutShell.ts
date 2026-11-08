@@ -259,7 +259,7 @@ function createWindowManager(tabs, storageKey) {
       if (want.kind === "section") model = K && K.sectionModel ? K.sectionModel(lf.view) || null : null;
       else if (want.kind !== "note") model = K.windowModel(lf.view);
       const d = model && model.declaration;
-      if (d && (d.menus.length > 0 || d.status.length > 0)) {
+      if (d && (d.menus.length > 0 || d.status.length > 0 || d.controls.length > 0)) {
         if (typeof ChromeKit === "undefined" || !ChromeKit || typeof ChromeKit.createChrome !== "function") throw new Error("ChromeKit is not loaded");
         chrome = ChromeKit.createChrome(model, { document });
       }
@@ -295,7 +295,8 @@ function createWindowManager(tabs, storageKey) {
     const bDown = mk("\\u2b13", "Split down", () => splitLeaf(lf.id, "col"));
     const bClose = mk("\\u00d7", "Close tile", () => commit(LK.close(layout(), lf.id)));
     const hasMenus = chrome && model.declaration.menus.length > 0;
-    const parts = hasMenus ? [title, chrome.menus, chrome.overflow, sel, bRight, bDown, bClose] : [title, sel, bRight, bDown, bClose];
+    const hasControls = chrome && model.declaration.controls.length > 0;
+    const parts = [title, hasControls ? chrome.controls : null, hasMenus ? chrome.menus : null, hasMenus || hasControls ? chrome.overflow : null, sel, bRight, bDown, bClose];
     for (const c of parts) if (c) bar.appendChild(c);
     const body = make("div", "tile-body");
     el.appendChild(bar);
