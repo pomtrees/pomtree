@@ -14,10 +14,16 @@ interface Leaf {
 type Reply = { status: number; body?: unknown } | Error;
 
 const VIEWS = [
-  { id: "terminal", title: "Terminal", multi: true },
+  { id: "terminal", title: "Terminal", multi: true, subject: "agent" },
   { id: "tree", title: "Tree", multi: false },
   { id: "inbox", title: "Inbox", multi: false },
   { id: "reports", title: "Reports", multi: false },
+  { id: "report", title: "Report", multi: true, subject: "report" },
+];
+const REPORT_ROWS = [
+  { agent: "alpha", report: { id: "r-9", agent: "a1", name: "notes", mediaType: "text/html" } },
+  { agent: "bob", report: { id: "r-8", agent: "a2", name: "plan", mediaType: "text/html" } },
+  { agent: "x", report: { id: "", agent: "a1" } },
 ];
 const A1 = { id: "a1", name: "alpha", state: "running", exit: null };
 const A2 = { id: "a2", name: "bob", state: "pending", exit: null };
@@ -53,7 +59,7 @@ function boot(o: Opts = {}) {
     state: () => ({ leaves: wm.leaves, focus: wm.focus, narrow: wm.narrow, maxLeaves: 16 }),
     views: () => wm.views,
     focus: (id: string) => void calls.push(`focus:${id}`),
-    openView: (v: string, a?: string) => void calls.push(`open:${v}:${a ?? ""}`),
+    openView: (v: string, a?: string, r?: string) => void calls.push(`open:${v}:${a ?? ""}${r ? `:${r}` : ""}`),
     splitFocused: (d: string) => void calls.push(`split:${d}`),
     closeFocused: () => void calls.push("close"),
     exportLayout: () => {
@@ -197,7 +203,7 @@ test("Start opens the launcher, focuses the omnibar and wires the ARIA attribute
   assert.equal(first.getAttribute("role"), "option");
   assert.equal(h.input.getAttribute("aria-activedescendant"), first.id);
   assert.equal(first.getAttribute("aria-selected"), "true");
-  assert.deepEqual(h.labels().slice(0, 5), ["Terminal: alpha", "Tree", "Terminal: bob", "Inbox", "Reports"]);
+  assert.deepEqual(h.labels().slice(0, 5), ["Terminal: alpha", "Tree", "Open terminal for bob", "Inbox", "Reports"]);
   openStart(h);
   assert.equal(h.launcher.hidden, true);
   assert.equal(h.start.getAttribute("aria-expanded"), "false");
@@ -783,4 +789,73 @@ test("press outside closes the launcher in the capture phase, even when the targ
   stopper.addEventListener("pointerdown", (ev) => ev.stopPropagation?.());
   h.doc.dispatch(stopper, "pointerdown");
   assert.equal(h.launcher.hidden, true);
+});
+
+const reportFetches = (h: { fetched: { url: string }[] }) => h.fetched.filter((f) => f.url === LAUNCHER_PATHS.reports).length;
+
+test("reports are fetched when the panel opens, once per open, never by the poll", async () => {
+  const h = await up();
+  h.net.set(LAUNCHER_PATHS.reports, { status: 200, body: REPORT_ROWS });
+  assert.equal(reportFetches(h), 0, "not at mount");
+  await h.tick();
+  assert.equal(reportFetches(h), 0, "not from the poll");
+  openStart(h);
+  assert.equal(reportFetches(h), 1);
+  await settle();
+  assert.ok(h.labels().includes("Open report notes (alpha)"));
+  assert.ok(h.labels().includes("Open report plan (bob)"));
+  assert.equal(h.labels().filter((l) => l.startsWith("Open report")).length, 2, "the malformed row is ignored");
+  await h.tick();
+  h.type("note");
+  h.key("ArrowDown");
+  assert.equal(reportFetches(h), 1, "typing, keys and the poll while open do not refetch");
+  openStart(h);
+  assert.equal(h.launcher.hidden, true);
+  assert.equal(reportFetches(h), 1, "closing does not fetch");
+  openStart(h);
+  assert.equal(reportFetches(h), 2, "each open reads once");
+});
+
+test("choosing a report entry opens the view with the agent and the report id", async () => {
+  const h = await up();
+  h.net.set(LAUNCHER_PATHS.reports, { status: 200, body: REPORT_ROWS });
+  openStart(h);
+  await settle();
+  h.type("r-8");
+  h.key("Enter");
+  assert.deepEqual(h.calls, ["open:report:a2:r-8"]);
+});
+
+test("a failed report fetch shows no report entries, no banner, and leaves agent entries usable", async () => {
+  for (const reply of [{ status: 500 }, new Error("refused")] as Reply[]) {
+    const h = await up();
+    h.net.set(LAUNCHER_PATHS.reports, reply);
+    openStart(h);
+    await settle();
+    assert.equal(h.notice.hidden, true);
+    assert.equal(
+      h.labels().some((l) => l.startsWith("Open report")),
+      false,
+    );
+    assert.ok(h.labels().includes("Open terminal for bob"));
+    h.type("bob");
+    h.key("Enter");
+    assert.deepEqual(h.calls, ["open:terminal:a2"]);
+  }
+});
+
+test("report entries recover on the next open after a failed fetch", async () => {
+  const h = await up();
+  h.net.set(LAUNCHER_PATHS.reports, { status: 500 });
+  openStart(h);
+  await settle();
+  assert.equal(
+    h.labels().some((l) => l.startsWith("Open report")),
+    false,
+  );
+  openStart(h);
+  h.net.set(LAUNCHER_PATHS.reports, { status: 200, body: REPORT_ROWS });
+  openStart(h);
+  await settle();
+  assert.ok(h.labels().includes("Open report notes (alpha)"), "recovered on the next open");
 });

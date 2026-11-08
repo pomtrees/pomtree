@@ -9,6 +9,7 @@ import {
   type LeafLike,
   type MenuEntry,
   type OmniItem,
+  type ReportInfo,
   type ViewDef,
 } from "./launcherModel.ts";
 
@@ -49,6 +50,7 @@ const ctx = (over: Partial<BuildCtx> = {}): BuildCtx =>
     inboxCount: 0,
     ...over,
   });
+const rep = (id: string, agent: string, name = id): ReportInfo => ({ id, agent, name, agentName: "" });
 const labels = (items: OmniItem[]) => plain(items.map((i) => i.label));
 const item = (label: string, kind: OmniItem["kind"] = "open", hint = ""): OmniItem => ({
   key: `${kind}:${label}`,
@@ -218,14 +220,15 @@ test("windowLabel and dot of a report leaf: view title, the report id clipped, n
 });
 
 test("an open report window is listed with its agent and report in the hint and does not hide the agent's other entries", () => {
-  const views = [...VIEWS, { id: "report", title: "Report", multi: true }];
-  const items = K.buildItems(ctx({ views, leaves: [leaf("t1", "tree"), leaf("t2", "report", "a1", "r-1")] }));
+  const views: ViewDef[] = [...VIEWS, { id: "report", title: "Report", multi: true, subject: "report" }];
+  const items = K.buildItems(ctx({ views, reports: [rep("r-1", "a1"), rep("r-2", "a1")], leaves: [leaf("t1", "tree"), leaf("t2", "report", "a1", "r-1")] }));
   const open = items.find((i) => i.key === "open:t2")!;
   assert.equal(open.label, "Report: r-1");
   assert.equal(open.hint, "a1 r-1 report");
-  assert.ok(
-    items.some((i) => i.key === "new:report/a1"),
-    "the agent leaf rule is keyed by view and agent only for leaves without a report",
+  assert.deepEqual(
+    plain(items.filter((i) => i.kind === "new" && i.run.type === "open" && i.run.view === "report").map((i) => i.key)),
+    ["new:report/a1/r-2"],
+    "the shown report has no duplicate entry; the agent's other report keeps one",
   );
 });
 
@@ -265,7 +268,7 @@ test("buildItems order, kinds, dots, runs, unique keys", () => {
     "Tree",
     "Agent: alpha",
     "Inbox",
-    "Agent: beta",
+    "Open agent for beta",
     "Split right",
     "Split down",
     "Close tile",
@@ -324,7 +327,7 @@ test("the unfiltered list caps agent-derived items and skips reaped and shown ag
     false,
   );
   assert.equal(
-    K.buildItems(ctx({ agents: [ag("z", "")] })).some((i) => i.label === "Agent: z"),
+    K.buildItems(ctx({ agents: [ag("z", "")] })).some((i) => i.label === "Open agent for z"),
     true,
   );
 });
@@ -337,7 +340,7 @@ test("an agent past the cap is found by exact name, prefix or id, once", () => {
     K.rank(items, "").some((i) => isA(i, "a229")),
     false,
   );
-  const exact = K.rank(items, "Agent: n229");
+  const exact = K.rank(items, "Open agent for n229");
   assert.ok(isA(exact[0]!, "a229"));
   assert.equal(exact.filter((i) => isA(i, "a229")).length, 1);
   const prefix = K.rank(items, "n229");
@@ -513,4 +516,120 @@ test("menuStep Enter, Space, Escape, Tab, hover, choose, closed", () => {
   const closed = deepFreeze({ open: false, sel: 1 });
   assert.deepEqual(plain(K.menuStep(closed, { type: "key", key: "Enter" }, entries)), { state: { open: false, sel: 1 }, effect: null });
   assert.equal(K.menuStep(mOpen(1), { type: "key", key: "x" }, entries).state.sel, 1);
+});
+
+const ITEM_VIEWS: ViewDef[] = [
+  { id: "tree", title: "Tree", multi: false },
+  { id: "terminal", title: "Terminal", multi: true, subject: "agent" },
+  { id: "browser", title: "Browser", multi: true, subject: "agent" },
+  { id: "report", title: "Report", multi: true, subject: "report" },
+];
+const isOpen = (i: OmniItem, view: string) => i.run.type === "open" && i.run.view === view;
+
+test("item views are listed per subject with the verb, hint and run payload, never as agent-less entries", () => {
+  const items = K.buildItems(
+    ctx({ views: ITEM_VIEWS, leaves: [leaf("t1", "tree")], agents: [ag("a1", "scout")], reports: [{ id: "r1", agent: "a1", name: "notes", agentName: "" }] }),
+  );
+  const l = labels(items);
+  assert.ok(l.includes("Open terminal for scout"));
+  assert.ok(l.includes("Open browser for scout"));
+  assert.ok(l.includes("Open report notes (scout)"));
+  assert.equal(l.includes("Terminal"), false);
+  assert.equal(l.includes("Browser"), false);
+  assert.equal(l.includes("Report"), false);
+  const t = items.find((i) => i.label === "Open terminal for scout")!;
+  assert.equal(t.hint, "a1 terminal");
+  assert.deepEqual(plain(t.run), { type: "open", view: "terminal", agent: "a1" });
+  const r = items.find((i) => i.label === "Open report notes (scout)")!;
+  assert.match(r.hint, /r1/);
+  assert.match(r.hint, /a1/);
+  assert.deepEqual(plain(r.run), { type: "open", view: "report", agent: "a1", report: "r1" });
+  assert.ok(
+    items.every((i) => i.run.type !== "open" || i.run.view === "tree" || i.run.agent !== undefined),
+    "no open entry for an item view lacks its agent",
+  );
+  // the browsing view already shown has no entry; a browsing view not shown does
+  const bare = K.buildItems(ctx({ views: ITEM_VIEWS, leaves: [], agents: [], reports: [] }));
+  assert.deepEqual(labels(bare.filter((i) => i.kind === "new")), ["Tree"]);
+});
+
+test("a report entry names the agent from the agents list, else the row label, else the agent id; a query by id or name finds it", () => {
+  const reports: ReportInfo[] = [
+    { id: "r1", agent: "a1", name: "notes", agentName: "row-label" },
+    { id: "r2", agent: "zz", name: "plan", agentName: "row-label" },
+    { id: "r3", agent: "yy", name: "log", agentName: "" },
+  ];
+  const items = K.buildItems(ctx({ views: ITEM_VIEWS, leaves: [], agents: [ag("a1", "scout")], reports }));
+  assert.deepEqual(labels(items.filter((i) => isOpen(i, "report"))), ["Open report notes (scout)", "Open report plan (row-label)", "Open report log (yy)"]);
+  assert.deepEqual(labels(K.rank(items, "r2").filter((i) => isOpen(i, "report"))), ["Open report plan (row-label)"]);
+  assert.deepEqual(labels(K.rank(items, "plan").filter((i) => isOpen(i, "report"))), ["Open report plan (row-label)"]);
+});
+
+test("a subject that already has a window gets no duplicate entry, for terminal, browser and report", () => {
+  const items = K.buildItems(
+    ctx({
+      views: ITEM_VIEWS,
+      agents: [ag("a1", "scout"), ag("a2", "other")],
+      reports: [rep("r1", "a1"), rep("r2", "a1")],
+      leaves: [leaf("t1", "terminal", "a1"), leaf("t2", "browser", "a2"), leaf("t3", "report", "a1", "r1")],
+    }),
+  );
+  const l = labels(items);
+  assert.equal(l.includes("Open terminal for scout"), false);
+  assert.equal(l.includes("Open terminal for other"), true);
+  assert.equal(l.includes("Open browser for other"), false);
+  assert.equal(l.includes("Open browser for scout"), true);
+  assert.equal(l.includes("Open report r1 (scout)"), false);
+  assert.equal(l.includes("Open report r2 (scout)"), true);
+  assert.equal(l.includes("Terminal: scout"), true, "the window-list entry (focus) covers the open one");
+});
+
+test("each item view type is capped at the omnibar cap, and an entry beyond the cap is found by a query", () => {
+  const agents = Array.from({ length: 250 }, (_, i) => ag(`a${i}`, `n${i}`));
+  const reports = Array.from({ length: 250 }, (_, i) => rep(`r${i}`, "a0", `rn${i}`));
+  const items = K.buildItems(ctx({ views: ITEM_VIEWS, leaves: [leaf("t1", "tree")], agents, reports }));
+  const unfiltered = K.rank(items, "");
+  for (const v of ["terminal", "browser", "report"]) {
+    assert.equal(unfiltered.filter((i) => isOpen(i, v)).length, 200, v);
+  }
+  assert.equal(
+    unfiltered.some((i) => i.label === "Open terminal for n249"),
+    false,
+  );
+  assert.equal(K.rank(items, "n249").filter((i) => isOpen(i, "terminal")).length, 1);
+  assert.equal(K.rank(items, "a249 browser").filter((i) => isOpen(i, "browser")).length, 1);
+  assert.equal(
+    unfiltered.some((i) => i.label === "Open report rn249 (n0)"),
+    false,
+  );
+  assert.deepEqual(labels(K.rank(items, "rn249")), ["Open report rn249 (n0)"]);
+  assert.deepEqual(labels(K.rank(items, "r249")), ["Open report rn249 (n0)"]);
+});
+
+test("without reports in the context there are no report entries", () => {
+  const none = K.buildItems(ctx({ views: ITEM_VIEWS, agents: [ag("a1", "x")] }));
+  assert.equal(
+    none.some((i) => isOpen(i, "report")),
+    false,
+  );
+});
+
+test("normalizeReports clips, drops unknown fields and ignores malformed rows", () => {
+  const rows = [
+    { agent: "scout", report: { id: "r1", agent: "a1", name: "n".repeat(100), mediaType: "text/html", sizeBytes: 3 } },
+    { agent: "x", report: { id: "", agent: "a1", name: "bad" } },
+    { agent: "x", report: { id: "r2", name: "no agent" } },
+    { agent: "x", report: { id: 5, agent: "a1" } },
+    { agent: "x", report: { id: "r".repeat(300), agent: "a1" } },
+    { agent: "x" },
+    { report: { id: "r3", agent: "a3" } },
+    null,
+    "junk",
+  ];
+  assert.deepEqual(plain(K.normalizeReports(rows)), [
+    { id: "r1", agent: "a1", name: "n".repeat(80), agentName: "scout" },
+    { id: "r3", agent: "a3", name: "r3", agentName: "" },
+  ]);
+  assert.deepEqual(plain(K.normalizeReports({ not: "a list" })), []);
+  assert.deepEqual(plain(K.normalizeReports(undefined)), []);
 });

@@ -518,7 +518,7 @@ function createWindowManager(tabs, storageKey) {
       const l = layout();
       return { leaves: LK.leaves(l).map((x) => ({ id: x.id, view: x.view, params: x.params })), focus: l.focus, narrow, maxLeaves: LK.MAX_LEAVES };
     },
-    views: () => order.map((id) => ({ id, title: titles.get(id), multi: multiOf(id) })),
+    views: () => order.map((id) => ({ id, title: titles.get(id), multi: multiOf(id), subject: subjectOf(id) })),
     focus: focusLeaf,
     focusDom: () => { const rec = tiles.get(layout().focus); if (rec && rec.el.focus) rec.el.focus(); },
     openView: (view, agent, report) => {

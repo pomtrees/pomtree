@@ -6,6 +6,7 @@
 // backslashes.
 export const LAUNCHER_PATHS = {
   agents: "/v1/agents",
+  reports: "/v1/reports",
   approvals: "/v1/approvals?state=pending",
   escalations: "/v1/escalations?state=open",
   logout: "/ui/logout",
@@ -87,13 +88,14 @@ function createLauncherBar(wm, cfg) {
   const bar = document.getElementById("lb-bar");
   if (!bar) throw new Error('launcher bar: element "#lb-bar" is missing; the page shell must emit <header id="lb-bar" class="lb"></header> before the bar script runs');
 
-  const data = { agents: [], approvals: null, escalations: null };
+  const data = { agents: [], reports: [], approvals: null, escalations: null };
   let conn = { failures: 0, everOk: false, cause: "" };
   let omni = K.omniInitial();
   let menu = K.menuInitial();
   let menuEntries = [];
   let lastWinSig = "";
   let busy = false;
+  let reportsSeq = 0;
   let omniSig = "";
   let omniLis = [];
   let omniSelShown = -1;
@@ -209,7 +211,7 @@ function createLauncherBar(wm, cfg) {
   }
   function ctx() {
     const st = api.state();
-    return { leaves: st.leaves, focus: st.focus, views: api.views(), agents: data.agents, narrow: !!st.narrow, maxLeaves: st.maxLeaves, inboxCount: inboxCount() };
+    return { leaves: st.leaves, focus: st.focus, views: api.views(), agents: data.agents, reports: data.reports, narrow: !!st.narrow, maxLeaves: st.maxLeaves, inboxCount: inboxCount() };
   }
   function shownItems() {
     return K.rank(K.buildItems(ctx()), omni.query);
@@ -259,7 +261,7 @@ function createLauncherBar(wm, cfg) {
   function runItem(run, back) {
     setNotice("");
     if (run.type === "focus") attempt("Focus window", () => api.focus(run.leaf));
-    else if (run.type === "open") attempt("Open " + run.view, () => api.openView(run.view, run.agent));
+    else if (run.type === "open") attempt("Open " + run.view, () => api.openView(run.view, run.agent, run.report));
     else if (run.type === "action") runAction(run.id);
     settleFocus(run, back);
   }
@@ -325,7 +327,10 @@ function createLauncherBar(wm, cfg) {
     const was = omni.open;
     const step = K.omniStep(omni, ev, shownItems());
     omni = step.state;
-    if (omni.open && !was) closeMenu();
+    if (omni.open && !was) {
+      closeMenu();
+      loadReports();
+    }
     renderOmni();
     if (omni.open && (!was || ev.type === "open")) input.focus();
     const fx = step.effect;
@@ -509,6 +514,16 @@ function createLauncherBar(wm, cfg) {
       },
       (e) => ({ err: url + " failed: " + msgOf(e) }),
     );
+  }
+  // Report entries come from GET /v1/reports, read once each time the launcher panel opens (no poll). A failure leaves
+  // the report entries absent and never touches the agent entries or the connection pill; the next open tries again.
+  function loadReports() {
+    const seq = ++reportsSeq;
+    return fetchJson(cfg.paths.reports).then((r) => {
+      if (seq !== reportsSeq) return;
+      data.reports = r.err ? [] : K.normalizeReports(r.v);
+      if (omni.open) renderOmni();
+    });
   }
   function poll() {
     if (busy) return Promise.resolve();

@@ -13,6 +13,9 @@
 // - Matching is case-insensitive and token-wise: every space-separated token must match the label, kind or hint;
 //   a word-start match outranks a plain substring match. No fuzzy subsequence matching.
 // - The open key is Alt+Shift+P, read from the physical key code so it works with any layout.
+// - An item view (a multi view with subject "agent" or "report") is never listed as an agent-less view-type entry;
+//   it is listed once per subject: "Open terminal for <agent>", "Open report <name> (<agent>)", unless a window
+//   already shows that subject (the window-list entry covers it). Only browsing views not yet shown are view-type entries.
 // - buildItems returns every agent entry; rank cuts the result list to MAX_AGENT_ITEMS agent entries per
 //   multi-instance view type, after matching. So the unfiltered list is capped, while an agent beyond the cap is
 //   still found by a name, prefix or id query.
@@ -24,6 +27,14 @@ export interface ViewDef {
   id: string;
   title: string;
   multi: boolean;
+  subject?: "agent" | "report" | null; // item views only; a multi view without subject means "agent"
+}
+// A normalized row of GET /v1/reports ({ agent, report: { id, agent, name } }); ids and names are clipped, unknown fields dropped.
+export interface ReportInfo {
+  id: string;
+  agent: string; // owning agent id
+  name: string;
+  agentName: string; // the row's agent label, "" when absent
 }
 // A normalized row of GET /v1/agents; name is clipped, unknown fields are dropped.
 export interface AgentInfo {
@@ -53,6 +64,7 @@ export interface BuildCtx {
   focus: string;
   views: ViewDef[];
   agents: AgentInfo[];
+  reports?: ReportInfo[]; // absent or empty: no report entries
   narrow: boolean;
   maxLeaves: number;
   inboxCount: number; // pending approvals + open escalations (0 when unknown)
@@ -149,6 +161,7 @@ export interface LauncherKitApi {
   OPEN_SHORTCUT: string; // human text, "Alt+Shift+P"
   // data
   normalizeAgents(rows: unknown): AgentInfo[]; // junk rows are dropped, not thrown on; at most 1000 rows
+  normalizeReports(rows: unknown): ReportInfo[]; // same rules, for GET /v1/reports rows
   agentDot(agent: AgentInfo | undefined): Dot;
   summarizePoll(input: PollInput): PollResult;
   connNext(prev: ConnState, ok: boolean, cause: string): ConnState;
@@ -194,6 +207,22 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
         name: isStr(r.name) && r.name !== "" ? clip(r.name, 80) : clip(r.id, 80),
         state: isStr(r.state) ? r.state : "unknown",
         exit: isStr(r.exit) ? r.exit : null,
+      });
+    }
+    return out;
+  }
+  function normalizeReports(rows) {
+    if (!Array.isArray(rows)) return [];
+    const out = [];
+    for (const r of rows) {
+      if (out.length >= MAX_ROWS) break;
+      const rp = r && typeof r === "object" ? r.report : null;
+      if (!rp || typeof rp !== "object" || !isStr(rp.id) || rp.id === "" || rp.id.length > 256 || !isStr(rp.agent) || rp.agent === "" || rp.agent.length > 256) continue;
+      out.push({
+        id: rp.id,
+        agent: rp.agent,
+        name: isStr(rp.name) && rp.name !== "" ? clip(rp.name, 80) : clip(rp.id, 80),
+        agentName: isStr(r.agent) ? clip(r.agent, 80) : "",
       });
     }
     return out;
@@ -297,11 +326,13 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     const items = [];
     const shownViews = {};
     const shownAgents = {};
+    const shownReports = {};
     for (const lf of ctx.leaves) {
       shownViews[lf.view] = true;
       const aid = lf.params && lf.params.agent;
       const rid = lf.params && lf.params.report;
       if (isStr(aid) && !isStr(rid)) shownAgents[lf.view + "/" + aid] = true;
+      if (isStr(aid) && isStr(rid)) shownReports[lf.view + "/" + aid + "/" + rid] = true;
       items.push({
         key: "open:" + lf.id,
         kind: "open",
@@ -317,9 +348,18 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
         continue;
       }
       const t = v.title === "" ? v.id : v.title;
+      if (v.subject === "report") {
+        for (const r of ctx.reports || []) {
+          if (shownReports[v.id + "/" + r.agent + "/" + r.id]) continue;
+          const a = findAgent(ctx.agents, r.agent);
+          const who = a ? a.name : r.agentName !== "" ? r.agentName : r.agent;
+          items.push({ key: "new:" + v.id + "/" + r.agent + "/" + r.id, kind: "new", label: "Open " + t.toLowerCase() + " " + r.name + " (" + who + ")", hint: r.id + " " + r.agent + " " + v.id, dot: "none", run: { type: "open", view: v.id, agent: r.agent, report: r.id } });
+        }
+        continue;
+      }
       for (const a of ctx.agents) {
         if (a.state === "reaped" || shownAgents[v.id + "/" + a.id]) continue;
-        items.push({ key: "new:" + v.id + "/" + a.id, kind: "new", label: t + ": " + (a.name === "" ? a.id : a.name), hint: a.id + " " + v.id, dot: agentDot(a), run: { type: "open", view: v.id, agent: a.id } });
+        items.push({ key: "new:" + v.id + "/" + a.id, kind: "new", label: "Open " + t.toLowerCase() + " for " + (a.name === "" ? a.id : a.name), hint: a.id + " " + v.id, dot: agentDot(a), run: { type: "open", view: v.id, agent: a.id } });
       }
     }
     const act = (id, label, hint) => items.push({ key: "action:" + id, kind: "action", label, hint, dot: "none", run: { type: "action", id } });
@@ -481,7 +521,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
 
   return {
     MAX_AGENT_ITEMS, COMPACT_AT, FAIL_OFFLINE_AT, OPEN_SHORTCUT,
-    normalizeAgents, agentDot, summarizePoll, connNext, connView, inboxBadge,
+    normalizeAgents, normalizeReports, agentDot, summarizePoll, connNext, connView, inboxBadge,
     windowLabel, windowList, buildItems, parseQuery, rank, isOpenShortcut,
     omniInitial, omniStep, menuEntries, menuInitial, menuStep,
   };
