@@ -1,8 +1,12 @@
 // DOM renderer for a window's menus and status footer over a MenuKit window model, shipped as source text like
 // menuModel.ts and inlined as global `ChromeKit` (it calls the global MenuNav from menuNav.ts, so inline that first).
-// createChrome(model, {document}) returns {menus, overflow, footer, destroy}: the wide menubar (div.tile-menus), the
-// single overflow button and panel (span.tile-overflow; CSS shows one form by tile width), and the status footer
-// (div.tile-foot, `hidden` while nothing is shown). It re-renders on model.subscribe and keeps the open menu and focus
+// createChrome(model, {document}) returns {controls, menus, overflow, footer, destroy}: the pane controls toolbar
+// (div.tile-controls: button.tile-ctl and input.tile-search, built once and patched in place so a re-render never
+// destroys a focused or half-typed input), the wide menubar (div.tile-menus), the single overflow button and panel
+// (span.tile-overflow; CSS shows one form by tile width; the visible control buttons are listed in it as actions), and
+// the status footer (div.tile-foot, `hidden` while nothing is shown). The controls are plain Tab stops, not part of the
+// menubar's roving tabindex. A search dispatches model.invoke(command, text) on Enter, after a short pause in typing
+// (deps.setTimeout/clearTimeout; without them it dispatches on every input) and on Escape, which clears it first. It re-renders on model.subscribe and keeps the open menu and focus
 // across a re-render. Every label, hint, caution and status text is set with textContent only. Items are dispatched
 // through model.invoke(command, arg): a toggle omits arg (flip), a radio passes the option value. A failed invoke
 // shows its reason in the footer until the next successful action or the next time a menu opens.
@@ -13,8 +17,11 @@ import type { WindowModel } from "./menuModel.ts";
 export interface ChromeDeps {
   document: Document;
   now?: () => number; // typeahead clock; default Date.now
+  setTimeout?: (fn: () => void, ms: number) => unknown; // search debounce; default the global one, if any
+  clearTimeout?: (handle: unknown) => void;
 }
 export interface Chrome {
+  controls: HTMLElement;
   menus: HTMLElement;
   overflow: HTMLElement;
   footer: HTMLElement;
@@ -28,13 +35,15 @@ export const WINDOW_CHROME_JS = `
 const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
   "use strict";
   const TYPEAHEAD_MS = 700;
+  const SEARCH_DEBOUNCE_MS = 250;
+  const SEARCH_MAX = 200;
   const show = (v) => {
     let t;
     try { t = JSON.stringify(v); } catch (e) { t = undefined; }
     if (typeof t !== "string") { try { t = String(v); } catch (e) { t = "?"; } }
     return t.length > 80 ? t.slice(0, 79) + "\\u2026" : t;
   };
-  const MODEL_FNS = ["menus", "overflow", "status", "invoke", "subscribe"];
+  const MODEL_FNS = ["menus", "overflow", "status", "controls", "invoke", "subscribe"];
 
   const createChrome = (model, deps) => {
     if (!model || typeof model !== "object" || MODEL_FNS.some((k) => typeof model[k] !== "function")) {
@@ -45,6 +54,8 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       throw new Error("createChrome: deps.document must be a Document, got " + show(doc) + "; call createChrome(model, {document})");
     }
     const now = deps && typeof deps.now === "function" ? deps.now : () => Date.now();
+    const setT = deps && typeof deps.setTimeout === "function" ? deps.setTimeout : typeof setTimeout === "function" ? setTimeout : null;
+    const clearT = deps && typeof deps.clearTimeout === "function" ? deps.clearTimeout : typeof clearTimeout === "function" ? clearTimeout : () => {};
     const title = model.declaration && typeof model.declaration.title === "string" ? model.declaration.title : "Window";
 
     const el = (tag, cls, text) => {
@@ -53,6 +64,9 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       if (text !== undefined) e.textContent = text;
       return e;
     };
+    const controlsEl = el("div", "tile-controls");
+    controlsEl.setAttribute("role", "toolbar");
+    controlsEl.setAttribute("aria-label", title + " controls");
     const menusEl = el("div", "tile-menus");
     menusEl.setAttribute("role", "menubar");
     menusEl.setAttribute("aria-label", title + " menus");
@@ -69,6 +83,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
     let failure = null; // reason of the last failed invoke, shown in the footer
     let typed = "";
     let typedAt = 0;
+    let ctlRecs = []; // one {ctl, el, shown} per declared control, built once
     let elKey = new Map(); // element -> {id, kind: "button" | "row", row}
     const seen = new WeakSet(); // events the chrome handled, so the document click handler ignores them
 
@@ -109,18 +124,21 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return i < 0 || wide.length < 2 ? null : wide[(i + dir + wide.length) % wide.length];
     };
 
+    const run = (command, arg, label) => {
+      let res;
+      try {
+        res = model.invoke(command, arg);
+      } catch (err) {
+        res = { ok: false, reason: label + " failed: " + (err && err.message ? err.message : show(err)) + "; reload the page if it keeps failing." };
+      }
+      failure = res && res.ok === false ? String(res.reason) : null;
+      renderFooter();
+    };
     const activate = (rec, row) => {
       if (!row.enabled) return;
       if (row.kind === "action") close(true);
       else focusEl(row.el);
-      let res;
-      try {
-        res = model.invoke(row.command, row.kind === "radio-option" ? row.value : undefined);
-      } catch (err) {
-        res = { ok: false, reason: row.label + " failed: " + (err && err.message ? err.message : show(err)) + "; reload the page if it keeps failing." };
-      }
-      failure = res && res.ok === false ? String(res.reason) : null;
-      renderFooter();
+      run(row.command, row.kind === "radio-option" ? row.value : undefined, row.label);
     };
 
     const mods = (ev) => ({ ctrl: !!ev.ctrlKey, alt: !!ev.altKey, meta: !!ev.metaKey });
@@ -240,12 +258,71 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return rec;
     };
 
+    // The menus' overflow list led by the visible control buttons as actions (a search stays in the bar and shrinks).
+    const overflowEntries = () => {
+      const acts = model.controls().filter((c) => c.kind === "button" && c.visible).map((c) => ({ kind: "action", command: c.command, label: c.label, enabled: c.enabled }));
+      const rest = model.overflow();
+      return acts.length && rest.length ? acts.concat([{ kind: "separator" }], rest) : acts.concat(rest);
+    };
+
+    const buildControls = () => {
+      ctlRecs = model.controls().map((c) => {
+        const rec = { ctl: c, el: null, shown: c.kind === "search" ? c.value : "" };
+        if (c.kind === "button") {
+          rec.el = el("button", "tile-ctl" + (c.primary ? " primary" : ""), c.label);
+          rec.el.setAttribute("type", "button");
+          rec.el.addEventListener("click", () => run(c.command, undefined, c.label));
+        } else {
+          const input = el("input", "tile-search");
+          input.setAttribute("type", "search");
+          input.setAttribute("aria-label", c.label);
+          input.setAttribute("maxlength", String(SEARCH_MAX));
+          if (c.placeholder) input.setAttribute("placeholder", c.placeholder);
+          input.value = c.value;
+          let timer = null;
+          const stop = () => { if (timer !== null) { clearT(timer); timer = null; } };
+          const send = () => { stop(); if (!destroyed) run(c.command, input.value, c.label); };
+          rec.stop = stop;
+          input.addEventListener("input", () => {
+            stop();
+            if (setT === null) { send(); return; }
+            timer = setT(send, SEARCH_DEBOUNCE_MS);
+          });
+          input.addEventListener("search", send);
+          input.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter") { prevent(ev); send(); }
+            else if (ev.key === "Escape" && input.value !== "") { prevent(ev); input.value = ""; send(); }
+          });
+          rec.el = input;
+        }
+        return rec;
+      });
+      controlsEl.replaceChildren(...ctlRecs.map((r) => r.el));
+    };
+    // Patches in place; the input's own text is replaced only when the model's value changed since the last patch.
+    const patchControls = () => {
+      const now = model.controls();
+      let any = false;
+      ctlRecs.forEach((rec, i) => {
+        const c = now[i];
+        rec.el.disabled = !c.enabled;
+        rec.el.hidden = !c.visible;
+        if (c.visible) any = true;
+        if (c.kind === "button") rec.el.textContent = c.label;
+        else if (c.value !== rec.shown) {
+          rec.shown = c.value;
+          if (rec.el.value !== c.value) rec.el.value = c.value;
+        }
+      });
+      controlsEl.hidden = !any;
+    };
+
     const renderMenus = () => {
       const active = doc.activeElement;
       const was = active ? elKey.get(active) : undefined;
       elKey = new Map();
       wide = model.menus().map((m) => buildRecord(m.id, m.title, m.items, false));
-      const entries = model.overflow();
+      const entries = overflowEntries();
       ovRec = entries.some((e) => e.kind !== "separator" && e.kind !== "heading") ? buildRecord("overflow", "Menu", entries, true) : null;
       menusEl.replaceChildren(...wide.map((r) => r.wrap));
       menusEl.hidden = wide.length === 0;
@@ -301,10 +378,13 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
     overflowEl.addEventListener("click", (ev) => { seen.add(ev); });
     doc.addEventListener("click", onDocClick);
 
+    buildControls();
+    patchControls();
     renderMenus();
     renderFooter();
     const unsubscribe = model.subscribe(() => {
       if (destroyed) return;
+      patchControls();
       renderMenus();
       renderFooter();
     });
@@ -318,12 +398,16 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       wide = [];
       ovRec = null;
       elKey = new Map();
+      for (const r of ctlRecs) if (r.stop) r.stop();
+      ctlRecs = [];
+      controlsEl.replaceChildren();
+      controlsEl.hidden = true;
       menusEl.replaceChildren();
       overflowEl.replaceChildren();
       footerEl.replaceChildren();
       footerEl.hidden = true;
     };
-    return { menus: menusEl, overflow: overflowEl, footer: footerEl, destroy: destroy };
+    return { controls: controlsEl, menus: menusEl, overflow: overflowEl, footer: footerEl, destroy: destroy };
   };
 
   return Object.freeze({ createChrome });

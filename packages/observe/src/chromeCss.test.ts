@@ -89,3 +89,38 @@ for (const [name, t] of [
 test("chromeCss: the contrast helper can fail on a deliberately bad pair", () => {
   assert.ok(contrast("#777777", "#808080") < 4.5);
 });
+
+const queryBlock = () => /@container tile \(max-width: \d+px\) \{([\s\S]*?\n)\}/.exec(CHROME_CSS)?.[1] ?? "";
+
+test("chromeCss: pane controls are styled (toolbar, bordered button, accent primary, shrinking search)", () => {
+  assert.match(CHROME_CSS, /\.tile-controls \{ display: flex; align-items: center; gap: [^;]+; flex: 0 1 auto; min-width: 0;[^}]*text-overflow: ellipsis/);
+  assert.match(CHROME_CSS, /\.tile-ctl \{[^}]*padding: 0 0\.5rem[^}]*border-width: 1px/);
+  assert.match(CHROME_CSS, /\.tile-ctl\.primary \{[^}]*var\(--chrome-accent/);
+  assert.match(CHROME_CSS, /\.tile-search \{ flex: 1 1 4rem; min-width: 3rem; max-width: 14rem;/);
+  assert.match(CHROME_CSS, /\.tile-ctl:focus-visible/);
+  assert.match(CHROME_CSS, /\.tile-controls\[hidden\] \{ display: none; \}/);
+});
+
+test("chromeCss: under the narrow container query the control buttons and the view picker go, the search and title stay", () => {
+  const q = queryBlock();
+  assert.match(q, /\.tile-ctl \{ display: none; \}/, "buttons live in the overflow panel there");
+  assert.match(q, /\.tile-view \{ display: none; \}/, "the title already names the view");
+  assert.match(q, /\.tile-title \{ flex: 1 1 auto; min-width: 3rem; \}/);
+  assert.ok(!/tile-search/.test(q) && !/\.tile-controls \{ display: none/.test(q), "the search never moves");
+  assert.ok(!/\.tile-ctl \{ display: none; \}/.test(CHROME_CSS.replace(/@container tile[\s\S]*?\n\}/, "")), "wide: buttons shown (negative control)");
+  assert.equal(CHROME_CSS.match(/420/g)?.length, 1, "still one 420, the interpolated query");
+});
+
+test("chromeCss: an open menu stops its tile clipping and raises it, keyed on the aria-expanded windowChrome sets", () => {
+  assert.match(
+    CHROME_CSS,
+    /\.tile:has\(\.tile-menus \[aria-expanded="true"\], \.tile-overflow \[aria-expanded="true"\]\) \{ overflow: visible; z-index: 20; \}/,
+  );
+  const chrome = readFileSync(new URL("./windowChrome.ts", import.meta.url), "utf8");
+  assert.ok(chrome.includes('"aria-expanded", o ? "true" : "false"'), "the trigger attribute the selector depends on is set by windowChrome");
+  assert.ok(chrome.includes('el("div", "tile-menus")') && chrome.includes('el("span", "tile-overflow")'), "and the wrapper classes exist");
+  const layout = readFileSync(new URL("./layoutCss.ts", import.meta.url), "utf8");
+  assert.match(layout, /\.tile \{ position: absolute;/, "z-index applies because the tile is positioned");
+  const shell = readFileSync(new URL("./shell.ts", import.meta.url), "utf8");
+  assert.ok(/LAYOUT_CSS\}\$\{CHROME_CSS\}/.test(shell), "composed after the layout sheet, which has the unconditional .tile rule");
+});

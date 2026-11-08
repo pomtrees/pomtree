@@ -828,3 +828,125 @@ test("windowHost adds the model hooks to a copy of base", () => {
   assert.throws(() => P.windowHost({}, base), /windowHost: model must be a window model.*pass the result/);
   assert.throws(() => P.windowHost(m, null), /windowHost: base must be.*pass an object/);
 });
+
+// ---- pane controls (chrome-hosted buttons and search) ----
+
+const btn = (command: string, extra: Record<string, unknown> = {}) => ({ kind: "button", command, label: "B", ...extra });
+const search = (command: string, extra: Record<string, unknown> = {}) => ({ kind: "search", command, label: "S", ...extra });
+const withControls = (controls: unknown[], over: Record<string, unknown> = {}) => mk({ controls, ...over });
+const ctlModel = (controls: unknown[]): WindowModel => K.createWindowModel(K.declareView(withControls(controls)));
+
+test("controls: default to [], normalize to a frozen copy and round-trip through JSON", () => {
+  assert.deepEqual(plain(K.declareView(mk()).controls), []);
+  const out = K.declareView(withControls([btn("v.new", { primary: true }), search("v.filter", { placeholder: "Filter", value: "x" })]));
+  assert.deepEqual(plain(out.controls), [
+    { kind: "button", command: "v.new", label: "B", primary: true },
+    { kind: "search", command: "v.filter", label: "S", placeholder: "Filter", value: "x" },
+  ]);
+  assert.ok(Object.isFrozen(out.controls) && Object.isFrozen(out.controls[0]));
+  assert.deepEqual(plain(K.declareView(JSON.parse(JSON.stringify(out)))), plain(out));
+});
+
+test("controls: each failure class names the cause and the action, and a valid control passes", () => {
+  assert.doesNotThrow(() => K.declareView(withControls([btn("v.new"), search("v.filter")])), "negative control");
+  bad(withControls("x" as unknown as unknown[]), /controls must be a list of at most 6 entries.*declare controls as/);
+  bad(withControls([7]), /control 1: a control must be an object.*declare it as/);
+  bad(withControls([{ kind: "toggle", command: "v.t", label: "T" }]), /unknown control kind "toggle".*use button or search/);
+  bad(withControls([btn("Bad Cmd")]), /command must be a lowercase id.*use lowercase letters/);
+  bad(withControls([btn("v.a")]), /command v\.a is declared twice.*own command id/); // clashes with the menu item
+  bad(withControls([btn("v.x"), search("v.x")]), /command v\.x is declared twice/);
+  bad(withControls([btn("v.x", { label: "" })]), /label must be a non-empty string/);
+  bad(withControls([btn("v.x", { onClick: () => {} })]), /unknown field "onClick".*remove it/);
+  bad(withControls([btn("v.x", { placeholder: "p" })]), /unknown field "placeholder"/);
+  bad(withControls([search("v.x", { primary: true })]), /unknown field "primary"/);
+  bad(withControls([btn("v.x", { primary: "yes" })]), /primary must be true or false/);
+  bad(withControls([btn("v.x", { enabled: 1 })]), /enabled must be true or false/);
+  bad(withControls([search("v.x", { placeholder: 3 })]), /placeholder must be a non-empty string/);
+  bad(withControls([search("v.x", { value: 3 })]), /value must be a string of at most 200 characters.*omit value/);
+  bad(withControls([search("v.x", { value: "x".repeat(201) })]), /value must be a string of at most 200/);
+});
+
+test("controls: at most MAX_CONTROLS", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => btn(`v.c${i}`));
+  assert.equal(K.MAX_CONTROLS, 6);
+  assert.doesNotThrow(() => K.declareView(withControls(many(K.MAX_CONTROLS))));
+  bad(withControls(many(K.MAX_CONTROLS + 1)), /controls must be a list of at most 6 entries/);
+});
+
+test("controls(): resolves enabled/visible/value overlays and keeps hidden ones flagged", () => {
+  const w = ctlModel([btn("v.new", { primary: true }), btn("v.off", { enabled: false, visible: false }), search("v.filter", { placeholder: "Filter" })]);
+  assert.deepEqual(plain(w.controls()), [
+    { kind: "button", command: "v.new", label: "B", enabled: true, visible: true, primary: true },
+    { kind: "button", command: "v.off", label: "B", enabled: false, visible: false, primary: false },
+    { kind: "search", command: "v.filter", label: "S", enabled: true, visible: true, value: "", placeholder: "Filter" },
+  ]);
+  let ticks = 0;
+  w.subscribe(() => {
+    ticks++;
+  });
+  w.setState("v.off", { enabled: true, visible: true });
+  w.setState("v.filter", { value: "abc", enabled: false });
+  assert.equal(ticks, 2);
+  const now = plain(w.controls());
+  assert.deepEqual([now[1].enabled, now[1].visible, now[2].value, now[2].enabled], [true, true, "abc", false]);
+});
+
+test("controls: setState rejects fields that do not apply, with cause", () => {
+  const w = ctlModel([btn("v.new"), search("v.filter")]);
+  assert.throws(() => w.setState("v.new", { value: "x" }), /value applies to radio items.*and search controls.*for a button/);
+  assert.throws(() => w.setState("v.new", { checked: true }), /checked applies to toggle items/);
+  assert.throws(() => w.setState("v.filter", { value: 5 as never }), /value must be a string of at most 200/);
+  assert.throws(() => w.setState("v.filter", { value: "x".repeat(201) }), /at most 200/);
+  assert.throws(() => w.setState("nope", { enabled: true }), /no command "nope".*menus or controls/);
+  assert.doesNotThrow(() => w.setState("v.filter", { value: "" }), "negative control");
+});
+
+test("controls: a button invokes with no argument; an argument is refused", () => {
+  const w = ctlModel([btn("v.new")]);
+  const calls: unknown[][] = [];
+  w.onCommand((c, a) => {
+    calls.push([c, a]);
+  });
+  assert.deepEqual(plain(w.invoke("v.new")), { ok: true });
+  assert.deepEqual(calls, [["v.new", undefined]]);
+  const r = plain(w.invoke("v.new", "x"));
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /B is a button and takes no argument/);
+  assert.equal(calls.length, 1);
+  w.setState("v.new", { enabled: false });
+  assert.match(plain(w.invoke("v.new")).reason, /not available right now/);
+});
+
+test("controls: a search invokes with its string, stores it, and refuses non-strings and long text", () => {
+  const w = ctlModel([search("v.filter")]);
+  const calls: unknown[][] = [];
+  w.onCommand((c, a) => {
+    calls.push([c, a]);
+  });
+  assert.deepEqual(plain(w.invoke("v.filter", "abc")), { ok: true });
+  assert.deepEqual(plain(w.invoke("v.filter", "")), { ok: true });
+  assert.deepEqual(calls, [
+    ["v.filter", "abc"],
+    ["v.filter", ""],
+  ]);
+  w.invoke("v.filter", "abc");
+  assert.equal(plain(w.controls())[0].value, "abc");
+  for (const v of [undefined, 5, true, "x".repeat(201)]) {
+    const r = plain(w.invoke("v.filter", v as never));
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /S needs text of at most 200 characters/);
+  }
+  assert.equal(calls.length, 3, "refused calls never reach the handler");
+  assert.deepEqual(plain(w.invoke("v.filter", "x".repeat(200))), { ok: true }, "negative control: the limit is inclusive");
+});
+
+test("controls: a throwing search handler restores the previous text", () => {
+  const w = ctlModel([search("v.filter", { value: "old" })]);
+  w.onCommand(() => {
+    throw new Error("boom");
+  });
+  const r = plain(w.invoke("v.filter", "new"));
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /failed: boom/);
+  assert.equal(plain(w.controls())[0].value, "old");
+});

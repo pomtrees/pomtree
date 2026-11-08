@@ -57,6 +57,20 @@ export interface SeparatorItem {
   label?: string;
 }
 export type MenuItem = ActionItem | ToggleItem | RadioItem | SeparatorItem;
+// Pane controls: hosted by the window chrome next to the title instead of on a row of their own inside the pane. A button
+// dispatches its command with no argument; a search dispatches its command with the text (a string, "" when cleared).
+export interface ButtonControl extends ItemBase {
+  kind: "button";
+  primary?: boolean; // the pane's main call to action; drawn with the accent colour
+}
+export interface SearchControl {
+  kind: "search";
+  command: string;
+  label: string; // accessible name
+  placeholder?: string;
+  value?: string; // initial text; default ""
+}
+export type ControlDecl = ButtonControl | SearchControl;
 export interface MenuDecl {
   id: MenuId;
   items: MenuItem[];
@@ -76,6 +90,7 @@ export interface ViewDeclaration {
   multi: boolean;
   menus?: MenuDecl[];
   status?: StatusDecl[];
+  controls?: ControlDecl[]; // at most MAX_CONTROLS; commands are unique across menus and controls
 }
 export interface NormalizedViewDeclaration {
   id: string;
@@ -83,7 +98,12 @@ export interface NormalizedViewDeclaration {
   multi: boolean;
   menus: MenuDecl[]; // canonical order: view, trace, session, help
   status: StatusDecl[];
+  controls: ControlDecl[];
 }
+
+export type ResolvedControl =
+  | { kind: "button"; command: string; label: string; enabled: boolean; visible: boolean; primary: boolean }
+  | { kind: "search"; command: string; label: string; enabled: boolean; visible: boolean; value: string; placeholder?: string };
 
 export type ResolvedItem =
   | { kind: "action"; command: string; label: string; enabled: boolean; hint?: string; caution?: string }
@@ -108,13 +128,13 @@ export interface StatePatch {
   enabled?: boolean;
   visible?: boolean;
   checked?: boolean; // toggles only
-  value?: string; // radio groups only; one of the declared option values
+  value?: string; // radio groups: one of the declared option values; search controls: the text (at most MAX_LABEL characters)
 }
 export interface StatusPatch {
   text?: string;
   tone?: StatusTone | null; // null clears the tone
 }
-// action: arg undefined; toggle: the new checked boolean (omitted means flip); radio: the chosen option value.
+// action and button: arg undefined; toggle: the new checked boolean (omitted means flip); radio: the chosen option value; search: the text.
 export type CommandArg = boolean | string | undefined;
 export type CommandHandler = (command: string, arg: CommandArg) => void;
 export type InvokeResult = { ok: true } | { ok: false; reason: string };
@@ -124,6 +144,8 @@ export interface WindowModel {
   menus(): ResolvedMenu[];
   overflow(): OverflowEntry[];
   status(): ResolvedStatus[];
+  // Every declared control with its overlays; hidden ones are included (visible: false) so the chrome can patch in place.
+  controls(): ResolvedControl[];
   setState(command: string, patch: StatePatch): void;
   setStatus(id: string, patch: StatusPatch): void;
   onCommand(handler: CommandHandler): void;
@@ -136,6 +158,7 @@ export interface MenuKitApi {
   MAX_ITEMS: number;
   MAX_OPTIONS: number;
   MAX_STATUS: number;
+  MAX_CONTROLS: number;
   MAX_LABEL: number;
   MAX_STATUS_TEXT: number;
   // Validates and normalizes; throws an Error naming the cause and the fix. The result is a fresh frozen copy.
@@ -152,6 +175,7 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
   const MAX_ITEMS = 64; // per view, all menus together
   const MAX_OPTIONS = 16;
   const MAX_STATUS = 8;
+  const MAX_CONTROLS = 6;
   const MAX_LABEL = 200;
   const MAX_STATUS_TEXT = 500;
   const NAME = /^[a-z][a-z0-9-]*$/;
@@ -226,6 +250,31 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
     return out;
   };
 
+  const normControl = (raw, where, commands) => {
+    if (!isObj(raw)) fail(where, "a control must be an object, got " + show(raw), "declare it as {kind, command, label}");
+    const kind = raw.kind;
+    if (kind !== "button" && kind !== "search") fail(where, "unknown control kind " + show(kind), "use button or search");
+    keysOf(raw, kind === "button" ? ["kind", "command", "label", "enabled", "visible", "primary"] : ["kind", "command", "label", "placeholder", "value"], where);
+    const command = raw.command;
+    if (typeof command !== "string" || !COMMAND.test(command)) fail(where, "command must be a lowercase id such as audit.filter, got " + show(command), "use lowercase letters, digits and - separated by dots");
+    if (commands.has(command)) fail(where, "command " + command + " is declared twice", "give each menu item and control its own command id (state is kept per command)");
+    commands.add(command);
+    where = where + " (command " + command + ")";
+    const out = { kind: kind, command: command, label: str(raw.label, where, "label", true) };
+    if (kind === "button") {
+      put(out, "enabled", bool(raw.enabled, where, "enabled"));
+      put(out, "visible", bool(raw.visible, where, "visible"));
+      put(out, "primary", bool(raw.primary, where, "primary"));
+    } else {
+      put(out, "placeholder", str(raw.placeholder, where, "placeholder", false));
+      if (raw.value !== undefined) {
+        if (typeof raw.value !== "string" || raw.value.length > MAX_LABEL) fail(where, "value must be a string of at most " + MAX_LABEL + " characters, got " + show(raw.value), "use the initial text, or omit value");
+        out.value = raw.value;
+      }
+    }
+    return out;
+  };
+
   const freeze = (x) => {
     if (x && typeof x === "object") { for (const k of Object.keys(x)) freeze(x[k]); Object.freeze(x); }
     return x;
@@ -233,8 +282,8 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
 
   const declareView = (raw) => {
     const w0 = "view " + show(raw && raw.id);
-    if (!isObj(raw)) fail("view", "the declaration must be an object, got " + show(raw), "pass {id, title, multi, menus?, status?}");
-    keysOf(raw, ["id", "title", "multi", "menus", "status"], w0);
+    if (!isObj(raw)) fail("view", "the declaration must be an object, got " + show(raw), "pass {id, title, multi, menus?, status?, controls?}");
+    keysOf(raw, ["id", "title", "multi", "menus", "status", "controls"], w0);
     if (typeof raw.id !== "string" || !NAME.test(raw.id)) fail(w0, "id must be a lowercase name such as terminal", "use lowercase letters, digits and -");
     const title = str(raw.title, w0, "title", true);
     if (typeof raw.multi !== "boolean") fail(w0, "multi must be true or false, got " + show(raw.multi), "say whether the view can open more than once");
@@ -273,7 +322,10 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
       put(out, "mono", bool(s.mono, sw, "mono"));
       return out;
     });
-    const result = freeze({ id: raw.id, title: title, multi: raw.multi, menus: menus, status: status });
+    const controlsIn = raw.controls === undefined ? [] : raw.controls;
+    if (!Array.isArray(controlsIn) || controlsIn.length > MAX_CONTROLS) fail(w0, "controls must be a list of at most " + MAX_CONTROLS + " entries", "declare controls as [{kind: \\"button\\", command, label}] and move the rest into menus");
+    const controls = controlsIn.map((c, i) => normControl(c, w0 + ", control " + (i + 1), commands));
+    const result = freeze({ id: raw.id, title: title, multi: raw.multi, menus: menus, status: status, controls: controls });
     declared.add(result);
     return result;
   };
@@ -290,6 +342,12 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
       if (it.kind === "toggle") s.checked = it.checked === true;
       if (it.kind === "radio") s.value = it.value !== undefined ? it.value : it.options[0].value;
       state.set(it.command, s);
+    }
+    for (const c of decl.controls) {
+      items.set(c.command, c);
+      const s = { enabled: c.enabled !== false, visible: c.visible !== false };
+      if (c.kind === "search") s.value = c.value === undefined ? "" : c.value;
+      state.set(c.command, s);
     }
     const slots = new Map();
     for (const s of decl.status) slots.set(s.id, { text: s.text === undefined ? "" : s.text, tone: s.tone });
@@ -361,9 +419,17 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
       return out;
     };
 
+    const controls = () => decl.controls.map((c) => {
+      const s = state.get(c.command);
+      const out = { kind: c.kind, command: c.command, label: c.label, enabled: s.enabled, visible: s.visible };
+      if (c.kind === "button") out.primary = c.primary === true;
+      else { out.value = s.value; put(out, "placeholder", c.placeholder); }
+      return out;
+    });
+
     const setState = (command, patch) => {
       const it = items.get(command);
-      if (!it) throw new Error("setState: " + where + " has no command " + show(command) + "; use a command declared in the view's menus");
+      if (!it) throw new Error("setState: " + where + " has no command " + show(command) + "; use a command declared in the view's menus or controls");
       if (!isObj(patch)) throw new Error("setState: command " + command + " needs a patch object such as {enabled: false}, got " + show(patch));
       const s = state.get(command);
       const next = { ...s };
@@ -377,7 +443,9 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
           if (it.kind !== "toggle" || typeof v !== "boolean") throw new Error("setState: command " + command + ": checked applies to toggle items and must be true or false; this item is a " + it.kind + " with " + show(v));
           next.checked = v;
         } else if (k === "value") {
-          if (it.kind !== "radio" || !it.options.some((o) => o.value === v)) throw new Error("setState: command " + command + ": value applies to radio items and must be one of their options; got " + show(v) + " for a " + it.kind);
+          if (it.kind === "search") {
+            if (typeof v !== "string" || v.length > MAX_LABEL) throw new Error("setState: command " + command + ": value must be a string of at most " + MAX_LABEL + " characters; got " + show(v));
+          } else if (it.kind !== "radio" || !it.options.some((o) => o.value === v)) throw new Error("setState: command " + command + ": value applies to radio items (one of their options) and search controls (a string); got " + show(v) + " for a " + it.kind);
           next.value = v;
         } else {
           throw new Error("setState: command " + command + ": unknown field " + show(k) + "; use enabled, visible, checked or value");
@@ -423,13 +491,16 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
       } else if (it.kind === "radio") {
         value = arg;
         if (!it.options.some((o) => o.value === value)) return { ok: false, reason: it.label + " has no option " + show(arg) + "; choose one of the listed options." };
+      } else if (it.kind === "search") {
+        value = arg;
+        if (typeof value !== "string" || value.length > MAX_LABEL) return { ok: false, reason: it.label + " needs text of at most " + MAX_LABEL + " characters, got " + show(arg) + "; shorten the search." };
       } else if (arg !== undefined) {
-        return { ok: false, reason: it.label + " is an action and takes no argument, got " + show(arg) + "." };
+        return { ok: false, reason: it.label + " is " + (it.kind === "button" ? "a button" : "an action") + " and takes no argument, got " + show(arg) + "." };
       }
       if (!handler) return { ok: false, reason: it.label + " has no handler yet; the view has not registered one with onCommand, so nothing was done." };
       let optimistic = s;
       if (it.kind === "toggle") optimistic = { ...s, checked: value };
-      if (it.kind === "radio") optimistic = { ...s, value: value };
+      if (it.kind === "radio" || it.kind === "search") optimistic = { ...s, value: value };
       state.set(command, optimistic);
       try {
         const r = handler(command, value);
@@ -443,9 +514,9 @@ const MenuKit = globalThis.MenuKit || (globalThis.MenuKit = (() => {
       return { ok: true };
     };
     const subscribe = (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
-    return { declaration: decl, menus, overflow, status, setState, setStatus, onCommand, invoke, subscribe };
+    return { declaration: decl, menus, overflow, status, controls, setState, setStatus, onCommand, invoke, subscribe };
   };
 
-  return { MENU_IDS, MENU_TITLES, MAX_ITEMS, MAX_OPTIONS, MAX_STATUS, MAX_LABEL, MAX_STATUS_TEXT, declareView, createWindowModel };
+  return { MENU_IDS, MENU_TITLES, MAX_ITEMS, MAX_OPTIONS, MAX_STATUS, MAX_CONTROLS, MAX_LABEL, MAX_STATUS_TEXT, declareView, createWindowModel };
 })());
 `;

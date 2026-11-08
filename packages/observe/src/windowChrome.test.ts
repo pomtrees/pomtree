@@ -28,6 +28,8 @@ class FakeEl {
   tagName: string;
   className = "";
   hidden = false;
+  disabled = false;
+  value = "";
   parentNode: FakeEl | null = null;
   children: Els = [] as unknown as Els;
   text = "";
@@ -139,7 +141,10 @@ test("FakeEl inspects as a short descriptor, not its parent/document/listener gr
   assert.ok(out.includes("button"), out);
 });
 
-function setup(decl: ViewDeclaration, opts: { now?: () => number } = {}) {
+function setup(
+  decl: ViewDeclaration,
+  opts: { now?: () => number; setTimeout?: (fn: () => void, ms: number) => unknown; clearTimeout?: (h: unknown) => void } = {},
+) {
   const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(decl)) as WindowModel;
   const calls: Array<[string, unknown]> = [];
   model.onCommand((c, a) => {
@@ -147,9 +152,11 @@ function setup(decl: ViewDeclaration, opts: { now?: () => number } = {}) {
   });
   const doc = new FakeDoc();
   const chrome = kit.ChromeKit.createChrome(model, { document: doc as unknown as Document, ...opts }) as unknown as Chrome;
+  const controls = chrome.controls as unknown as FakeEl;
   const menus = chrome.menus as unknown as FakeEl;
   const overflow = chrome.overflow as unknown as FakeEl;
   const footer = chrome.footer as unknown as FakeEl;
+  doc.body.appendChild(controls);
   doc.body.appendChild(menus);
   doc.body.appendChild(overflow);
   doc.body.appendChild(footer);
@@ -162,7 +169,7 @@ function setup(decl: ViewDeclaration, opts: { now?: () => number } = {}) {
   const key = (el: FakeEl, k: string) => el.dispatch({ type: "keydown", key: k });
   const click = (el: FakeEl) => el.dispatch({ type: "click", detail: 1 });
   const ovBtn = () => overflow.byClass("tile-btn")[0];
-  return { model, calls, doc, chrome, menus, overflow, footer, outside, btn, panelOf, items, labelOf, key, click, ovBtn };
+  return { model, calls, doc, chrome, controls, menus, overflow, footer, outside, btn, panelOf, items, labelOf, key, click, ovBtn };
 }
 const openMenu = (s: ReturnType<typeof setup>, title: string) => {
   s.key(s.btn(title), "ArrowDown");
@@ -535,4 +542,218 @@ test("unusual input fails loudly with cause and action", () => {
   const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(BROWSER_DECLARATION));
   assert.throws(() => kit.ChromeKit.createChrome(model, {} as never), /deps\.document must be a Document.*createChrome\(model, \{document\}\)/);
   assert.throws(() => kit.ChromeKit.createChrome(model, undefined as never), /deps\.document must be a Document/);
+});
+
+// ---- pane controls ----
+const CTL_DECL: ViewDeclaration = {
+  id: "audit",
+  title: "Audit",
+  multi: false,
+  menus: [{ id: "view", items: [{ kind: "action", command: "audit.refresh", label: "Refresh" }] }],
+  status: [{ id: "count", title: "Count" }],
+  controls: [
+    { kind: "button", command: "audit.new", label: "New agent", primary: true },
+    { kind: "button", command: "audit.clear", label: "Clear", visible: false },
+    { kind: "search", command: "audit.filter", label: "Filter audit", placeholder: "Filter" },
+  ],
+};
+// A hand-driven timer: tick() fires every pending callback, like the debounce delay elapsing.
+function fakeTimer() {
+  let next = 1;
+  const pending = new Map<number, () => void>();
+  return {
+    setTimeout: (fn: () => void, _ms: number) => {
+      pending.set(next, fn);
+      return next++;
+    },
+    clearTimeout: (h: unknown) => {
+      pending.delete(h as number);
+    },
+    tick: () => {
+      for (const [h, fn] of [...pending]) {
+        pending.delete(h);
+        fn();
+      }
+    },
+    size: () => pending.size,
+  };
+}
+const ctlSetup = (opts: Parameters<typeof setup>[1] = {}) => {
+  const timer = fakeTimer();
+  const s = setup(CTL_DECL, { setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout, ...opts });
+  const input = s.controls.byClass("tile-search")[0];
+  const type = (v: string) => {
+    input.value = v;
+    input.dispatch({ type: "input" });
+  };
+  return { ...s, timer, input, type };
+};
+
+test("controls: a toolbar with roles, labels, button classes and a labelled search", () => {
+  const s = ctlSetup();
+  assert.equal(s.controls.className, "tile-controls");
+  assert.equal(s.controls.role, "toolbar");
+  assert.equal(s.controls.getAttribute("aria-label"), "Audit controls");
+  const bs = s.controls.byClass("tile-ctl");
+  assert.deepEqual(
+    bs.map((b) => [b.tagName, b.textContent, b.className, b.getAttribute("type"), b.hidden]),
+    [
+      ["button", "New agent", "tile-ctl primary", "button", false],
+      ["button", "Clear", "tile-ctl", "button", true],
+    ],
+  );
+  assert.deepEqual(
+    [s.input.tagName, s.input.getAttribute("type"), s.input.getAttribute("aria-label"), s.input.getAttribute("placeholder")],
+    ["input", "search", "Filter audit", "Filter"],
+  );
+  assert.equal(s.controls.hidden, false);
+});
+
+test("controls: a view without controls gets a hidden, empty toolbar (negative control)", () => {
+  const s = setup(TERMINAL_DECLARATION);
+  assert.equal(s.controls.hidden, true);
+  assert.equal(s.controls.children.length, 0);
+});
+
+test("controls: a button click invokes with no argument; a failure shows in the footer", () => {
+  const s = ctlSetup();
+  s.click(s.controls.byClass("tile-ctl")[0]);
+  assert.deepEqual(s.calls, [["audit.new", undefined]]);
+  s.model.setState("audit.new", { enabled: false });
+  assert.equal(s.controls.byClass("tile-ctl")[0].disabled, true);
+  s.model.onCommand(() => {
+    throw new Error("nope");
+  });
+  s.model.setState("audit.new", { enabled: true });
+  s.click(s.controls.byClass("tile-ctl")[0]);
+  assert.match(s.footer.byClass("stat").find((e) => e.role === "alert")?.textContent ?? "", /nope/);
+});
+
+test("controls: the input element survives a status tick and keeps half-typed text", () => {
+  const s = ctlSetup();
+  const before = s.input;
+  s.type("half");
+  s.model.setStatus("count", { text: "12 events" });
+  s.model.setStatus("count", { text: "13 events" });
+  const after = s.controls.byClass("tile-search")[0];
+  same(after, before, "same input element");
+  same(s.controls.byClass("tile-ctl")[0].parentNode, s.controls, "buttons stay in the toolbar");
+  assert.equal(after.value, "half", "typed text kept across re-renders");
+  s.doc.activeElement = before;
+  s.model.setStatus("count", { text: "14 events" });
+  same(s.doc.activeElement, before, "focus kept");
+  assert.equal(s.footer.textContent, "14 events");
+});
+
+test("controls: a model value change patches the input; hidden and disabled patch in place", () => {
+  const s = ctlSetup();
+  const before = s.input;
+  s.model.setState("audit.filter", { value: "from model" });
+  assert.equal(s.input.value, "from model");
+  s.model.setState("audit.filter", { enabled: false });
+  assert.equal(s.input.disabled, true);
+  s.model.setState("audit.clear", { visible: true });
+  assert.equal(s.controls.byClass("tile-ctl")[1].hidden, false);
+  s.model.setState("audit.new", { visible: false });
+  s.model.setState("audit.clear", { visible: false });
+  s.model.setState("audit.filter", { visible: false });
+  assert.equal(s.controls.hidden, true, "toolbar hides when nothing is visible");
+  same(s.controls.byClass("tile-search")[0], before);
+});
+
+test("controls: Enter dispatches at once; input dispatches after the debounce, once, with the latest text", () => {
+  const s = ctlSetup();
+  s.type("a");
+  s.type("ab");
+  assert.deepEqual(s.calls, [], "nothing before the pause");
+  assert.equal(s.timer.size(), 1, "one pending debounce");
+  s.timer.tick();
+  assert.deepEqual(s.calls, [["audit.filter", "ab"]]);
+  s.type("abc");
+  const ev = s.key(s.input, "Enter");
+  assert.equal(ev.defaultPrevented, true);
+  assert.deepEqual(s.calls.at(-1), ["audit.filter", "abc"]);
+  assert.equal(s.timer.size(), 0, "Enter cancels the pending debounce");
+  s.key(s.input, "a");
+  assert.equal(s.calls.length, 2, "other keys dispatch nothing (negative control)");
+});
+
+test("controls: without a timer facility an input event dispatches immediately", () => {
+  const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(CTL_DECL)) as WindowModel;
+  const calls: unknown[][] = [];
+  model.onCommand((c, a) => {
+    calls.push([c, a]);
+  });
+  const chrome = kit.ChromeKit.createChrome(model, { document: new FakeDoc() as unknown as Document }) as unknown as Chrome;
+  const input = (chrome.controls as unknown as FakeEl).byClass("tile-search")[0];
+  input.value = "x";
+  input.dispatch({ type: "input" });
+  assert.deepEqual(calls, [["audit.filter", "x"]]);
+});
+
+test("controls: Escape clears the search and dispatches the empty string; on an empty search it does nothing", () => {
+  const s = ctlSetup();
+  s.type("zzz");
+  s.key(s.input, "Escape");
+  assert.equal(s.input.value, "");
+  assert.deepEqual(s.calls, [["audit.filter", ""]]);
+  assert.equal(s.timer.size(), 0, "the pending debounce is cancelled");
+  s.key(s.input, "Escape");
+  assert.equal(s.calls.length, 1);
+});
+
+test("controls: destroy cancels a pending debounce", () => {
+  const s = ctlSetup();
+  s.type("late");
+  s.chrome.destroy();
+  s.timer.tick();
+  assert.deepEqual(s.calls, []);
+  assert.equal(s.controls.children.length, 0);
+});
+
+test("controls: overflow lists the visible control buttons as actions before the menus; the search is not listed", () => {
+  const s = ctlSetup();
+  const panel = s.panelOf(s.ovBtn());
+  assert.deepEqual(s.items(panel).map(s.labelOf), ["New agent", "Refresh"], "hidden Clear and the search are not listed");
+  s.click(s.items(panel)[0]);
+  assert.deepEqual(s.calls.at(-1), ["audit.new", undefined]);
+  s.model.setState("audit.clear", { visible: true });
+  assert.deepEqual(s.items(s.panelOf(s.ovBtn())).map(s.labelOf), ["New agent", "Clear", "Refresh"]);
+});
+
+test("controls: the overflow button exists when only controls are declared, and not when nothing is", () => {
+  const only = setup({ id: "x", title: "X", multi: false, controls: [{ kind: "button", command: "x.go", label: "Go" }] });
+  assert.equal(only.overflow.hidden, false);
+  assert.deepEqual(only.items(only.panelOf(only.ovBtn())).map(only.labelOf), ["Go"]);
+  const searchOnly = setup({ id: "x", title: "X", multi: false, controls: [{ kind: "search", command: "x.find", label: "Find" }] });
+  assert.equal(searchOnly.overflow.hidden, true, "a search alone has no menu equivalent");
+});
+
+test("controls: plain Tab order, not the menubar's roving tabindex", () => {
+  const s = ctlSetup();
+  for (const e of s.controls.byClass("tile-ctl").concat(s.controls.byClass("tile-search")))
+    assert.equal(e.getAttribute("tabindex"), null, "no tabindex: default Tab stop");
+  assert.deepEqual(
+    s.menus.byClass("tile-btn").map((b) => b.getAttribute("tabindex")),
+    ["0"],
+    "the menubar keeps its single roving stop",
+  );
+  // Tab order = document order of focusable elements: controls come before the menubar and overflow in the bar.
+  const order = s.doc
+    .all()
+    .filter((e) => e.tagName === "button" || e.tagName === "input")
+    .filter((e) => e.getAttribute("tabindex") !== "-1" && !e.hidden)
+    .map((e) => e.className);
+  assert.deepEqual(order, ["tile-ctl primary", "tile-search", "tile-btn", "tile-btn"]);
+  s.key(s.controls.byClass("tile-ctl")[0], "ArrowRight");
+  assert.equal(s.calls.length, 0, "arrow keys on a control do not drive the menubar");
+});
+
+test("controls: createChrome rejects a model without controls(), naming the fix", () => {
+  const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(BROWSER_DECLARATION)) as unknown as Record<string, unknown>;
+  delete model.controls;
+  assert.throws(
+    () => kit.ChromeKit.createChrome(model as never, { document: new FakeDoc() as unknown as Document }),
+    /must be a MenuKit window model.*pass the model/,
+  );
 });

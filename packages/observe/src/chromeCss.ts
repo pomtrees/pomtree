@@ -3,6 +3,9 @@
 // Panels are positioned inside the tile (a .menuwrap is the positioning parent) because .tile clips with overflow:hidden; they are
 // capped to the tile's own width (cqw) and a viewport-relative height so a long list scrolls instead of being cut off. Colour comes
 // only from existing tokens with neutral fallbacks (no literals); the Aqua/Luna gradients stay in themeCss.ts, content stays flat.
+// Pane controls (.tile-controls) sit in the bar beside the title; their buttons collapse into the overflow panel under the same query,
+// the search stays and shrinks. While a menu is open its tile stops clipping so a long panel is not cut off (the tile is absolutely
+// positioned, so z-index applies; it must beat the unconditional .tile rule in layoutCss.ts, which is composed before this sheet).
 // Tile width below which the menu bar collapses to the overflow button (docs/ui-vision.md).
 // TODO(chrome-browser-check): the window chrome, the launcher bar and opening an item window have only static and unit checks, plus one ad hoc headless Chrome render of the panes with stubbed data (wide, narrow, four tiles) that is not repeatable (no harness or screenshots were kept). Not verified in a browser: an open menu escaping its tile (the :has() rule), container queries, keyboard use, live data and other browsers. Trigger: before any release or demo.
 export const OVERFLOW_WIDTH_PX = 420;
@@ -14,9 +17,22 @@ export const CHROME_CSS = `
 .tile-menus .tile-btn:hover, .tile-menus .tile-btn[aria-expanded="true"] { filter: none; background-color: color-mix(in srgb, var(--chrome-fg, currentColor) 18%, transparent); border-color: transparent; }
 .tile-menus .tile-btn:focus-visible, .tile-overflow .tile-btn:focus-visible { outline-width: 2px; outline-style: solid; outline-offset: -2px; outline-color: var(--chrome-accent, currentColor); }
 .tile-overflow { display: none; position: relative; flex: 0 0 auto; }
+.tile:has(.tile-menus [aria-expanded="true"], .tile-overflow [aria-expanded="true"]) { overflow: visible; z-index: 20; }
+.tile-controls { display: flex; align-items: center; gap: 0.25rem; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tile-controls[hidden] { display: none; }
+.tile-ctl { flex: 0 0 auto; box-sizing: border-box; min-height: 1.25rem; padding: 0 0.5rem; font: inherit; font-size: 0.8125rem; white-space: nowrap; color: inherit; background: transparent; border-width: 1px; border-style: solid; border-color: color-mix(in srgb, var(--chrome-fg, currentColor) 45%, transparent); border-radius: var(--radius-sm, 0.25rem); cursor: pointer; }
+.tile-ctl:hover:not(:disabled) { background-color: color-mix(in srgb, var(--chrome-fg, currentColor) 18%, transparent); }
+.tile-ctl:disabled { opacity: 0.5; cursor: default; }
+.tile-ctl.primary { color: var(--chrome-accent-fg, inherit); background: var(--chrome-accent, transparent); border-color: var(--chrome-accent, currentColor); }
+.tile-focused > .tile-bar .tile-ctl.primary { color: var(--chrome-accent, inherit); background: var(--chrome-accent-fg, transparent); border-color: var(--chrome-accent-fg, currentColor); }
+.tile-search { flex: 1 1 4rem; min-width: 3rem; max-width: 14rem; box-sizing: border-box; min-height: 1.25rem; padding: 0 0.375rem; font: inherit; font-size: 0.8125rem; color: var(--text, CanvasText); background: var(--surface, Canvas); border-width: 1px; border-style: solid; border-color: var(--border-strong, currentColor); border-radius: var(--radius-sm, 0.25rem); }
+.tile-ctl:focus-visible, .tile-search:focus-visible { outline-width: 2px; outline-style: solid; outline-offset: -2px; outline-color: var(--chrome-accent, currentColor); }
 @container tile (max-width: ${OVERFLOW_WIDTH_PX}px) {
   .tile-menus { display: none; }
   .tile-overflow { display: inline-flex; }
+  .tile-ctl { display: none; }
+  .tile-view { display: none; }
+  .tile-title { flex: 1 1 auto; min-width: 3rem; }
 }
 .menu-drop { position: absolute; z-index: 40; top: calc(100% + 2px); left: 0; box-sizing: border-box; min-width: 12rem; max-width: calc(100cqw - 0.5rem); max-height: min(24rem, 70vh); overflow: auto; padding: 0.25rem; color: var(--text, CanvasText); text-shadow: none; background: var(--surface-2, Canvas); border-width: 1px; border-style: solid; border-color: var(--border-strong, currentColor); border-radius: var(--radius-sm, 0.25rem); box-shadow: 0 6px 18px color-mix(in srgb, var(--text, currentColor) 35%, transparent); }
 .menu-drop[hidden] { display: none; }
@@ -50,6 +66,7 @@ export const CHROME_CSS = `
   .menu-sep { border-top-color: CanvasText; }
   .tile-menus .tile-btn:hover, .tile-menus .tile-btn[aria-expanded="true"] { background-color: Highlight; color: HighlightText; }
   .tile-foot { background-color: Canvas; color: CanvasText; border-top-color: CanvasText; }
+  .tile-ctl, .tile-ctl.primary, .tile-search { color: ButtonText; background-color: ButtonFace; border-color: ButtonText; forced-color-adjust: auto; }
   .stat-dot, .stat[data-tone] .stat-dot { background-color: CanvasText; forced-color-adjust: none; }
   .stat[data-tone="err"] .stat-dot { background-color: Mark; }
 }
