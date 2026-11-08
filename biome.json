@@ -7,7 +7,7 @@
     "defaultBranch": "main"
   },
   "files": {
-    "includes": ["**", "!.claude", "!packages/observe/vendor", "!.pnpm-store"]
+    "includes": ["**", "!.claude", "!packages/observe/vendor", "!docs/mockups", "!.pnpm-store"]
   },
   "formatter": {
     "indentStyle": "space",

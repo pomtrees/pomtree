@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pomtree launcher bar and window menus (MOCK, not built)</title>
+<style>
+/* Tokens copied from packages/observe/src/shell.ts (:root) and themeCss.ts (--chrome-*). Light scheme and the black-and-orange dark scheme follow prefers-color-scheme, as the real UI does. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9; --surface: #fff; --surface-2: #f0f2f5; --hover: #eef1f6; --code-bg: #f3f4f7;
+  --border: #e2e5ea; --border-strong: #c9ced6;
+  --text: #1c2025; --muted: #626b78;
+  --accent: #2557d6; --accent-hover: #1d46ad; --accent-fg: #fff; --focus: rgb(37 87 214 / 0.28);
+  --ok: #17803d; --warn: #a76100; --err: #c62828; --info: #0b7a8a;
+  --shadow: 0 1px 2px rgb(16 24 40 / 0.06);
+  --radius: 0.625rem; --radius-sm: 0.375rem; --gap: 1rem; --pad: clamp(1rem, 3vw, 2rem);
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --chrome-bg: #e9edf3; --chrome-fg: #1c2025; --chrome-border: #7d8590; --chrome-accent: #2557d6; --chrome-accent-fg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #050505; --surface: #0e0e0e; --surface-2: #161616; --hover: #221a12; --code-bg: #0a0a0a;
+    --border: #2b2b2b; --border-strong: #606060;
+    --text: #f2f2f2; --muted: #a6a6a6;
+    --accent: #ff8c1a; --accent-hover: #ffa647; --accent-fg: #000000; --focus: rgb(255 140 26 / 0.4);
+    --ok: #4ade80; --warn: #d6e84a; --err: #ff5c8a; --info: #4cc9d9;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+    --chrome-bg: #1a1a1a; --chrome-fg: #f2f2f2; --chrome-border: #626262; --chrome-accent: #ff8c1a; --chrome-accent-fg: #000000;
+  }
+}
+html { font-size: 100%; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); color: var(--text); font: 1rem/1.5 var(--sans); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button, input { font: inherit; color: inherit; }
+
+/* Mock banner and demo controls (not part of the proposed UI) */
+.mockbanner { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; padding: 0.25rem 1rem; background: repeating-linear-gradient(45deg, #000, #000 10px, #1a1a1a 10px, #1a1a1a 20px); color: #ff8c1a; font-size: 0.8125rem; border-bottom: 1px solid var(--border-strong); }
+.mockbanner strong { letter-spacing: 0.05em; }
+.mockbanner label { display: inline-flex; align-items: center; gap: 0.5rem; color: #f2f2f2; }
+.mockbanner input[type=range] { width: 9rem; accent-color: #ff8c1a; }
+.mockbanner output { font-family: var(--mono); min-width: 4.5ch; }
+.mockbanner .spacer { flex: 1 1 auto; }
+
+/* Top bar */
+.bar { position: relative; z-index: 30; flex: 0 0 auto; display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem; background: var(--surface); border-bottom: 1px solid var(--border); }
+.start { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.25rem 0.875rem; border-radius: 999px; font-weight: 700; cursor: pointer; border: 1px solid color-mix(in srgb, var(--chrome-accent) 70%, #000); color: var(--chrome-accent-fg); background-color: var(--chrome-accent);
+  background-image: linear-gradient(to bottom, color-mix(in srgb, var(--chrome-accent) 60%, #fff) 0%, color-mix(in srgb, var(--chrome-accent) 85%, #fff) 50%, var(--chrome-accent) 51%, color-mix(in srgb, var(--chrome-accent) 82%, #000) 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.5), 0 1px 1px rgb(0 0 0 / 0.35); }
+.start:hover { filter: brightness(1.1); }
+.start[aria-expanded=true] { filter: brightness(0.9); box-shadow: inset 0 2px 3px rgb(0 0 0 / 0.55); }
+.winlist { flex: 1 1 auto; min-width: 0; display: flex; gap: 0.25rem; overflow-x: auto; scrollbar-width: none; }
+.winlist button { display: inline-flex; align-items: center; gap: 0.375rem; white-space: nowrap; padding: 0.25rem 0.625rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: none; color: var(--muted); cursor: pointer; font-size: 0.875rem; }
+.winlist button:hover { color: var(--text); background: var(--hover); }
+.winlist button.on { color: var(--accent); border-color: var(--border-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); } .dot.info { background: var(--info); }
+.right { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
+.pill { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0 0.5rem; font-size: 0.75rem; line-height: 1.375rem; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--text); background: var(--surface-2); white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.625rem; font-size: 0.875rem; border-radius: var(--radius-sm); border: 1px solid transparent; background: none; cursor: pointer; }
+.badge:hover { background: var(--hover); }
+.badge b { min-width: 1.25rem; padding: 0 0.375rem; text-align: center; font-size: 0.75rem; border-radius: 999px; background: var(--accent); color: var(--accent-fg); }
+.iconbtn { padding: 0.125rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid transparent; background: none; cursor: pointer; font-size: 1.125rem; line-height: 1.5; }
+.iconbtn:hover, .iconbtn[aria-expanded=true] { background: var(--hover); border-color: var(--border-strong); }
+
+/* Dropdown panels (menus and launcher) */
+.drop { position: absolute; z-index: 40; min-width: 12rem; max-height: min(24rem, 70vh); overflow: auto; padding: 0.25rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: 0 6px 18px rgb(0 0 0 / 0.5); }
+.drop h4 { margin: 0.25rem 0.5rem 0; font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.drop hr { border: 0; border-top: 1px solid var(--border); margin: 0.25rem 0; }
+.drop .item { display: flex; justify-content: space-between; gap: 1.5rem; width: 100%; padding: 0.25rem 0.625rem; text-align: left; border: 0; border-radius: 0.25rem; background: none; cursor: pointer; font-size: 0.875rem; white-space: nowrap; }
+.drop .item:hover, .drop .item:focus-visible { background: var(--hover); outline-offset: -2px; }
+.drop .item .hint { color: var(--muted); font-size: 0.75rem; }
+.drop .item[aria-checked=true]::before { content: "\2713"; margin-right: 0.375rem; color: var(--accent); }
+.drop .item.warnitem { color: var(--warn); }
+.drop .item[disabled] { opacity: 0.4; cursor: default; }
+.drop .note { margin: 0.25rem 0.5rem; max-width: 16rem; font-size: 0.75rem; color: var(--warn); white-space: normal; }
+
+/* Launcher */
+.launcher { left: 0.5rem; top: calc(100% + 2px); width: min(26rem, calc(100vw - 1rem)); max-height: min(30rem, 75vh); padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.omni { width: 100%; padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--bg); }
+.omni:focus { border-color: var(--accent); outline: 2px solid var(--focus); }
+.launcher ul { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.launcher li button { display: flex; align-items: center; gap: 0.625rem; width: 100%; padding: 0.375rem 0.5rem; border: 0; border-radius: 0.25rem; background: none; text-align: left; cursor: pointer; }
+.launcher li button:hover, .launcher li button.sel { background: var(--hover); }
+.launcher .kind { margin-left: auto; font-size: 0.6875rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.launcher .empty { padding: 0.5rem; color: var(--muted); font-size: 0.875rem; }
+.toast { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); z-index: 60; padding: 0.375rem 0.875rem; border-radius: 999px; background: var(--chrome-accent); color: var(--chrome-accent-fg); font-size: 0.875rem; box-shadow: 0 4px 12px rgb(0 0 0 / 0.5); }
+
+/* Tiled area */
+main { flex: 1 1 auto; min-height: 0; display: grid; gap: 6px; padding: 6px; grid-template-columns: var(--leftw, 1.2fr) 1fr; grid-template-rows: 1fr 1fr; }
+.tile { container-type: inline-size; container-name: tile; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--shadow), inset 0 1px 0 rgb(255 255 255 / 0.12); }
+.tile.t-term { grid-row: 1 / span 2; }
+.tile.focused { border-color: var(--chrome-accent); box-shadow: var(--shadow), 0 0 0 1px var(--chrome-accent), 0 0 0.75rem var(--focus); }
+.tile-bar { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; min-height: 1.75rem; padding: 0.125rem 0.5rem; color: var(--chrome-fg); border-bottom: 1px solid var(--chrome-border); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; background-color: var(--chrome-bg);
+  background-image: linear-gradient(to bottom, color-mix(in srgb, var(--chrome-fg) 22%, var(--chrome-bg)) 0%, color-mix(in srgb, var(--chrome-fg) 8%, var(--chrome-bg)) 48%, var(--chrome-bg) 52%, color-mix(in srgb, var(--chrome-bg) 82%, #000) 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14), inset 0 -1px 0 rgb(0 0 0 / 0.6); text-shadow: 0 1px 0 rgb(0 0 0 / 0.7); }
+.tile.focused > .tile-bar { color: var(--chrome-accent-fg); border-color: var(--chrome-accent); background-color: var(--chrome-accent); text-shadow: 0 1px 0 rgb(255 255 255 / 0.3);
+  background-image: linear-gradient(to bottom, color-mix(in srgb, var(--chrome-accent) 60%, #fff) 0%, color-mix(in srgb, var(--chrome-accent) 85%, #fff) 50%, var(--chrome-accent) 51%, color-mix(in srgb, var(--chrome-accent) 82%, #000) 100%); }
+.tile-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; font-weight: 600; }
+.tile-btn { flex: 0 0 auto; min-width: 1.5rem; min-height: 1.5rem; padding: 0 0.375rem; line-height: 1; cursor: pointer; color: var(--chrome-fg); border: 1px solid var(--chrome-border); border-radius: 999px; background-color: var(--chrome-bg); font-size: 0.8125rem;
+  background-image: linear-gradient(to bottom, color-mix(in srgb, var(--chrome-fg) 26%, var(--chrome-bg)) 0%, color-mix(in srgb, var(--chrome-fg) 8%, var(--chrome-bg)) 50%, var(--chrome-bg) 51%, color-mix(in srgb, var(--chrome-fg) 14%, var(--chrome-bg)) 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.5), inset 0 -1px 1px rgb(0 0 0 / 0.3), 0 1px 1px rgb(0 0 0 / 0.35); text-shadow: none; }
+.tile-btn:hover { filter: brightness(1.18); border-color: var(--chrome-accent); }
+.tile.focused .tile-btn { color: var(--chrome-accent-fg); border-color: color-mix(in srgb, var(--chrome-accent) 70%, #000); background-color: var(--chrome-accent); background-image: linear-gradient(to bottom, color-mix(in srgb, var(--chrome-accent) 60%, #fff) 0%, color-mix(in srgb, var(--chrome-accent) 85%, #fff) 50%, var(--chrome-accent) 51%, color-mix(in srgb, var(--chrome-accent) 82%, #000) 100%); }
+.tile-btn[aria-expanded=true] { filter: brightness(0.85); }
+
+/* Per-window menu bar (declared by the view, rendered by the chrome) */
+.menus { display: flex; align-items: center; gap: 0.125rem; margin-left: 0.25rem; }
+.menus .tile-btn { border-color: transparent; background: none; box-shadow: none; padding: 0 0.5rem; border-radius: var(--radius-sm); }
+.tile.focused .menus .tile-btn { background: none; border-color: transparent; }
+.menus .tile-btn:hover, .menus .tile-btn[aria-expanded=true] { background: rgb(0 0 0 / 0.25); border-color: transparent; filter: none; }
+.menus .spacer, .tile-bar .spacer { flex: 1 1 auto; }
+.overflow { display: none; }
+.menuwrap { position: relative; }
+.tile .drop { top: calc(100% + 2px); left: 0; color: var(--text); text-shadow: none; }
+.tile .drop.right-edge { left: auto; right: 0; }
+
+/* Overflow collapse: below 420px of tile width the menu bar becomes one button listing every menu's items */
+@container tile (max-width: 420px) {
+  .menus { display: none; }
+  .overflow { display: inline-flex; }
+}
+
+.tile-body { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--surface); color: var(--text); padding: 0.5rem 0.75rem; font-size: 0.8125rem; }
+.term { font-family: var(--mono); background: #000; color: #e6e6e6; white-space: pre-wrap; line-height: 1.35; }
+.term .p { color: #ff8c1a; } .term .d { color: #a6a6a6; } .term .g { color: #4ade80; }
+.shot { display: grid; place-items: center; background: var(--code-bg); }
+.fakepage { width: 100%; max-width: 30rem; background: #fff; color: #222; border-radius: 4px; padding: 0.75rem; box-shadow: 0 2px 8px rgb(0 0 0 / 0.5); font-family: var(--sans); }
+.fakepage h5 { margin: 0 0 0.375rem; font-size: 0.9375rem; } .fakepage p { margin: 0.25rem 0; font-size: 0.75rem; }
+.fakepage .ph { height: 0.5rem; margin: 0.375rem 0; border-radius: 3px; background: #d8d8d8; }
+.inbox-row { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.25rem 0; border-bottom: 1px solid var(--border); }
+.inbox-row .tag { font-size: 0.6875rem; padding: 0 0.375rem; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--muted); }
+.tile-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem 0.5rem; flex: 0 0 auto; padding: 0.125rem 0.5rem; font-size: 0.75rem; color: var(--muted); background: var(--surface-2); border-top: 1px solid var(--border); }
+.tile-foot .url { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 8rem; }
+.tile-foot .ro { color: var(--info); }
+
+.notes { position: fixed; right: 0.5rem; bottom: 0.5rem; z-index: 20; max-width: 18rem; padding: 0.5rem 0.75rem; font-size: 0.75rem; line-height: 1.4; color: var(--muted); background: var(--surface-2); border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
+.notes b { color: var(--warn); } .notes p { margin: 0.25rem 0 0; }
+.notes button { float: right; border: 0; background: none; cursor: pointer; color: var(--muted); }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: minmax(14rem, 1fr); overflow: auto; } .tile.t-term { grid-row: auto; } .notes { display: none; } }
+</style>
+</head>
+<body>
+<div class="mockbanner" role="note">
+  <strong>MOCK, NOT BUILT</strong>
+  <span>Static illustration of the decided chrome in docs/ui-vision.md. Fake data, no daemon, nothing is saved.</span>
+  <span class="spacer"></span>
+  <label>Terminal tile width <input id="widthctl" type="range" min="300" max="760" value="640" step="10" aria-label="Terminal tile width in pixels"> <output id="widthout">640px</output></label>
+</div>
+
+<header class="bar" id="bar">
+  <button class="start" id="start" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="launcher"><span aria-hidden="true">&#9679;</span> Start</button>
+  <nav class="winlist" id="winlist" aria-label="Open windows"></nav>
+  <div class="right">
+    <span class="pill" title="Connection to the daemon"><span class="dot ok"></span>connected</span>
+    <button class="badge" type="button" id="inboxbadge" title="Inbox: user messages, escalations, approvals">Inbox <b>3</b></button>
+    <span class="menuwrap"><button class="iconbtn" type="button" id="barmenu" aria-haspopup="menu" aria-expanded="false" aria-label="Menu">&#8943;</button></span>
+  </div>
+
+  <div class="drop launcher" id="launcher" role="dialog" aria-label="Launcher" hidden>
+    <input class="omni" id="omni" type="text" placeholder="Search view types, agents, actions (e.g. split, reset layout)" autocomplete="off" aria-label="Omnibar">
+    <ul id="launchlist" role="listbox" aria-label="Windows and actions"></ul>
+  </div>
+</header>
+
+<main id="tiles">
+  <section class="tile t-term focused" id="tile-term" aria-label="Terminal window"></section>
+  <section class="tile t-browser" id="tile-browser" aria-label="Browser window"></section>
+  <section class="tile t-inbox" id="tile-inbox" aria-label="Inbox window"></section>
+</main>
+
+<aside class="notes" id="notes">
+  <button type="button" id="notesclose" aria-label="Hide notes">&times;</button>
+  <b>Open questions (docs/ui-vision.md)</b>
+  <p>Omnibar key: undecided. Nothing here opens it by keyboard; click Start.</p>
+  <p>Window list with many agents: undecided. Shown here as one entry per tile; it would crowd.</p>
+</aside>
+
+<script>
+"use strict";
+(function () {
+  // Fake data only.
+  var WINDOWS = [
+    { id: "term-a", kind: "Terminal", label: "Terminal: agent-alpha", dot: "ok", tile: "tile-term" },
+    { id: "browser-a", kind: "Browser", label: "Browser: agent-alpha", dot: "info", tile: "tile-browser" },
+    { id: "inbox", kind: "Inbox", label: "Inbox", dot: "warn", tile: "tile-inbox" },
+    { id: "term-b", kind: "Terminal", label: "Terminal: agent-bravo", dot: "err" },
+    { id: "tree", kind: "Tree", label: "Tree", dot: "ok" },
+    { id: "reports", kind: "Reports", label: "Reports", dot: "ok" }
+  ];
+  var ACTIONS = ["Split tile", "Close tile", "Reset layout"];
+
+  // Menus are declared as data; the chrome renders them (textContent only, as the decision requires). Item: {t, hint?, check?, warn?, off?, note?}.
+  var MENUS = {
+    "tile-term": [
+      { name: "View", items: [{ h: "Font size" }, { t: "Smaller", hint: "A\u2212" }, { t: "Larger", hint: "A+" }, { t: "Reset size" }] },
+      { name: "Trace", items: [
+        { t: "Copy trace" }, { t: "View trace" }, { t: "Short", hint: "header + last 40 events + errors" }, { sep: 1 },
+        { h: "Options" }, { t: "Include children (condensed)", check: false, toggle: 1 },
+        { t: "Include raw tool output (no redaction)", check: false, toggle: 1, warn: 1, note: "Raw skips secret redaction. Do not paste it anywhere public." },
+        { sep: 1 }, { t: "Download .md" }] },
+      { name: "Session", items: [{ t: "Reconnect" }] },
+      { name: "Help", items: [{ t: "Keys" }] }
+    ],
+    "tile-browser": [
+      { name: "View", items: [{ t: "Fit to window", check: true, toggle: 1 }, { t: "Actual size", check: false, toggle: 1 }, { sep: 1 }, { t: "Copy URL" }] },
+      { name: "Help", items: [{ t: "About view-only", hint: "agent-controlled content" }] }
+    ],
+    "tile-inbox": [
+      { name: "View", items: [{ h: "Show" }, { t: "All", check: true, toggle: 1, radio: 1 }, { t: "User messages", check: false, toggle: 1, radio: 1 }, { t: "Escalations", check: false, toggle: 1, radio: 1 }, { t: "Approvals", check: false, toggle: 1, radio: 1 }] },
+      { name: "Help", items: [{ t: "About the Inbox" }] }
+    ]
+  };
+
+  var TITLES = { "tile-term": "Terminal: agent-alpha", "tile-browser": "Browser: agent-alpha", "tile-inbox": "Inbox" };
+
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function toast(msg) {
+    var old = document.querySelector(".toast"); if (old) old.remove();
+    var t = el("div", "toast", msg); t.setAttribute("role", "status"); document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 1800);
+  }
+
+  // ---- dropdown management: one open at a time ----
+  var open = null; // {btn, panel}
+  function closeAll() {
+    if (!open) return;
+    open.panel.hidden = true; open.btn.setAttribute("aria-expanded", "false"); open = null;
+  }
+  function openDrop(btn, panel) {
+    var same = open && open.panel === panel;
+    closeAll();
+    if (same) return false;
+    panel.hidden = false; btn.setAttribute("aria-expanded", "true"); open = { btn: btn, panel: panel };
+    return true;
+  }
+  document.addEventListener("click", function (e) { if (open && !open.panel.contains(e.target) && !open.btn.contains(e.target)) closeAll(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && open) { var b = open.btn; closeAll(); b.focus(); } });
+
+  function renderItem(it, tileTitle, panelItems) {
+    if (it.sep) return el("hr");
+    if (it.h) return el("h4", null, it.h);
+    var b = el("button", "item" + (it.warn ? " warnitem" : "")); b.type = "button"; b.setAttribute("role", it.toggle ? (it.radio ? "menuitemradio" : "menuitemcheckbox") : "menuitem");
+    b.appendChild(el("span", null, it.t)); if (it.hint) b.appendChild(el("span", "hint", it.hint));
+    if (it.toggle) b.setAttribute("aria-checked", it.check ? "true" : "false");
+    b.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (it.toggle) {
+        if (it.radio) panelItems.forEach(function (o) { if (o.radio) o.node.setAttribute("aria-checked", "false"); });
+        else it.node.setAttribute("aria-checked", it.node.getAttribute("aria-checked") === "true" ? "false" : "true");
+        if (it.radio) it.node.setAttribute("aria-checked", "true");
+        return; // toggles keep the menu open in the mock
+      }
+      closeAll(); toast("Mock: \u201C" + it.t + "\u201D in " + tileTitle);
+    });
+    it.node = b; return b;
+  }
+  function renderItems(container, items, title) {
+    items.forEach(function (it) { container.appendChild(renderItem(it, title, items)); if (it.note) container.appendChild(el("p", "note", it.note)); });
+  }
+
+  function buildTile(id) {
+    var tile = document.getElementById(id), title = TITLES[id], menus = MENUS[id];
+    var bar = el("div", "tile-bar");
+    bar.appendChild(el("span", "tile-title", title));
+
+    // Wide form: one button per menu, side by side.
+    var strip = el("div", "menus"); strip.setAttribute("role", "menubar");
+    menus.forEach(function (m) {
+      var w = el("span", "menuwrap"), b = el("button", "tile-btn", m.name), p = el("div", "drop"); p.hidden = true; p.setAttribute("role", "menu");
+      b.type = "button"; b.setAttribute("aria-haspopup", "menu"); b.setAttribute("aria-expanded", "false");
+      renderItems(p, m.items.map(function (x) { return Object.assign({}, x); }), title);
+      b.addEventListener("click", function (e) { e.stopPropagation(); openDrop(b, p); });
+      w.appendChild(b); w.appendChild(p); strip.appendChild(w);
+    });
+    bar.appendChild(strip);
+    bar.appendChild(el("span", "spacer"));
+
+    // Narrow form: a single overflow button listing every menu's items under its name.
+    var ow = el("span", "menuwrap overflow"), ob = el("button", "tile-btn", "\u2630"), op = el("div", "drop right-edge"); op.hidden = true; op.setAttribute("role", "menu");
+    ob.type = "button"; ob.setAttribute("aria-label", "Menu"); ob.setAttribute("aria-haspopup", "menu"); ob.setAttribute("aria-expanded", "false");
+    menus.forEach(function (m, i) { if (i) op.appendChild(el("hr")); op.appendChild(el("h4", null, m.name)); renderItems(op, m.items.map(function (x) { return Object.assign({}, x); }), title); });
+    ob.addEventListener("click", function (e) { e.stopPropagation(); openDrop(ob, op); });
+    ow.appendChild(ob); ow.appendChild(op); bar.appendChild(ow);
+
+    var x = el("button", "tile-btn", "\u00D7"); x.type = "button"; x.setAttribute("aria-label", "Close window"); x.addEventListener("click", function () { toast("Mock: close " + title); });
+    bar.appendChild(x);
+    tile.appendChild(bar);
+    tile.addEventListener("pointerdown", function () { document.querySelectorAll(".tile").forEach(function (t) { t.classList.toggle("focused", t === tile); }); markWinlist(); });
+    return tile;
+  }
+
+  function pill(dotCls, text) { var p = el("span", "pill"); p.appendChild(el("span", "dot " + dotCls)); p.appendChild(document.createTextNode(text)); return p; }
+
+  // Terminal tile
+  var t1 = buildTile("tile-term");
+  var tb = el("div", "tile-body term");
+  tb.textContent = "";
+  [["p", "agent-alpha $ "], ["", "run-checks --suite fake\n"], ["d", "[12:00:01] starting fake suite\n"], ["g", "[12:00:04] 42 passed, 0 failed\n"], ["d", "[12:00:05] writing report placeholder.md\n"], ["p", "agent-alpha $ "], ["d", "_"]].forEach(function (s) { tb.appendChild(el("span", s[0], s[1])); });
+  t1.appendChild(tb);
+  var f1 = el("div", "tile-foot"); f1.appendChild(pill("ok", "running")); f1.appendChild(pill("ok", "connected")); f1.appendChild(el("span", null, "agent-alpha \u00B7 accepts keyboard input")); t1.appendChild(f1);
+
+  // Browser tile (view-only: no back/forward, no editable URL)
+  var t2 = buildTile("tile-browser");
+  var bb = el("div", "tile-body shot"), fp = el("div", "fakepage");
+  fp.appendChild(el("h5", null, "Example page (placeholder)")); fp.appendChild(el("p", null, "Fake streamed frame of the agent's headless browser."));
+  for (var i = 0; i < 4; i++) fp.appendChild(el("div", "ph"));
+  bb.appendChild(fp); t2.appendChild(bb);
+  var f2 = el("div", "tile-foot"); f2.appendChild(pill("info", "live")); f2.appendChild(el("span", "ro", "view-only")); f2.appendChild(el("span", "url", "example.invalid/page")); t2.appendChild(f2);
+
+  // Inbox tile
+  var t3 = buildTile("tile-inbox");
+  var ib = el("div", "tile-body");
+  [["message", "agent-alpha asks: which branch should I target?"], ["approval", "agent-bravo requests permission: placeholder action"], ["escalation", "agent-alpha is blocked: placeholder reason"]].forEach(function (r) {
+    var row = el("div", "inbox-row"); row.appendChild(el("span", "tag", r[0])); row.appendChild(el("span", null, r[1])); ib.appendChild(row);
+  });
+  t3.appendChild(ib);
+  var f3 = el("div", "tile-foot"); f3.appendChild(pill("warn", "3 pending")); f3.appendChild(pill("ok", "connected")); t3.appendChild(f3);
+
+  // ---- window list in the bar (one entry per open tile) ----
+  var wl = document.getElementById("winlist");
+  function markWinlist() {
+    Array.prototype.forEach.call(wl.children, function (b) { var t = document.getElementById(b.dataset.tile); b.classList.toggle("on", t.classList.contains("focused")); });
+  }
+  WINDOWS.filter(function (w) { return w.tile; }).forEach(function (w) {
+    var b = el("button"); b.type = "button"; b.dataset.tile = w.tile; b.appendChild(el("span", "dot " + w.dot)); b.appendChild(document.createTextNode(w.label));
+    b.addEventListener("click", function () { document.querySelectorAll(".tile").forEach(function (t) { t.classList.toggle("focused", t.id === w.tile); }); markWinlist(); });
+    wl.appendChild(b);
+  });
+  markWinlist();
+
+  // ---- launcher ----
+  var start = document.getElementById("start"), launcher = document.getElementById("launcher"), omni = document.getElementById("omni"), list = document.getElementById("launchlist");
+  var sel = 0, shown = [];
+  function renderList() {
+    var q = omni.value.trim().toLowerCase();
+    var all = WINDOWS.map(function (w) { return { label: w.label, kind: w.tile ? "open" : "window", dot: w.dot }; }).concat(ACTIONS.map(function (a) { return { label: a, kind: "action" }; }));
+    shown = all.filter(function (x) { return !q || x.label.toLowerCase().indexOf(q) !== -1 || x.kind.indexOf(q) !== -1; });
+    sel = Math.min(sel, Math.max(shown.length - 1, 0));
+    list.textContent = "";
+    if (!shown.length) { list.appendChild(el("li", "empty", "Nothing matches \u201C" + omni.value + "\u201D.")); return; }
+    shown.forEach(function (x, i) {
+      var li = el("li"), b = el("button", i === sel ? "sel" : ""); b.type = "button"; b.setAttribute("role", "option");
+      if (x.dot) b.appendChild(el("span", "dot " + x.dot)); else b.appendChild(el("span", null, "\u25B8"));
+      b.appendChild(el("span", null, x.label)); b.appendChild(el("span", "kind", x.kind));
+      b.addEventListener("click", function () { closeAll(); toast("Mock: " + (x.kind === "action" ? "run " : "open ") + x.label); });
+      li.appendChild(b); list.appendChild(li);
+    });
+  }
+  start.addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (openDrop(start, launcher)) { omni.value = ""; sel = 0; renderList(); omni.focus(); }
+  });
+  omni.addEventListener("input", function () { sel = 0; renderList(); });
+  omni.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown") { sel = Math.min(sel + 1, shown.length - 1); renderList(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); renderList(); e.preventDefault(); }
+    else if (e.key === "Enter" && shown[sel]) { var x = shown[sel]; closeAll(); toast("Mock: " + (x.kind === "action" ? "run " : "open ") + x.label); }
+  });
+
+  // ---- bar menu: layout actions and sign out ----
+  var bm = document.getElementById("barmenu"), bmp = el("div", "drop right-edge"); bmp.hidden = true; bmp.setAttribute("role", "menu"); bmp.style.right = "0"; bmp.style.top = "calc(100% + 2px)";
+  bmp.appendChild(el("h4", null, "Layout"));
+  ["Export layout", "Import layout", "Reset layout"].forEach(function (t) { var b = el("button", "item", t); b.type = "button"; b.setAttribute("role", "menuitem"); b.addEventListener("click", function () { closeAll(); toast("Mock: " + t); }); bmp.appendChild(b); });
+  bmp.appendChild(el("hr"));
+  var so = el("button", "item", "Sign out"); so.type = "button"; so.setAttribute("role", "menuitem"); so.addEventListener("click", function () { closeAll(); toast("Mock: sign out"); }); bmp.appendChild(so);
+  bm.parentNode.appendChild(bmp);
+  bm.addEventListener("click", function (e) { e.stopPropagation(); openDrop(bm, bmp); });
+  document.getElementById("inboxbadge").addEventListener("click", function () { toast("Mock: open Inbox"); });
+
+  // ---- width control for the terminal tile (the container query reacts to the real tile width) ----
+  var ctl = document.getElementById("widthctl"), out = document.getElementById("widthout"), main = document.getElementById("tiles");
+  function setWidth() { out.textContent = ctl.value + "px"; main.style.setProperty("--leftw", ctl.value + "px"); }
+  ctl.addEventListener("input", function () { closeAll(); setWidth(); });
+  setWidth();
+  document.getElementById("notesclose").addEventListener("click", function () { document.getElementById("notes").hidden = true; });
+})();
+</script>
+</body>
+</html>
