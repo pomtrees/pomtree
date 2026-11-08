@@ -49,6 +49,8 @@ function transport(target: { socketPath: string } | { host: string; port: number
           method: c.method,
           headers: {
             authorization: `Bearer ${token}`,
+            // pomtreed refuses any POST under /v1/ui/ without this header (CSRF guard for UI write routes, server.ts), Bearer callers included.
+            ...(c.method === "POST" && c.path.startsWith("/v1/ui/") ? { "x-pomtree-ui": "1" } : {}),
             ...(payload === undefined ? {} : { "content-type": binary ? "application/octet-stream" : "application/json" }),
           },
         },

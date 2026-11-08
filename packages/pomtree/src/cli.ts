@@ -32,6 +32,7 @@ import { effectiveExtKey, parseInput, renderExtCallResult, renderExtFetchResult,
 import type { ExtCallResult } from "./ext.ts";
 import { stripControl } from "./sanitize.ts";
 import { effectiveSendKey } from "./send.ts";
+import { buildUiCommand, formatUiResult } from "./uiCmd.ts";
 import { effectiveYieldKey, parseYieldWait } from "./yield.ts";
 import {
   parseExpectRev,
@@ -165,6 +166,14 @@ const USAGE = `usage: pomtree [--json] <command>
   peers                                                     list the agents this agent can address
   send ID BODY [--interrupt] [--key K]                      send a message to a peer's mailbox; the operator's --interrupt stops the agent's
                                                             current work and delivers it now (agents may not interrupt)
+  ui open|focus|close VIEW [AGENT [REPORT]] | ui focus --dir left|right|up|down | ui arrange single|columns|rows|grid | ui reset |
+  ui follow on|off [--views terminal,browser] [--of AGENT] [--key K]
+                                                            drive the operator web UI from a session (operator only; agents cannot use it).
+                                                            VIEW is e.g. terminal, browser, report, tree; follow opens a window when a child
+                                                            spawns (--views 1-4 views, default terminal; --of limits it to children of AGENT).
+                                                            It reaches only tabs connected to this daemon: exit 0 sent to at least one tab; exit 3
+                                                            (not found) recorded but no tab is connected (nothing applied and a later tab will not replay it:
+                                                            open /ui and run it again); exit 2 usage error or rejected by the daemon; exit 1 unexpected reply
   ask QUESTION [--options A,B] [--wait MS] [--key K] [--json]  raise a human escalation; a --wait over ~20s yields and resumes on the answer
   budget [--json]                                             show this agent's remaining budget
   yield --until COND [--key K] [--json]                     checkpoint and park until COND (agent)
@@ -306,6 +315,9 @@ const VALUE_FLAGS = new Set([
   "max-age",
   "purpose",
   "reason",
+  "views",
+  "of",
+  "dir",
 ]);
 
 function parseArgs(argv: string[]) {
@@ -869,6 +881,20 @@ export async function run(argv: string[], io: Io): Promise<number> {
           return EXIT.ok;
         }
         throw new Usage(sub ? `unknown escalations command: ${sub}` : "escalations needs a subcommand (ls|answer)");
+      }
+      case "ui": {
+        const built = buildUiCommand(rest, { views: flag("views"), of: flag("of"), dir: flag("dir") });
+        if (!built.ok) throw new Usage(built.error);
+        const reply = (await api("POST", "/v1/ui/command", { idempotencyKey: idemKey(), command: built.command }, false, "ui")) as {
+          seq: number;
+          tabs: number;
+        };
+        const o = formatUiResult(reply, EXIT);
+        if (o.code === EXIT.ok) {
+          io.out(o.out);
+          return EXIT.ok;
+        }
+        throw new Failure(o.code, o.err);
       }
       case "top": {
         const interval = nonNegative("interval", flag("interval"), true) ?? 1000;

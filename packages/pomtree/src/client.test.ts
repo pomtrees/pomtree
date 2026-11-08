@@ -124,3 +124,21 @@ test("a JSON body keeps its content-type and a non-raw reply is parsed", async (
     s.close();
   }
 });
+
+test("a POST under /v1/ui/ carries X-Pomtree-UI: 1 (the daemon's guard for UI write routes); other paths do not", async () => {
+  const seen: Record<string, string | string[] | undefined> = {};
+  const s = await serve((req, res) => {
+    seen[req.url ?? ""] = req.headers["x-pomtree-ui"];
+    req.resume();
+    res.end("{}");
+  });
+  try {
+    const t = socketTransport(s.path, "t");
+    await t({ method: "POST", path: "/v1/ui/command", body: { command: { cmd: "reset" } } });
+    await t({ method: "POST", path: "/x", body: {} });
+    assert.equal(seen["/v1/ui/command"], "1");
+    assert.equal(seen["/x"], undefined);
+  } finally {
+    s.close();
+  }
+});

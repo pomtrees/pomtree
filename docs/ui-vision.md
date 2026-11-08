@@ -103,3 +103,12 @@ Not built either: windows that appear and rearrange with agents; a public view-t
 ## Reading the history
 
 `git log` restricted to `packages/observe/src` shows the built parts; the layout module, the terminal pane's multi-instance mount and the palette and chrome commits can be reviewed independently.
+
+## UI control
+
+The UI can be driven by operator commands (`pomtree ui ...`) so a session can stage a demo: open, focus and close windows, arrange, reset and follow spawns. Usage, delivery semantics and exit codes are in `docs/operating.md` ("Driving the UI from a session").
+
+- **Commands are durable journal events, not in-memory fan-out.** Reason: the daemon keeps no state in memory, every mutating call is idempotent and audited, and the journal gives restart safety and an audit trail. A tab starts at the journal tail and applies only fresh commands, so history never replays. Reopen if command volume makes journal growth a problem, or if a high-rate lossy command (cursor, scroll sync) is added, which would want an ephemeral channel.
+- **Follow is a per-tab flag in tab memory.** Reason: persisting a mode that opens windows unprompted across reloads would surprise the operator. Reopen if demos need it to survive a reload.
+- **Presets re-tile the current windows** rather than build fixed-view layouts, which would need an agent subject and fail when a view is unavailable. Reopen if a named fixed layout is wanted; free-form layouts stay with Import.
+- **Broadcast only, no acknowledgement.** Open work is `TODO(ui-command-target)` and `TODO(ui-command-ack)` in `packages/pomtreed/src/builtin/uiDrive.ts`.
