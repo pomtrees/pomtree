@@ -1,5 +1,5 @@
 import { PANE_KIT_JS } from "./paneKit.ts";
-import { MD_LOGIC_JS } from "./mdKit.ts";
+import { renderReportView } from "./reportView.ts";
 import { UI_CSS } from "./shell.ts";
 import type { AgentId, AgentRecord, JournalEntry, WaitCondition } from "@pomtree/core";
 import { LiveView } from "./live.ts";
@@ -173,115 +173,30 @@ K.onActivate("tree", open, close);
 </script>`;
 }
 
-export function renderReportsPane(ctx: { reportsPath?: string } = {}): string {
+// The Reports index (a browsing window): a list of every report; a name opens that report's item window
+// (#/report/<agent>/<id>, see renderReportView, shipped here because a script only ships inside a tab section).
+// The standalone page has no window manager, so its names link to the raw (inert download) URL and it ships no viewer.
+// TODO(reports-page-viewer): the standalone reports page has no in-page preview. Current behavior: names download the raw bytes.
+export function renderReportsPane(ctx: { reportsPath?: string; standalone?: boolean } = {}): string {
   const reports = scriptJson(ctx.reportsPath ?? "/v1/reports");
+  const standalone = ctx.standalone === true;
   return `<div class="reports pane">
-<div id="reports-list">
 <div class="tablewrap"><table>
 <thead><tr><th>AGENT</th><th>NAME</th><th>TYPE</th><th>SIZE</th><th>AGE</th><th>ID</th><th></th></tr></thead>
 <tbody id="reports-rows"></tbody>
 </table></div>
 </div>
-<div id="reports-viewer" hidden></div>
-</div>
 <script>
 (() => {
 ${PANE_KIT_JS}
-${MD_LOGIC_JS}
-const listEl = document.getElementById("reports-list");
-const viewer = document.getElementById("reports-viewer");
+const standalone = ${standalone};
 const rawUrl = (agent, id) => "/v1/agents/" + encodeURIComponent(agent) + "/reports/" + encodeURIComponent(id);
-// Hash route #/reports/<agent>/<id> opens the viewer; anything else shows the list.
-const viewerRoute = (hash) => {
-  const parts = hash.slice(1).split(/[?#]/)[0].split("/");
-  if (hash.slice(0, 2) !== "#/" || parts.length < 3 || parts[1] !== "reports" || !parts[2] || !parts[3]) return null;
-  try { return { agent: decodeURIComponent(parts[2]), id: decodeURIComponent(parts[3]) }; } catch (e) { return null; }
-};
-const IMG = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const ACTIVE = ["text/html", "image/svg+xml", "application/xhtml+xml"];
 const link = (href, text, download) => {
   const a = document.createElement("a");
   a.href = href;
   a.textContent = text;
   if (download) a.setAttribute("download", "");
   return a;
-};
-// Untrusted report content is never put in this document: active types go in an iframe with an EMPTY sandbox
-// (opaque origin, no scripts/forms/popups/top-navigation) whose src is the locked /render endpoint;
-// markdown goes through MdKit's createElement/textContent renderer; text is a <pre>. There is no scripts-enabled mode.
-const openViewer = (route) => {
-  const base = rawUrl(route.agent, route.id);
-  viewer.replaceChildren();
-  const back = link("#/reports", "\u2190 All reports");
-  viewer.appendChild(back);
-  const title = document.createElement("h2");
-  title.textContent = "Report " + route.id;
-  viewer.appendChild(title);
-  const body = document.createElement("div");
-  const actions = document.createElement("div");
-  actions.className = "report-actions";
-  const dl = link(base + "?raw=1", "Download", true);
-  actions.appendChild(dl);
-  const note = (text) => { const p = document.createElement("p"); p.className = "empty"; p.textContent = text; return p; };
-  K.getJson(base).then((report) => {
-    title.textContent = report.name;
-    const type = String(report.mediaType).split(";")[0].trim().toLowerCase();
-    const isActive = ACTIVE.includes(type);
-    if (isActive || IMG.includes(type)) {
-      const banner = document.createElement("div");
-      banner.className = "report-banner";
-      banner.setAttribute("role", "note");
-      banner.appendChild(document.createTextNode("Rendered in a locked sandbox: scripts and network are disabled. "));
-      banner.appendChild(actions);
-      viewer.appendChild(banner);
-      let frame;
-      if (isActive) {
-        frame = document.createElement("iframe");
-        frame.setAttribute("sandbox", "");
-        frame.setAttribute("referrerpolicy", "no-referrer");
-        frame.setAttribute("title", report.name);
-        frame.style.cssText = "width:100%;height:70vh;border:1px solid var(--border);background:#fff";
-      } else {
-        frame = document.createElement("img");
-        frame.setAttribute("alt", report.name);
-        frame.style.maxWidth = "100%";
-      }
-      frame.setAttribute("src", base + "/render");
-      body.appendChild(frame);
-      if (isActive) {
-        const src = document.createElement("a");
-        src.href = "#";
-        src.textContent = "View source";
-        src.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          if (body.querySelector("pre")) return;
-          fetch(base + "?raw=1").then(K.check).then((r) => r.text()).then((t) => {
-            const pre = document.createElement("pre");
-            pre.textContent = t;
-            body.appendChild(pre);
-          }).catch((err) => body.appendChild(note(K.errorMessage("source", err))));
-        });
-        actions.appendChild(document.createTextNode(" \u00b7 "));
-        actions.appendChild(src);
-      }
-    } else if (type === "text/markdown" || type === "text/plain" || type === "application/json") {
-      viewer.appendChild(actions);
-      fetch(base + "?raw=1").then(K.check).then((r) => r.text()).then((t) => {
-        if (type === "text/markdown") { const md = document.createElement("div"); md.className = "md"; md.appendChild(Md.render(document, t)); body.appendChild(md); }
-        else { const pre = document.createElement("pre"); pre.textContent = t; body.appendChild(pre); }
-      }).catch((err) => body.appendChild(note(K.errorMessage("report", err))));
-    } else {
-      viewer.appendChild(actions);
-      body.appendChild(note("This report type (" + report.mediaType + ") cannot be previewed; use Download."));
-    }
-    viewer.appendChild(body);
-  }).catch((err) => viewer.appendChild(note(K.errorMessage("report", err))));
-};
-const route = () => {
-  const r = viewerRoute(location.hash);
-  listEl.hidden = r !== null;
-  viewer.hidden = r === null;
-  if (r) openViewer(r); else viewer.replaceChildren();
 };
 const tbody = document.getElementById("reports-rows");
 const td = (text) => {
@@ -320,7 +235,7 @@ const load = () => K.getJson(${reports}).then((rows) => {
     tr.appendChild(td(agent));
     const nameTd = document.createElement("td");
     const a = document.createElement("a");
-    a.href = "#/reports/" + encodeURIComponent(report.agent) + "/" + encodeURIComponent(report.id);
+    a.href = standalone ? rawUrl(report.agent, report.id) + "?raw=1" : "#/report/" + encodeURIComponent(report.agent) + "/" + encodeURIComponent(report.id);
     a.textContent = report.name;
     nameTd.appendChild(a);
     tr.appendChild(nameTd);
@@ -334,9 +249,9 @@ const load = () => K.getJson(${reports}).then((rows) => {
     return tr;
   }));
 }).catch((err) => empty("error", K.errorMessage("reports", err)));
-K.onActivate("reports", () => { route(); load(); addEventListener("hashchange", route); }, () => removeEventListener("hashchange", route));
+K.onActivate("reports", load);
 })();
-</script>`;
+</script>${standalone ? "" : renderReportView()}`;
 }
 
 export function renderLivePage(opts: { title?: string; eventsPath?: string } = {}): string {
@@ -374,7 +289,7 @@ export function renderReportsPage(opts: { title?: string; reportsPath?: string }
 <body>
 <main class="page">
 <h1>${title}</h1>
-${renderReportsPane({ reportsPath: opts.reportsPath })}
+${renderReportsPane({ reportsPath: opts.reportsPath, standalone: true })}
 </main>
 </body>
 </html>

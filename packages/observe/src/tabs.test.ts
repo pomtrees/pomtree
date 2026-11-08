@@ -1683,48 +1683,6 @@ test("new-agent pane: advanced and deadline fields are posted; invalid ones bloc
 
 const walk = (n: FakeNode): FakeNode[] => [n, ...n.children.flatMap(walk)];
 
-test("report viewer: html renders in an iframe with an EMPTY sandbox, a locked-sandbox banner, and Download/View source", async () => {
-  const { doc } = runShell("#/reports/agent-1/r1", {
-    "/v1/agents/agent-1/reports/r1": { body: { name: "x.html", mediaType: "text/html", id: "r1", agent: "agent-1" } },
-  });
-  await flush();
-  const viewer = doc.getElementById("reports-viewer")!;
-  assert.equal(viewer.hidden, false);
-  assert.equal(doc.getElementById("reports-list")!.hidden, true);
-  const nodes = walk(viewer);
-  const frames = nodes.filter((n) => n.tagName === "iframe");
-  assert.equal(frames.length, 1);
-  assert.equal(frames[0]!.attrs.get("sandbox"), ""); // present and empty: no scripts, opaque origin
-  assert.ok(![...frames[0]!.attrs.values()].some((v) => v.includes("allow-")));
-  assert.equal(frames[0]!.attrs.get("src"), "/v1/agents/agent-1/reports/r1/render");
-  const texts = nodes.map((n) => n.textContent).join("|");
-  assert.ok(texts.includes("Rendered in a locked sandbox: scripts and network are disabled."));
-  assert.ok(texts.includes("Download") && texts.includes("View source"));
-  assert.ok(nodes.some((n) => n.tagName === "a" && n.href === "/v1/agents/agent-1/reports/r1?raw=1"));
-  assert.ok(!texts.includes("scripts-enabled"));
-});
-
-test("report viewer: images use <img> via /render; unknown types are download-only; the list links to the viewer", async () => {
-  const img = runShell("#/reports/a/r2", { "/v1/agents/a/reports/r2": { body: { name: "p.png", mediaType: "image/png" } } });
-  await flush();
-  const nodes = walk(img.doc.getElementById("reports-viewer")!);
-  assert.ok(nodes.some((n) => n.tagName === "img" && n.attrs.get("src") === "/v1/agents/a/reports/r2/render"));
-  assert.ok(!nodes.some((n) => n.tagName === "iframe"));
-  const pdf = runShell("#/reports/a/r3", { "/v1/agents/a/reports/r3": { body: { name: "p.pdf", mediaType: "application/pdf" } } });
-  await flush();
-  const pn = walk(pdf.doc.getElementById("reports-viewer")!);
-  assert.ok(!pn.some((n) => n.tagName === "iframe" || n.tagName === "img"));
-  assert.ok(pn.some((n) => n.textContent.includes("cannot be previewed")));
-  const list = runShell("#/reports", {
-    "/v1/reports": { body: [{ agent: "a", report: { id: "r1", agent: "a", name: "x.html", mediaType: "text/html", sizeBytes: 3, createdAt: 0 } }] },
-  });
-  await flush();
-  const links = walk(list.doc.getElementById("reports-rows")!)
-    .filter((n) => n.tagName === "a")
-    .map((n) => n.href);
-  assert.deepEqual(links, ["#/reports/a/r1", "/v1/agents/a/reports/r1?raw=1"]);
-});
-
 // --- multi-instance terminal views ----------------------------------------------------------------
 
 interface ViewHost {
@@ -1784,10 +1742,10 @@ test("view registry: registers one view per id, lists them, and rejects duplicat
   assert.equal(kit.view("half"), undefined);
 });
 
-test("view registry: the shell page registers the multi-instance terminal view once and refuses a second one", () => {
+test("view registry: the shell page registers the multi-instance item views (report, terminal) once and refuses a second one", () => {
   const { context } = runShell("#/tree");
   const ids = runInContext("PaneKit.views().map((v) => v.id + ':' + v.multi)", context) as string[];
-  assert.deepEqual([...ids], ["terminal:true"]);
+  assert.deepEqual([...ids], ["report:true", "terminal:true"]);
   assert.throws(
     () => runInContext('PaneKit.registerView({ id: "terminal", title: "T", multi: true, mount() {} })', context),
     /view terminal is already registered/,

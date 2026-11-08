@@ -74,6 +74,7 @@ test("GET /ui serves the shell with all tabs wired", async () => {
     for (const id of ["export-layout", "import-layout", "reset-layout"]) assert.ok(html.body.includes(`id: "${id}"`), id);
     // The browser and report views ship their scripts inside tab sections and add no tab of their own.
     assert.ok(html.body.includes('K.registerView({ id: "browser"'));
+    assert.ok(html.body.includes('K.registerView({ id: "report"'));
     assert.ok(html.body.includes('K.registerView({ id: "terminal"'));
     assert.ok(!html.body.includes('data-tab="browser"') && !html.body.includes('data-tab="report"'));
     // The tiling shell: sections wait in the stash until a tile hosts them, and the layout controls are present.

@@ -12,6 +12,7 @@ export * from "./newAgent.ts";
 export * from "./mdKit.ts";
 export * from "./termKit.ts";
 export * from "./browserView.ts";
+export * from "./reportView.ts";
 export * from "./vendor.ts";
 export * from "./traceKit.ts";
 export * from "./inbox.ts";
