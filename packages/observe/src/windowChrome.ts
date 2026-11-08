@@ -134,6 +134,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       }
       failure = res && res.ok === false ? String(res.reason) : null;
       renderFooter();
+      return failure === null;
     };
     const activate = (rec, row) => {
       if (!row.enabled) return;
@@ -287,7 +288,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
             stop();
             if (destroyed || input.value === rec.sent) return;
             rec.sent = input.value;
-            run(c.command, input.value, c.label);
+            if (!run(c.command, input.value, c.label)) rec.sent = null; // a failed command can be retried with the same value
           };
           rec.stop = stop;
           input.addEventListener("input", () => {

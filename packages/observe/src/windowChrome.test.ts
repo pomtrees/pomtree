@@ -629,6 +629,24 @@ test("controls: a button click invokes with no argument; a failure shows in the 
   assert.match(s.footer.byClass("stat").find((e) => e.role === "alert")?.textContent ?? "", /nope/);
 });
 
+test("controls: a search whose command failed can be retried with the same value; a success is still deduplicated", () => {
+  const s = ctlSetup();
+  let failing = true;
+  s.model.onCommand((c, a) => {
+    s.calls.push([c, a]);
+    if (failing) throw new Error("nope");
+  });
+  s.type("abc");
+  s.key(s.input, "Enter");
+  assert.match(s.footer.byClass("stat").find((e) => e.role === "alert")?.textContent ?? "", /nope/);
+  const before = s.calls.length;
+  failing = false;
+  s.key(s.input, "Enter");
+  assert.equal(s.calls.length, before + 1, "Enter retries the same value after a failure");
+  s.key(s.input, "Enter");
+  assert.equal(s.calls.length, before + 1, "after a success the same value is skipped again (negative control)");
+});
+
 test("controls: the input element survives a status tick and keeps half-typed text", () => {
   const s = ctlSetup();
   const before = s.input;
