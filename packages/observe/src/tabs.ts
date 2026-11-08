@@ -47,15 +47,19 @@ let kindFilter = "";
 const count = () => win.setStatus("count", { text: shown + " events" });
 let token = 0;
 let resetToken = 0;
+let moreToken = 0;
 const load = (reset) => {
+  if (!reset && moreToken) return;
   const mine = ++token;
-  if (reset) resetToken = mine;
+  if (reset) { resetToken = mine; moreToken = 0; } else moreToken = mine;
+  const settle = () => { if (moreToken === mine) moreToken = 0; };
   const stale = () => mine < resetToken;
   if (reset) { tbody.replaceChildren(); from = 0; shown = 0; }
   const qs = new URLSearchParams({ from: String(from), limit: String(LIMIT) });
   if (agentFilter) qs.set("agent", agentFilter);
   if (kindFilter) qs.set("kind", kindFilter);
   K.getJson(${journal} + "?" + qs.toString()).then((rows) => {
+    settle();
     if (stale()) return;
     for (const r of rows) {
       const tr = document.createElement("tr");
@@ -69,7 +73,7 @@ const load = (reset) => {
     }
     if (shown === 0) tbody.replaceChildren(K.messageRow(4, "empty", "No journal entries yet."));
     count();
-  }).catch((err) => { if (!stale()) tbody.replaceChildren(K.messageRow(4, "error", K.errorMessage("journal", err))); });
+  }).catch((err) => { settle(); if (!stale()) tbody.replaceChildren(K.messageRow(4, "error", K.errorMessage("journal", err))); });
 };
 win.onCommand((command, arg) => {
   if (command === "audit.agent" || command === "audit.kind") {

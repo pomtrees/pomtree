@@ -155,6 +155,27 @@ test("audit: a More page that resolves after a filter change is dropped", async 
   assert.ok(g.pending[2]!.url.includes("agent=b2") && g.pending[2]!.url.includes("from=0"));
 });
 
+test("audit: More clicked twice before the first page arrives requests one page; it works again after settling or failing", async () => {
+  const g = gatedAudit();
+  await flush();
+  g.pending[0]!.ok([g.row(1, "x")]);
+  await flush();
+  g.run("audit.more");
+  g.run("audit.more");
+  assert.equal(g.pending.length, 2, "the second More while one is pending sends nothing");
+  g.pending[1]!.ok([g.row(2, "x")]);
+  await flush();
+  assert.equal(g.cells().length, 2, "one page appended, not two");
+  g.run("audit.more");
+  assert.equal(g.pending.length, 3, "More works again once the page settled (negative control)");
+  g.pending[2]!.fail();
+  await flush();
+  g.run("audit.more");
+  assert.equal(g.pending.length, 4, "More works again after a failed page");
+  g.run("audit.agent", "b2");
+  assert.equal(g.pending.length, 5, "a filter change is never blocked by a pending More");
+});
+
 test("audit: a failed stale request shows no error over newer rows; the newest failing does", async () => {
   const g = gatedAudit();
   await flush();
