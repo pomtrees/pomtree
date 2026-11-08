@@ -6,9 +6,7 @@
 // THEME_CSS (themeCss.ts) sets opacity 1 on the themed hover, active and focus-visible splitter states.
 export const LAYOUT_CSS = `
 body.wm { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
-body.wm > nav.top { position: static; flex: 0 0 auto; }
 main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; position: relative; }
-.wm-actions { display: inline-flex; gap: 0.25rem; }
 .wm-notices { flex: 0 0 auto; }
 .wm-notice { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem var(--pad, 1rem); border-bottom-width: 1px; border-bottom-style: solid; border-bottom-color: var(--chrome-border, var(--border, currentColor)); background: var(--chrome-bg, var(--surface-2, transparent)); color: var(--chrome-fg, inherit); font-size: 0.875rem; }
 .wm-notice > span { flex: 1 1 auto; min-width: 0; }
@@ -40,8 +38,6 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .splitter:hover, .splitter:focus-visible { background: var(--chrome-accent, var(--accent, currentColor)); opacity: 0.5; }
 .wm-narrow .tile-bar, .wm-narrow .splitter { display: none; }
 @media (max-width: 640px) {
-  .wm-actions { display: none; }
-  main.wm { padding-bottom: calc(3.75rem + env(safe-area-inset-bottom, 0px)); }
   .tile { border-width: 0; }
   .tile-focused { outline-style: none; }
   .tile-bar, .splitter { display: none; }

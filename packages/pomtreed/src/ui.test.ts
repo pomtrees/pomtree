@@ -65,15 +65,20 @@ test("GET /ui serves the shell with all tabs wired", async () => {
     assert.match(html.body, /<title>pomtree<\/title>/);
     for (const tab of ["tree", "reports", "audit", "new", "schedules", "hosts", "terminal", "inbox"]) {
       assert.ok(html.body.includes(`data-tab="${tab}"`), `missing tab ${tab}`);
-      assert.ok(html.body.includes(`data-nav="${tab}"`), `missing nav ${tab}`);
     }
-    assert.ok(!html.body.includes('data-nav="escalations"'));
-    // The browser view ships its script with the terminal tab and adds no tab or nav entry of its own.
+    // The top nav is gone: the launcher bar replaces it, and no per-tab nav markup remains.
+    assert.ok(!html.body.includes("data-nav="));
+    assert.ok(html.body.includes('<header id="lb-bar" class="lb"></header>'), "missing launcher bar host");
+    assert.ok(html.body.includes("createLauncherBar(wm,"), "launcher bar not started");
+    assert.ok(html.body.includes('{ kind: "action", label: "Sign out", id: "sign-out" }'), "launcher lacks sign out");
+    for (const id of ["export-layout", "import-layout", "reset-layout"]) assert.ok(html.body.includes(`id: "${id}"`), id);
+    // The browser and report views ship their scripts inside tab sections and add no tab of their own.
     assert.ok(html.body.includes('K.registerView({ id: "browser"'));
-    assert.ok(!html.body.includes('data-tab="browser"') && !html.body.includes('data-nav="browser"'));
+    assert.ok(html.body.includes('K.registerView({ id: "terminal"'));
+    assert.ok(!html.body.includes('data-tab="browser"') && !html.body.includes('data-tab="report"'));
     // The tiling shell: sections wait in the stash until a tile hosts them, and the layout controls are present.
     assert.ok(html.body.includes('<div id="wm-stash" hidden><section data-tab="tree" hidden>'));
-    for (const id of ["wm-root", "wm-notices", "wm-export", "wm-import", "wm-reset"]) assert.ok(html.body.includes(`id="${id}"`), id);
+    for (const id of ["wm-root", "wm-notices"]) assert.ok(html.body.includes(`id="${id}"`), id);
     assert.ok(html.body.includes("createWindowManager("));
     assert.ok(html.body.includes('K.stream("/live/events"'));
     assert.ok(html.body.includes('"/v1/journal"'));
@@ -249,7 +254,7 @@ test("login then /ui serves shell; bad token 401; logout clears the cookie", asy
     assert.equal(ok.status, 200);
     const cookie = cookieOf(ok.headers);
     const shell = await get(path, "/ui", { cookie });
-    assert.ok(shell.body.includes('data-tab="tree"') && shell.body.includes('id="signout"'));
+    assert.ok(shell.body.includes('data-tab="tree"') && shell.body.includes('id="lb-bar"') && shell.body.includes('id: "sign-out"'));
     const out = await post(path, "/ui/logout", {}, { cookie });
     assert.equal(out.status, 200);
     assert.match(String(out.headers["set-cookie"]), /^pomtreed_ui=; Max-Age=0; HttpOnly; SameSite=Strict; Path=\//);

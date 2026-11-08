@@ -4,7 +4,7 @@ import { TabRegistry, renderShell } from "./shell.ts";
 import type { UiTabCtx } from "./shell.ts";
 import { renderTreePane, renderReportsPane, scriptJson } from "./web.ts";
 
-test("renderShell emits the nav, the hidden sections, and the UI runtime", () => {
+test("renderShell emits the launcher bar, the hidden sections, and the UI runtime", () => {
   const html = renderShell({
     title: "observe",
     tabs: [
@@ -13,10 +13,9 @@ test("renderShell emits the nav, the hidden sections, and the UI runtime", () =>
     ],
   });
   assert.ok(html.includes("<title>observe</title>"));
-  assert.ok(html.includes('<nav class="top"'));
-  assert.ok(html.includes('<nav class="bottom"'));
-  assert.ok(html.includes('href="#/live"'));
-  assert.ok(html.includes('href="#/reports"'));
+  assert.ok(html.includes('<header id="lb-bar" class="lb"></header>'));
+  assert.ok(!html.includes("<nav"), "the top-level navigation is replaced by the launcher bar");
+  assert.ok(!html.includes('href="#/live"'));
   assert.ok(html.includes('<section data-tab="live" hidden>'));
   assert.ok(html.includes('<section data-tab="reports" hidden>'));
   // Tiling shell: tile host, notice area, a stash holding the sections, layout controls and the activation runtime.
@@ -24,7 +23,7 @@ test("renderShell emits the nav, the hidden sections, and the UI runtime", () =>
   assert.ok(html.includes('id="wm-root"'));
   assert.ok(html.includes('id="wm-notices"'));
   assert.ok(html.includes('<div id="wm-stash" hidden><section data-tab="live" hidden>'));
-  for (const id of ["wm-export", "wm-import", "wm-reset", "wm-file"]) assert.ok(html.includes(`id="${id}"`), id);
+  for (const id of ["wm-export", "wm-import", "wm-reset", "wm-file", "signout"]) assert.ok(!html.includes(`id="${id}"`), id);
   assert.ok(html.includes("const UI = {"));
   assert.ok(html.includes("register(id, activate, deactivate)"));
   assert.ok(html.includes("activate(id)"));
@@ -34,9 +33,13 @@ test("renderShell emits the nav, the hidden sections, and the UI runtime", () =>
   assert.ok(html.includes("createWindowManager("));
   assert.ok(html.includes("hashchange"));
   assert.ok(html.includes("@media (max-width: 640px)"));
-  // The short title only labels the bottom (narrow) nav.
-  assert.ok(html.includes(">Rep</a>"));
-  assert.ok(html.includes(">Reports</a>"));
+  // The launcher script is its own block after the layout script, and mounts on the window manager.
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+  const bar = scripts.find((x) => x.includes("createLauncherBar(wm, "));
+  assert.ok(bar, "launcher script block present");
+  assert.ok(!scripts.some((x) => x.includes("createWindowManager(") && x.includes("createLauncherBar(")));
+  assert.ok(html.includes("const wm = createWindowManager("));
+  assert.doesNotThrow(() => new Function(bar!), "launcher script parses");
   assert.ok(!html.includes("src=")); // no external script or stylesheet, no build step
 });
 
@@ -81,12 +84,12 @@ test("renderShell escapes titles and ids and JSON-escapes ctx paths into inline 
       },
     ],
   });
-  // Title is HTML-escaped.
-  assert.ok(html.includes("&#60;b&#62;&#38;&#34;q&#34;"));
+  // The title only reaches the page as JSON in the tabs list, where "<" is escaped.
+  assert.ok(html.includes('"title":"\\u003cb>&\\"q\\""'));
   assert.ok(!html.includes("<b>&"));
-  // Id is HTML-escaped in the section attribute and the nav href.
+  // Id is HTML-escaped in the section attribute and JSON-escaped in the tabs list.
   assert.ok(html.includes('data-tab="a&#34;b&#60;c&#62;"'));
-  assert.ok(html.includes('href="#/a&#34;b&#60;c&#62;"'));
+  assert.ok(html.includes('createWindowManager([{"id":"a\\"b\\u003cc>"'));
   // The ctx.path value cannot close the script or inject a raw line separator.
   assert.ok(html.includes("\\u003c/script>"));
   assert.ok(!html.includes("x</script>"));

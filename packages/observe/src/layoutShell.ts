@@ -3,6 +3,7 @@
 // hosts views. A view is either a registry view (PaneKit.registerView: mounted per tile, unmounted on close) or a
 // singleton tab section that is moved into the tile body and activated through UI.activate/UI.deactivate (so it is
 // active exactly while it is in a visible tile). Agent data reaches the DOM only through textContent.
+// It returns { layout, tiles, api }: api is the window-manager surface for the launcher bar (launcherShell.ts).
 // Plain JS, no backticks, no template interpolation and no backslashes (it is a template literal).
 export const LAYOUT_STORAGE_KEY = "pomtree.layout";
 
@@ -190,8 +191,8 @@ function createWindowManager(tabs, storageKey) {
   };
   let keyDown = false;
   const focusLeaf = (id) => { commit(LK.focus(layout(), id)); };
-  const splitLeaf = (id, dir) => {
-    const next = LK.split(layout(), id, dir, pickNewView());
+  const splitLeaf = (id, dir, view, params) => {
+    const next = LK.split(layout(), id, dir, view || pickNewView(), params);
     if (next === layout()) notify("limit", "Cannot split further: a layout holds at most " + LK.MAX_LEAVES + " tiles nested " + LK.MAX_DEPTH + " levels deep. Close a tile first.");
     else commit(next);
   };
@@ -341,6 +342,7 @@ function createWindowManager(tabs, storageKey) {
     return el;
   };
 
+  const listeners = new Set();
   const render = () => {
     const l = layout();
     const leaves = LK.leaves(l);
@@ -390,9 +392,8 @@ function createWindowManager(tabs, storageKey) {
       geom += s.id + ":" + s.ratio + ";";
     }
     root.className = narrow ? "wm-root wm-narrow" : "wm-root";
-    const fv = focusedLeaf(l);
-    for (const a of document.querySelectorAll("nav a[data-nav]")) a.classList.toggle("active", !!fv && a.getAttribute("data-nav") === fv.view);
     if (geom !== lastGeom) { lastGeom = geom; scheduleFit(); }
+    for (const fn of [...listeners]) { try { fn(); } catch (e) { notify("launcher", "The top bar failed to update (" + errText(e) + "). Reload the page; the layout is unaffected."); } }
   };
 
   // ---- narrow fallback: one view at a time, never persisted ----
@@ -436,18 +437,31 @@ function createWindowManager(tabs, storageKey) {
       if (rec && rec.el.focus) rec.el.focus();
     }
   }, true);
-  const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener("click", fn); };
-  wire("wm-export", doExport);
-  wire("wm-reset", doReset);
-  const fileInput = document.getElementById("wm-file");
-  if (fileInput) {
-    wire("wm-import", () => fileInput.click());
-    fileInput.addEventListener("change", () => {
-      const f = fileInput.files && fileInput.files[0];
-      fileInput.value = "";
-      doImport(f);
-    });
-  }
-  return { layout, tiles };
+  const api = {
+    state: () => {
+      const l = layout();
+      return { leaves: LK.leaves(l).map((x) => ({ id: x.id, view: x.view, params: x.params })), focus: l.focus, narrow, maxLeaves: LK.MAX_LEAVES };
+    },
+    views: () => order.map((id) => ({ id, title: titles.get(id), multi: multiOf(id) })),
+    focus: focusLeaf,
+    focusDom: () => { const rec = tiles.get(layout().focus); if (rec && rec.el.focus) rec.el.focus(); },
+    openView: (view, agent) => {
+      if (kindOf(view) === "none") { notify("open", "View not available: " + view + "."); return; }
+      const l = layout();
+      const multi = multiOf(view);
+      const params = multi && agent ? { agent } : {};
+      const at = LK.find(l, view, params, multi);
+      if (at) { focusLeaf(at); return; }
+      if (narrow) commit(LK.setView(l, l.focus, view, params));
+      else splitLeaf(l.focus, "row", view, params);
+    },
+    splitFocused: (dir) => { if (!narrow) splitLeaf(layout().focus, dir); },
+    closeFocused: () => { if (!narrow) commit(LK.close(layout(), layout().focus)); },
+    exportLayout: doExport,
+    importFile: doImport,
+    resetLayout: doReset,
+    onChange: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
+  };
+  return { layout, tiles, api };
 }
 `;

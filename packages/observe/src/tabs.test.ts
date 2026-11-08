@@ -586,7 +586,8 @@ function runShell(
     },
   };
   const context = createContext(sandbox);
-  for (const src of scripts) runInContext(src, context, { filename: "inline.js" });
+  // The launcher bar script polls the API and has its own DOM fake tests (launcherShell); the pane harness leaves it out.
+  for (const src of scripts) if (!src.includes("createLauncherBar(")) runInContext(src, context, { filename: "inline.js" });
   const resize = () => {
     for (const fn of [...resizeListeners]) fn({});
   };

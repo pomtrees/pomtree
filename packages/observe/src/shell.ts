@@ -9,6 +9,8 @@ import { PANE_CSS } from "./paneKit.ts";
 import { LAYOUT_LOGIC_JS } from "./layout.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
+import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
+import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
 import { THEME_CSS } from "./themeCss.ts";
 import { escapeHtml, scriptJson } from "./web.ts";
 
@@ -91,28 +93,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.5 var(
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 h1 { margin: 0 0 var(--gap); font-size: 1.5rem; line-height: 1.25; }
 code, pre { font-family: var(--mono); }
-nav { display: flex; align-items: stretch; gap: 0.25rem; overflow-x: auto; scrollbar-width: none; }
-nav::-webkit-scrollbar { display: none; }
-nav a, nav button { font: inherit; color: var(--muted); text-decoration: none; padding: 0.625rem 0.875rem; border: 0; border-radius: var(--radius-sm); background: none; cursor: pointer; white-space: nowrap; transition: color 0.15s, background 0.15s; }
-nav a:hover, nav button:hover { color: var(--text); background: var(--hover); }
-nav a.active { color: var(--accent); font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, transparent); }
-nav.top { padding: 0.375rem max(var(--pad), calc((100% - 80rem) / 2)); background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
-nav.top button#signout { margin-left: auto; }
-nav.bottom { display: none; }
 main { box-sizing: border-box; width: min(100% - 2 * var(--pad), 80rem); margin: 0 auto; padding: var(--pad) 0; }
-@media (max-width: 640px) {
-  nav.top a { display: none; }
-  nav.bottom { display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; justify-content: space-around; padding: 0.25rem 0.25rem calc(0.25rem + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); }
-  nav.bottom a { flex: 1 1 0; text-align: center; padding: 0.625rem 0.25rem; font-size: 0.8125rem; }
-  main { padding-bottom: 5rem; }
-}
-@media (pointer: coarse) {
-  nav a, nav button { min-height: 2.5rem; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
-}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
-${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${THEME_CSS}`;
+${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${LAUNCHER_CSS}${THEME_CSS}`;
 
 export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; title?: string }): string {
   const title = escapeHtml(opts.title ?? "pomtree");
@@ -123,18 +108,11 @@ export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; tit
     href: (route) => `#${route}`,
   };
 
-  const navLink = (tab: UiTab, short: boolean): string => {
-    const id = escapeHtml(tab.id);
-    const href = escapeHtml(ctx.href(`/${tab.id}`));
-    const label = escapeHtml(short ? (tab.shortTitle ?? tab.title) : tab.title);
-    return `<a href="${href}" data-nav="${id}">${label}</a>`;
-  };
-
-  const top = opts.tabs.map((t) => navLink(t, false)).join("");
-  const bottom = opts.tabs.map((t) => navLink(t, true)).join("");
   const sections = opts.tabs.map((t) => `<section data-tab="${escapeHtml(t.id)}" hidden>${t.render(ctx)}</section>`).join("");
 
   const tabsMeta = scriptJson(opts.tabs.map((t) => ({ id: t.id, title: t.title })));
+
+  const launcherCfg = scriptJson({ paths: LAUNCHER_PATHS, pollMs: LAUNCHER_POLL_MS });
 
   return `<!doctype html>
 <html lang="en">
@@ -172,17 +150,18 @@ const UI = {
 </script>
 </head>
 <body class="wm">
-<nav class="top">${top}<span class="wm-actions"><button id="wm-export" type="button">Export layout</button><button id="wm-import" type="button">Import layout</button><button id="wm-reset" type="button">Reset layout</button><input id="wm-file" type="file" accept="application/json,.json" hidden></span><button id="signout" type="button">Sign out</button></nav>
+<header id="lb-bar" class="lb"></header>
 <div id="wm-notices" class="wm-notices" aria-live="polite"></div>
 <main class="wm"><div id="wm-root" class="wm-root"></div><div id="wm-stash" hidden>${sections}</div></main>
-<nav class="bottom">${bottom}</nav>
 <script>
 ${LAYOUT_LOGIC_JS}
 ${LAYOUT_SHELL_JS}
-document.getElementById("signout").addEventListener("click", () => {
-  fetch("/ui/logout", { method: "POST" }).finally(() => location.reload());
-});
-createWindowManager(${tabsMeta}, ${scriptJson(LAYOUT_STORAGE_KEY)});
+const wm = createWindowManager(${tabsMeta}, ${scriptJson(LAYOUT_STORAGE_KEY)});
+</script>
+<script>
+${LAUNCHER_LOGIC_JS}
+${LAUNCHER_SHELL_JS}
+createLauncherBar(wm, ${launcherCfg});
 </script>
 </body>
 </html>

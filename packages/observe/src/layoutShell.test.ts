@@ -110,23 +110,32 @@ interface Opts {
   throwingView?: boolean;
 }
 
+interface WmApi {
+  state(): { leaves: { id: string; view: string; params: { agent?: string } }[]; focus: string; narrow: boolean; maxLeaves: number };
+  views(): { id: string; title: string; multi: boolean }[];
+  focus(id: string): void;
+  focusDom(): void;
+  openView(view: string, agent?: string): void;
+  splitFocused(dir: "row" | "col"): void;
+  closeFocused(): void;
+  exportLayout(): void;
+  importFile(file: { text(): Promise<string> } | undefined): void;
+  resetLayout(): void;
+  onChange(fn: () => void): () => void;
+}
+
 function boot(o: Opts = {}) {
   const tabIds = o.tabs ?? ["tree", "reports", "hosts", "terminal"];
   const html = renderShell({ tabs: tabIds.map((id) => ({ id, title: id.toUpperCase(), render: () => "" })) });
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
-  const ids = ["wm-root", "wm-notices", "wm-stash", "wm-export", "wm-import", "wm-reset", "wm-file", "signout"];
-  const byId = new Map(ids.map((i) => [i, new Node_(i === "wm-file" ? "input" : "div")]));
+  const ids = ["wm-root", "wm-notices", "wm-stash"];
+  const byId = new Map(ids.map((i) => [i, new Node_("div")]));
   const sections = tabIds.map((id) => {
     const s = new Node_("section");
     s.setAttribute("data-tab", id);
     s.hidden = true;
     byId.get("wm-stash")!.appendChild(s);
     return s;
-  });
-  const navs = tabIds.map((id) => {
-    const a = new Node_("a");
-    a.setAttribute("data-nav", id);
-    return a;
   });
   const log: string[] = [];
   const mounts: { root: Node_; params: { agent?: string }; unmounted: boolean; fits: number; host: { setTitle(t: string): void } }[] = [];
@@ -194,7 +203,7 @@ function boot(o: Opts = {}) {
       body,
       getElementById: (i: string) => byId.get(i) ?? null,
       createElement: (t: string) => new Node_(t),
-      querySelectorAll: (sel: string) => (sel === "section[data-tab]" ? sections : sel === "nav a[data-nav]" ? navs : []),
+      querySelectorAll: (sel: string) => (sel === "section[data-tab]" ? sections : []),
       addEventListener: (t: string, fn: L, capture?: boolean) => {
         const l = docListeners.get(t) ?? [];
         l.push({ fn, capture: !!capture });
@@ -249,6 +258,10 @@ function boot(o: Opts = {}) {
   runInContext(scripts[0]!, ctx); // head: auth guard + UI
   for (const id of tabIds) runInContext(`UI.register(${JSON.stringify(id)}, () => log.push("+${id}"), () => log.push("-${id}"))`, Object.assign(ctx, { log }));
   runInContext(scripts[1]!, ctx);
+  // Results come from the vm realm: copy them so deepEqual compares plain prototypes.
+  const rawApi = runInContext("wm.api", ctx) as WmApi;
+  const plain = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+  const api: WmApi = { ...rawApi, state: () => plain(rawApi.state()), views: () => plain(rawApi.views()) };
   const root = byId.get("wm-root")!;
   const notices = byId.get("wm-notices")!;
   const tiles = () => root.byClass("tile");
@@ -288,7 +301,7 @@ function boot(o: Opts = {}) {
     replaced,
     blobs,
     downloads,
-    navs,
+    api,
     body,
   };
 }
@@ -485,26 +498,30 @@ test("a failed write shows a visible message with an Export action, and later su
 test("Export, Import and Reset: import errors are shown; a valid import replaces and saves; reset restores the default", async () => {
   const s = boot();
   s.btn(s.tiles()[0]!, "Split right").click();
-  const file = (text: string) => ({ files: [{ text: async () => text }], value: "x" });
-  const input = s.byId.get("wm-file")!;
+  const file = (text: string) => ({ text: async () => text });
   const flush = () => new Promise((r) => setImmediate(r));
-  Object.assign(input, file("{broken"));
-  input.fire("change");
+  s.api.importFile(file("{broken"));
   await flush();
   assert.match(s.noticeTexts().join("|"), /Import failed.*not valid JSON/);
   assert.equal(s.tiles().length, 2, "a failed import keeps the layout");
   const single = JSON.stringify({ version: 1, next: 2, focus: "t1", root: { kind: "leaf", id: "t1", view: "hosts", params: {} } });
-  Object.assign(input, file(single));
-  input.fire("change");
+  s.api.importFile(file(single));
   await flush();
   assert.equal(s.tiles().length, 1);
   assert.deepEqual(visibleSections(s), ["hosts"]);
   assert.equal(stored(s.store).root.view, "hosts");
-  s.byId.get("wm-reset")!.click();
+  s.api.resetLayout();
   assert.deepEqual(visibleSections(s), ["tree"]);
   assert.equal(stored(s.store).root.view, "tree");
-  s.byId.get("wm-import")!.click();
-  assert.equal(input.clicks, 1);
+  s.api.importFile(undefined); // no file chosen: nothing happens
+  assert.equal(s.tiles().length, 1);
+});
+
+test("api.exportLayout downloads the stored layout as pomtree-layout.json", () => {
+  const s = boot();
+  s.api.exportLayout();
+  assert.equal(s.downloads[0]!.download, "pomtree-layout.json");
+  assert.equal(JSON.parse(String(s.blobs[0]!.parts[0])).version, 1);
 });
 
 test("narrow mode shows one tile with no chrome class, switches views in memory, and never writes storage", () => {
@@ -731,14 +748,14 @@ test("a rejected stored layout stays in storage until the layout is changed, and
   assert.equal(s.store["pomtree.layout"], newer);
   s.hashchange("#/tree"); // already shown: not a layout change
   s.tileOf("t1").fire("pointerdown"); // focus on the focused tile: not a change
-  s.byId.get("wm-export")!.click();
+  s.api.exportLayout();
   assert.equal(s.writes.length, 0);
   assert.equal(s.store["pomtree.layout"], newer);
   s.btn(s.tiles()[0]!, "Split right").click(); // first real change
   assert.equal(s.writes.length, 1);
   assert.equal(stored(s.store).version, 1);
   const r = boot({ store: { "pomtree.layout": newer } });
-  r.byId.get("wm-reset")!.click();
+  r.api.resetLayout();
   assert.equal(r.writes.length, 1, "Reset also replaces the stored text");
 });
 
@@ -818,4 +835,137 @@ test("window blur clears the held-key flag, so a keyup lost to Alt+Tab does not 
   s.tileOf("t2").fire("focusin"); // programmatic focus after the window regains focus
   assert.equal(s.tileOf("t1").className, "tile tile-focused", "blur released the held key");
   assert.equal(s.tileOf("t2").className, "tile");
+});
+
+test("api.state and api.views report the layout and the openable views as plain data", () => {
+  const s = boot();
+  assert.deepEqual(s.api.state(), { leaves: [{ id: "t1", view: "tree", params: {} }], focus: "t1", narrow: false, maxLeaves: 16 });
+  assert.deepEqual(
+    s.api.views().map((v) => [v.id, v.title, v.multi]),
+    [
+      ["tree", "TREE", false],
+      ["reports", "REPORTS", false],
+      ["hosts", "HOSTS", false],
+      ["terminal", "TERMINAL", true],
+    ],
+  );
+  assert.equal(boot({ narrow: true }).api.state().narrow, true);
+});
+
+test("api.openView splits the focused tile with the view, focuses an already shown one, and names an unavailable view", () => {
+  const s = boot();
+  s.api.openView("hosts");
+  assert.equal(s.tiles().length, 2);
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["tree", "hosts"],
+  );
+  assert.equal(s.api.state().focus, "t2");
+  s.api.openView("tree");
+  assert.equal(s.tiles().length, 2, "already shown: no new tile");
+  assert.equal(s.api.state().focus, "t1");
+  s.api.openView("terminal", "a9");
+  assert.equal(s.api.state().leaves.find((l) => l.view === "terminal")!.params.agent, "a9");
+  s.api.openView("terminal", "a9");
+  assert.equal(s.tiles().length, 3, "same agent terminal is deduped");
+  s.api.openView("terminal", "b1");
+  assert.equal(s.tiles().length, 4, "another agent opens another terminal");
+  s.api.openView("nope");
+  assert.equal(s.tiles().length, 4);
+  assert.match(s.noticeTexts().join("|"), /View not available: nope/);
+});
+
+test("api.openView at the tile limit shows the existing limit notice and adds nothing", () => {
+  const s = boot();
+  for (let i = 0; i < 20; i++) s.api.openView("terminal", `a${i}`);
+  assert.equal(s.api.state().leaves.length <= 16, true);
+  const n = s.api.state().leaves.length;
+  s.api.openView("terminal", "zzz");
+  assert.equal(s.api.state().leaves.length, n);
+  assert.match(s.noticeTexts().join("|"), /Cannot split further/);
+});
+
+test("api.openView in narrow mode replaces the single view and never persists", () => {
+  const s = boot({ narrow: true });
+  s.api.openView("hosts");
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+  );
+  assert.deepEqual(visibleSections(s), ["hosts"]);
+  assert.equal(s.writes.length, 0);
+});
+
+test("api.splitFocused and api.closeFocused act on the focused tile and are no-ops when narrow", () => {
+  const s = boot();
+  s.api.splitFocused("col");
+  assert.equal(s.tiles().length, 2);
+  s.api.closeFocused();
+  assert.equal(s.tiles().length, 1);
+  s.api.closeFocused(); // last tile cannot close
+  assert.equal(s.tiles().length, 1);
+  const n = boot({ narrow: true });
+  n.api.splitFocused("row");
+  n.api.closeFocused();
+  assert.equal(n.api.state().leaves.length, 1);
+  assert.equal(n.writes.length, 0);
+});
+
+test("api.focus focuses a tile", () => {
+  const s = boot();
+  s.api.splitFocused("row");
+  s.api.focus("t1");
+  assert.equal(s.api.state().focus, "t1");
+});
+
+test("api.onChange fires after render, stops after unsubscribe, and a throwing listener cannot break rendering", () => {
+  const s = boot();
+  const seen: number[] = [];
+  const off = s.api.onChange(() => seen.push(s.tiles().length));
+  s.api.onChange(() => {
+    throw new Error("bad listener");
+  });
+  s.api.splitFocused("row");
+  assert.deepEqual(seen, [2], "called after the new tile was rendered");
+  assert.equal(s.tiles().length, 2);
+  off();
+  s.api.splitFocused("row");
+  assert.equal(s.tiles().length, 3);
+  assert.deepEqual(seen, [2]);
+  const n = boot({ narrow: false });
+  const calls: boolean[] = [];
+  n.api.onChange(() => calls.push(n.api.state().narrow));
+  for (const fn of n.mqListeners) fn({ matches: true });
+  assert.deepEqual(calls, [true], "fires after a narrow switch");
+});
+
+test("api.focusDom focuses the focused tile element once, and does not throw when there is no tile", () => {
+  const s = boot();
+  s.api.splitFocused("row"); // t2 focused
+  const before = s.tileOf("t2").focused;
+  s.api.focusDom();
+  assert.equal(s.tileOf("t2").focused, before + 1);
+  assert.equal(s.tileOf("t1").focused, 0);
+  const n = boot({ narrow: true });
+  n.api.focusDom();
+  assert.equal(n.tiles()[0]!.focused, 1, "narrow: the single tile");
+  for (const t of n.tiles()) t.remove();
+  (runInContext("wm.tiles", n.ctx) as Map<string, unknown>).clear();
+  assert.doesNotThrow(() => n.api.focusDom());
+});
+
+test("a throwing onChange listener shows one notice naming the cause and the action, and does not re-enter", () => {
+  const s = boot();
+  let calls = 0;
+  s.api.onChange(() => {
+    calls++;
+    throw new Error("boom");
+  });
+  s.api.splitFocused("row");
+  s.api.splitFocused("row");
+  assert.equal(calls, 2);
+  const texts = s.noticeTexts().filter((t) => /top bar failed to update/.test(t));
+  assert.equal(texts.length, 1, "one notice per key");
+  assert.match(texts[0]!, /\(boom\)\. Reload the page; the layout is unaffected\./);
+  assert.equal(s.tiles().length, 3);
 });
