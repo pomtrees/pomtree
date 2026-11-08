@@ -15,3 +15,4 @@ export * from "./browserView.ts";
 export * from "./vendor.ts";
 export * from "./traceKit.ts";
 export * from "./inbox.ts";
+export * from "./menuModel.ts";

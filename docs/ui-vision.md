@@ -39,14 +39,14 @@ Built:
 - a terminal pane mountable more than once per page, and an internal view registry (`registerView` in `packages/observe/src/paneKit.ts`; not yet a public API);
 - the black-and-orange dark scheme with window chrome (`packages/observe/src/themeCss.ts`), with a dark terminal palette (`termKit.ts`), splitter focus styling, forced-colors (high-contrast mode) handling, a chrome border held at 3:1 contrast or more by `themeCss.test.ts`, and an aspect-preserving browser canvas (`layoutCss.ts`);
 - the live browser view, described below;
-- the terminal-focus fix: a terminal mounting no longer moves the tile focus (`packages/observe/src/layoutShell.ts`).
+- the terminal-focus fix: a terminal mounting no longer moves the tile focus (`packages/observe/src/layoutShell.ts`);
+- the view menu and status declaration (`packages/observe/src/menuModel.ts`): a view type declares per-window menus (View, Trace, Session, Help) as plain data with action, toggle, radio and separator items keyed by command id, plus status slots; `registerView` accepts them as optional `menus` and `status`, and a per-tile window model resolves one declaration into both the menu bar and the overflow list and dispatches picked commands to a handler the view registers; the window chrome that renders it is not built;
 
 Built today, and what the two decisions above would change: a sticky top navigation bar (bottom at narrow widths) lists the views registered in `TabRegistry` (in `packages/observe/src/shell.ts`, filled in `packages/pomtreed/src/ui.ts`), then Export layout, Import layout, Reset layout and Sign out. Each tile has its own view selector and split and close buttons (`layoutShell.ts`). The terminal view draws its own toolbar inside its pane (`packages/observe/src/tabs.ts`): agent name, state and connection pills, a Reconnect button (shown only after a disconnect), font size buttons, Copy trace, View trace, Short, a trace-options menu (include children, include raw output, Download .md) and a separate Keys row (a toggle for the on-screen key bar). A view registers through `PaneKit.registerView` with `{id, title, multi, mount(root, params, host)}`; its `host` offers `setTitle` and `navigate` only.
 
 Planned, not started:
 
 - the launcher, omnibar and window-list bar;
-- view-declared menus and status in the registry;
 - moving the terminal toolbar into window chrome: Reconnect, the trace-options menu and the Keys row as well as the font size and trace buttons.
 
 The terminal-focus fix is a heuristic: only focus that follows a key or pointer press counts as the operator's. Two limits, tracked by `TODO(tile-focus-source)` in `layoutShell.ts`: a key held down while a terminal's socket opens still moves the tile focus, and focus moved with no key or pointer press (a screen-reader cursor, voice control) no longer updates the focused tile.

@@ -4,7 +4,10 @@
 // there is no UI router) and no top-level const leaks between classic <script> tags.
 // Keep this plain JS with no backticks or template interpolation: it is a TS template literal.
 
+import { MENU_KIT_JS } from "./menuModel.ts";
+
 export const PANE_KIT_JS = `
+${MENU_KIT_JS}
 const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
   const httpError = (res) => Object.assign(new Error("HTTP " + res.status), { status: res.status });
   const check = (res) => { if (!res.ok) throw httpError(res); return res; };
@@ -64,20 +67,36 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     tr.appendChild(td);
     return tr;
   };
-  // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi,
+  // Internal view registry for the tiling shell: one object registers one view type. def = { id, title, multi, menus?, status?,
   // mount(root, { agent? }, host) -> { unmount(), fit?() } }, host = { setTitle(text), navigate(hash) }.
   // TODO(ui-extension-view-types): the registry is internal; extensions cannot declare view types. Trigger: the first public view-type API (docs/ui-vision.md, Open questions).
   const viewTypes = new Map();
+  const declarations = new Map();
   const registerView = (def) => {
     const id = def && def.id;
     if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id)) throw new Error("registerView: invalid view id " + JSON.stringify(id) + "; use a lowercase id such as terminal");
     if (viewTypes.has(id)) throw new Error("registerView: view " + id + " is already registered; register each view id once");
     if (typeof def.title !== "string" || typeof def.multi !== "boolean" || typeof def.mount !== "function") throw new Error("registerView: view " + id + " needs a string title, a boolean multi and a mount function");
+    const decl = MenuKit.declareView({ id, title: def.title, multi: def.multi, menus: def.menus, status: def.status });
     viewTypes.set(id, def);
+    declarations.set(id, decl);
   };
   const view = (id) => viewTypes.get(id);
+  // The validated menu and status declaration of a registered view, and a fresh per-tile window model over it.
+  const declaration = (id) => declarations.get(id);
+  const windowModel = (id) => {
+    const decl = declarations.get(id);
+    if (!decl) throw new Error("windowModel: view " + JSON.stringify(id) + " is not registered; register it with registerView first");
+    return MenuKit.createWindowModel(decl);
+  };
   const views = () => [...viewTypes.values()];
-  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views };
+  // The host argument for a view's mount: the chrome's own host plus the window model's menu and status hooks.
+  const windowHost = (model, base) => {
+    if (!model || typeof model.setState !== "function" || typeof model.setStatus !== "function" || typeof model.onCommand !== "function") throw new Error("windowHost: model must be a window model from windowModel(id) with setState, setStatus and onCommand; pass the result of windowModel");
+    if (base === null || typeof base !== "object" || Array.isArray(base)) throw new Error("windowHost: base must be the host object the chrome gives a view; pass an object");
+    return { ...base, setMenuState: model.setState, setStatus: model.setStatus, onCommand: model.onCommand };
+  };
+  return { check, errorMessage, getJson, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views, declaration, windowModel, windowHost };
 })());
 `;
 
