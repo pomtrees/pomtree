@@ -94,6 +94,55 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     viewTypes.set(id, { ...def, subject: def.multi ? def.subject || "agent" : undefined });
     declarations.set(id, decl);
   };
+  // Stale-content overlay shared by the streaming views (terminal, browser): a semi-transparent veil over the kept
+  // last content with a spinner (kind "busy": connecting or reconnecting), a pause icon ("idle": nothing to retry,
+  // not a fault) or a danger icon ("dead": ended, failed, denied or gone), plus a text label. One persistent
+  // role=status element, toggled with hidden so a screen reader announces each change; it never takes the pointer, so
+  // the content under it stays selectable. A busy veil over existing content waits STALE_GRACE_MS so a brief
+  // reconnect does not flicker; idle and dead show at once, and so does busy when nothing is shown yet.
+  const STALE_GRACE_MS = 800;
+  const STALE_KINDS = ["none", "busy", "idle", "dead"];
+  // When to paint a request, given the kind now painted: "hide", "now" or "later" (after the grace delay).
+  const overlayPlan = (painted, kind, hasContent) => {
+    if (kind === "none") return "hide";
+    if (kind === "busy" && painted === "none" && hasContent) return "later";
+    return "now";
+  };
+  const staleOverlay = (parent, hasContent) => {
+    const box = document.createElement("div");
+    const icon = document.createElement("span");
+    const label = document.createElement("span");
+    box.setAttribute("role", "status");
+    box.setAttribute("aria-live", "polite");
+    icon.setAttribute("aria-hidden", "true");
+    label.className = "stale-label";
+    box.appendChild(icon);
+    box.appendChild(label);
+    box.hidden = true;
+    box.className = "stale-overlay";
+    parent.className = (parent.className ? parent.className + " " : "") + "stale-host";
+    parent.appendChild(box);
+    let painted = "none";
+    let timer = null;
+    const cancel = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
+    const paint = (kind, text) => {
+      painted = kind;
+      box.className = "stale-overlay stale-" + kind;
+      icon.className = "stale-icon" + (kind === "busy" ? " stale-spinner" : "");
+      icon.textContent = kind === "dead" ? "\u26a0" : kind === "idle" ? "\u23f8" : "";
+      label.textContent = text;
+      box.hidden = false;
+    };
+    const set = (kind, text) => {
+      if (STALE_KINDS.indexOf(kind) < 0) throw new Error("staleOverlay: unknown kind " + JSON.stringify(kind) + "; use one of " + STALE_KINDS.join(", "));
+      cancel();
+      const plan = overlayPlan(painted, kind, !!hasContent());
+      if (plan === "hide") { painted = "none"; box.hidden = true; box.className = "stale-overlay"; return; }
+      if (plan === "now") { paint(kind, String(text || "")); return; }
+      timer = setTimeout(() => { timer = null; paint(kind, String(text || "")); }, STALE_GRACE_MS);
+    };
+    return { set, kind: () => painted, destroy: () => { cancel(); box.hidden = true; painted = "none"; } };
+  };
   const view = (id) => viewTypes.get(id);
   // The validated menu and status declaration of a registered view, and a fresh per-tile window model over it.
   const declaration = (id) => declarations.get(id);
@@ -124,7 +173,7 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     if (!model) throw new Error("sectionHost: section " + JSON.stringify(id) + " is not declared; call declareSection first");
     return windowHost(model, {});
   };
-  return { check, errorMessage, getJson, notice, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, registerView, view, views, declaration, windowModel, windowHost, declareSection, sectionModel, sectionHost };
+  return { check, errorMessage, getJson, notice, setConn, stream, onActivate, poll, uuid, age, cell, messageRow, STALE_GRACE_MS, overlayPlan, staleOverlay, registerView, view, views, declaration, windowModel, windowHost, declareSection, sectionModel, sectionHost };
 })());
 `;
 
@@ -206,6 +255,16 @@ ul.card-list > li.tone-info { border-left: 3px solid var(--info); }
 .inbox .compose input { flex: 1 1 9rem; }
 .inbox .compose textarea { flex: 3 1 14rem; resize: vertical; font: inherit; }
 .inbox .compose button { flex: 0 0 auto; }
+/* Stale-content overlay (K.staleOverlay): veil over a view's kept last content; the pointer passes through to it. */
+.stale-host { position: relative; }
+.stale-overlay { position: absolute; inset: 0; z-index: 6; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; padding: var(--pane-inset, 0.75rem); background: rgb(0 0 0 / 0.45); background: color-mix(in srgb, var(--surface) 72%, transparent); color: var(--text); font-size: var(--fs-md, 0.875rem); text-align: center; overflow-wrap: anywhere; pointer-events: none; }
+.stale-overlay[hidden] { display: none; }
+.stale-overlay.stale-dead { color: var(--err); }
+.stale-overlay.stale-idle { color: var(--muted); }
+.stale-icon { font-size: 1.5rem; line-height: 1; }
+.stale-spinner { box-sizing: border-box; width: 1.5rem; height: 1.5rem; border: 3px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: stalespin 0.9s linear infinite; }
+@keyframes stalespin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .stale-spinner { animation: none; } }
 .report-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .report-body .md, .report-body pre { padding: var(--pane-inset); }
 .report-frame { flex: 0 0 100%; width: 100%; height: 100%; border: 0; background: #fff; }

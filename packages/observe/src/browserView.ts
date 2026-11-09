@@ -136,16 +136,12 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const aboutEl = el("p", "meta", "This view is view-only: it shows the agent's browser and cannot click or type. The agent controls the page, and everything it shows is untrusted.");
   aboutEl.setAttribute("role", "note");
   aboutEl.hidden = true;
-  // Shown instead of the canvas when the agent no longer exists; textContent only.
-  const goneEl = el("p", "meta pane-note", "This agent is no longer available.");
-  goneEl.setAttribute("role", "status");
-  goneEl.hidden = true;
   const canvas = el("canvas");
   canvas.style.width = "100%";
   canvas.style.height = "100%";
   canvas.style.minHeight = "12rem";
   canvas.style.display = "block";
-  for (const n of [aboutEl, goneEl, canvas]) wrap.appendChild(n);
+  for (const n of [aboutEl, canvas]) wrap.appendChild(n);
   root.appendChild(wrap);
 
   let active = true;
@@ -157,6 +153,10 @@ const mountBrowserInstance = (root, params, hostApi) => {
   let closedReason = "";
   let bmp = null;
   const gate = BrowserKit.frameGate();
+  // Stale-content overlay over the canvas (K.staleOverlay): the last frame stays under it (one decoded frame is
+  // held, so memory is bounded), busy while (re)connecting, dead or idle once it stops. The footer keeps the state text.
+  // TODO(stale-overlay-scroll): in actual-size mode the pane scrolls and the overlay is positioned in the scrolled content, so it can scroll out of view; fit mode (default) is unaffected.
+  const ov = K.staleOverlay(wrap, () => bmp !== null);
   const g2d = () => { try { return canvas.getContext("2d"); } catch (e) { return null; } };
 
   // Status goes to the tile footer: the "stream" slot carries the connection state plus any detail line (retry
@@ -183,11 +183,6 @@ const mountBrowserInstance = (root, params, hostApi) => {
     hostApi.setMenuState("browser.copy-url", { enabled: url !== "" });
   };
   const closeBitmap = () => { if (bmp) { try { bmp.close(); } catch (e) {} bmp = null; } };
-  const clearCanvas = () => {
-    closeBitmap();
-    const c = g2d();
-    if (c) c.clearRect(0, 0, canvas.width, canvas.height);
-  };
   const draw = () => {
     const c = g2d();
     if (!c || !bmp) return;
@@ -257,22 +252,27 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const afterClose = () => {
     if (!active) return;
     attempt = TermKit.nextAttempt(attempt, openedAt ? Date.now() - openedAt : 0);
+    ov.set("busy", "Reconnecting\u2026");
     const g = gen;
     lookup(agentId).then((agent) => {
       if (g !== gen || !active || ws) return;
       if (agent && agent.missing) {
-        // The agent was removed: replace the canvas with the placeholder and stop (no retry timer is armed).
+        // The agent was removed: keep the last frame under a danger overlay and stop (no retry timer is armed).
         gone = true;
-        clearCanvas();
-        canvas.style.display = "none";
-        goneEl.hidden = false;
+        ov.set("dead", "This agent is no longer available");
         setState(BrowserKit.stopLabel({ conn: "no agent", label: "agent not found" }), "s-exited");
         setInfo("", false);
         return;
       }
       const d = TermKit.decide({ attempt, agent, frozen: shown, rand: Math.random() });
       if (d.action === "stop") {
-        setState(BrowserKit.stopLabel(d), "s-exited");
+        // TermKit words a finished agent over a kept screen as "frozen" (a yielded one); this view tells them apart.
+        const stop = d.conn === "frozen" && TermKit.describe(agent && agent.state, shown).kind === "ended" ? { conn: "no terminal", label: d.label } : d;
+        const cause = BrowserKit.stopLabel(stop);
+        const waiting = stop.conn === "yielded" || stop.conn === "frozen";
+        const via = closedReason && BrowserKit.closedLabel(closedReason) !== cause ? " (stream " + BrowserKit.closedLabel(closedReason) + ")" : "";
+        ov.set(waiting ? "idle" : "dead", waiting ? cause : stop.conn === "disconnected" ? "Disconnected: gave up reconnecting" : "Disconnected: " + cause + via);
+        setState(cause, "s-exited");
         setInfo(closedReason ? "Stream closed: " + BrowserKit.closedLabel(closedReason) : "", false);
         return;
       }
@@ -298,6 +298,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
     ++gen;
     setState("connecting", "s-pending");
     setInfo("", false);
+    ov.set("busy", bmp ? "Reconnecting\u2026" : "Connecting\u2026");
     sock.onopen = () => {
       if (ws !== sock) return;
       openedAt = Date.now();
@@ -315,7 +316,9 @@ const mountBrowserInstance = (root, params, hostApi) => {
         // TODO(browser-title-cap): the tile title from the agent-controlled page title has no length cap (textContent only).
         if (m.title) hostApi.setTitle("Browser \u00b7 " + m.title);
         else if (m.state === "no-browser") hostApi.setTitle(defaultTitle);
-        if (m.state === "no-browser") { gate.reset(); epoch++; clearCanvas(); }
+        if (m.state === "live") ov.set("none", "");
+        else if (m.state === "no-browser") { gate.reset(); epoch++; ov.set("dead", "No browser running"); }
+        else ov.set("busy", bmp ? "Reconnecting\u2026" : "Connecting\u2026");
         return;
       }
       if (ev.data) onFrame(ev.data);
@@ -332,6 +335,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
     clearRetry();
     gate.reset();
     closeBitmap();
+    ov.destroy();
     const sock = ws;
     ws = null;
     if (sock) { try { sock.close(); } catch (e) {} }

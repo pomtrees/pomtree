@@ -205,6 +205,20 @@ const mountTerminalInstance = (root, params, hostApi) => {
   let keysOpen = readKeysOpen();
   let fontSize = readFont();
   let poller = null;
+  // Stale-content overlay over the screen (K.staleOverlay): busy while (re)connecting, dead or idle once it stops.
+  // The screen stays under it; the footer keeps the state text. Content exists once a socket has opened.
+  const ov = K.staleOverlay(wrapEl, () => shown);
+  // After a reconnect opens, the old screen stays until the daemon's replay starts (its first bytes), then term.reset()
+  // runs so the replay renders from a clean screen; REPLAY_WAIT_MS bounds the wait when the replay is empty.
+  const REPLAY_WAIT_MS = 1500;
+  let replayTimer = null, pendingReset = false;
+  const clearReplay = () => { if (replayTimer !== null) { clearTimeout(replayTimer); replayTimer = null; } pendingReset = false; };
+  const finishReplay = () => {
+    if (!pendingReset) return;
+    clearReplay();
+    if (term) term.reset();
+    ov.set("none", "");
+  };
 
   const CONN_TONES = { ok: "ok", stale: "warn" };
   const STATE_TONES = { running: "ok", yielded: "warn", exited: "info", failed: "err", error: "err" };
@@ -304,16 +318,17 @@ const mountTerminalInstance = (root, params, hostApi) => {
     return { state: a && a.state };
   }).catch((err) => (err && err.status === 404) ? { missing: true } : null);
 
-  // The agent was removed: say so in the note, hide the screen and key bar, and stop the poll, countdown and socket.
+  // The agent was removed: say so in the note and the overlay over the kept screen, hide the key bar, and stop the poll, countdown and socket.
   const markGone = () => {
     if (gone) return;
     gone = true;
     gen++;
     clearRetry();
+    clearReplay();
     if (poller) poller.stop();
     if (ws) { const s = ws; ws = null; try { s.close(); } catch (e) {} }
-    wrapEl.style.display = "none";
     keywrapEl.style.display = "none";
+    ov.set("dead", "This agent is no longer available");
     setConn("", "");
     hostApi.setMenuState("terminal.reconnect", { visible: false });
     note("This agent is no longer available.", false);
@@ -321,6 +336,8 @@ const mountTerminalInstance = (root, params, hostApi) => {
 
   const afterClose = () => {
     if (!active || gone) return;
+    clearReplay();
+    ov.set("busy", "Reconnecting\u2026");
     setConn("disconnected", "stale");
     hostApi.setMenuState("terminal.reconnect", { visible: true });
     attempt = TermKit.nextAttempt(attempt, openedAt ? Date.now() - openedAt : 0);
@@ -329,7 +346,10 @@ const mountTerminalInstance = (root, params, hostApi) => {
       if (g !== gen || !active || ws) return;
       if (agent && agent.missing) { markGone(); return; }
       const d = TermKit.decide({ attempt, agent, frozen: shown, rand: Math.random() });
-      if (d.action === "stop") { setConn(d.conn, "stale"); note(d.label + (closedReason ? " [session closed: " + closedReason + "]" : ""), false); return; }
+      if (d.action === "stop") {
+        const waiting = TermKit.describe(agent && agent.state, shown).kind === "yielded";
+        ov.set(waiting ? "idle" : "dead", waiting ? d.label : d.conn === "disconnected" ? "Disconnected: gave up reconnecting" : "Disconnected: " + d.label.charAt(0).toLowerCase() + d.label.slice(1));
+        setConn(d.conn, "stale"); note(d.label + (closedReason ? " [session closed: " + closedReason + "]" : ""), false); return; }
       attempt++;
       const at = Date.now() + d.delayMs;
       const say = () => note(d.label + " in " + Math.max(0, Math.ceil((at - Date.now()) / 1000)) + "s", false);
@@ -348,12 +368,18 @@ const mountTerminalInstance = (root, params, hostApi) => {
     ws = sock;
     setConn("connecting", "stale");
     note("");
+    ov.set("busy", shown ? "Reconnecting\u2026" : "Connecting\u2026");
     sock.onopen = () => {
       if (ws !== sock) return;
       openedAt = Date.now();
+      const had = shown;
       shown = true;
       lastSize = null;
-      term.reset();
+      if (had) {
+        pendingReset = true;
+        replayTimer = setTimeout(finishReplay, REPLAY_WAIT_MS);
+        ov.set("busy", "Restoring screen\u2026");
+      } else { term.reset(); ov.set("none", ""); }
       setConn("connected", "ok");
       hostApi.setMenuState("terminal.reconnect", { visible: false });
       note("");
@@ -363,6 +389,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
       if (typeof ev.data === "string") { const m = TermKit.parseServerText(ev.data); if (m) closedReason = m.reason; return; }
+      finishReplay();
       term.write(new Uint8Array(ev.data));
     };
     sock.onerror = () => {};
@@ -375,6 +402,8 @@ const mountTerminalInstance = (root, params, hostApi) => {
     if (viewerOwner === self) { T.dismissLive(); viewerOwner = null; viewerObj = null; }
     gen++;
     clearRetry();
+    clearReplay();
+    ov.destroy();
     if (fitTimer !== null) { clearTimeout(fitTimer); fitTimer = null; }
     if (poller) poller.stop();
     if (ws) { const s = ws; ws = null; try { s.close(); } catch (e) {} }
@@ -499,6 +528,7 @@ const mountTerminalInstance = (root, params, hostApi) => {
   paintAgent("");
   setConn("", "");
   note("loading terminal…");
+  ov.set("busy", "Loading terminal\u2026");
   libs().then(() => {
     if (!active || gone) return;
     note("");
@@ -506,7 +536,11 @@ const mountTerminalInstance = (root, params, hostApi) => {
     connect();
     poller = K.poll(() => { lookup(agentId).then((a) => { if (active && a && a.missing) markGone(); }); }, 5000);
     poller.start();
-  }).catch((err) => { if (active) note("Failed to load the terminal: " + String(err && err.message ? err.message : err), true); });
+  }).catch((err) => {
+    if (!active) return;
+    note("Failed to load the terminal: " + String(err && err.message ? err.message : err), true);
+    ov.set("dead", "The terminal failed to load");
+  });
   return { unmount, fit: scheduleFit };
 };
 // A mount that throws after cloning the template would leave its half-built markup in root (the host drops the tile

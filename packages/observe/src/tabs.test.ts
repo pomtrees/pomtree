@@ -936,6 +936,17 @@ test("the hash router mounts a terminal tile for #/terminal/<id> and does not bl
 
 const running = { "/v1/agents/a1": { body: { state: "running" } } };
 const text = (b: unknown) => new TextDecoder().decode(b as Uint8Array);
+const termOverlay = (doc: FakeDoc) => {
+  const n = role(doc, "wrap").children.find((c) => c.className.split(" ").includes("stale-overlay"))!;
+  return {
+    hidden: n.hidden === true,
+    kind: (n.className.split(" ")[1] ?? "stale-none").slice(6),
+    label: n.children[1]!.textContent,
+    icon: n.children[0]!.className,
+    role: n.getAttribute("role"),
+    live: n.getAttribute("aria-live"),
+  };
+};
 const clickEl = (n: { listeners: Map<string, ((ev: unknown) => void)[]> }, ev: unknown = {}) => {
   for (const fn of n.listeners.get("click") ?? []) fn(ev);
 };
@@ -969,6 +980,179 @@ test("terminal: connects to the per-agent websocket, resets, sends the fitted si
   assert.deepEqual([...(ws.sent[2] as Uint8Array)], [255, 1]);
 });
 
+test("terminal overlay: first connect shows a spinner at once; the first open clears it and resets nothing stale", async () => {
+  const { doc, sockets, terms, timeouts } = runShell("#/terminal/a1", running);
+  await flush();
+  assert.deepEqual(termOverlay(doc), {
+    hidden: false,
+    kind: "busy",
+    label: "Connecting\u2026",
+    icon: "stale-icon stale-spinner",
+    role: "status",
+    live: "polite",
+  });
+  assert.equal(timeouts.filter((x) => x.ms === 800).length, 0, "nothing to keep, so no grace delay");
+  sockets[0]!.open();
+  assert.equal(termOverlay(doc).hidden, true);
+  assert.equal(terms[0]!.resets, 1);
+});
+
+test("terminal overlay: a drop keeps the screen (no dispose, no reset) and shows the spinner after the grace delay", async () => {
+  const { doc, sockets, terms, timeouts, host } = runShell("#/terminal/a1", running);
+  await flush();
+  sockets[0]!.open();
+  sockets[0]!.onmessage!({ data: new Uint8Array([104]).buffer });
+  sockets[0]!.drop();
+  await flush();
+  assert.equal(termOverlay(doc).hidden, true, "inside the grace delay");
+  const grace = timeouts.filter((x) => x.ms === 800 && !x.cleared).pop()!;
+  assert.ok(grace, "grace timer armed");
+  grace.fn();
+  assert.deepEqual(termOverlay(doc), {
+    hidden: false,
+    kind: "busy",
+    label: "Reconnecting\u2026",
+    icon: "stale-icon stale-spinner",
+    role: "status",
+    live: "polite",
+  });
+  assert.equal(terms[0]!.disposed, false);
+  assert.equal(terms[0]!.resets, 1, "the screen was not wiped");
+  assert.notEqual(role(doc, "wrap")!.style.display, "none");
+  assert.equal(statusText(host, "connection"), "disconnected", "footer keeps the state text");
+});
+
+test("terminal overlay: a quick reconnect cancels the grace timer and never paints the spinner", async () => {
+  const { doc, sockets, timeouts } = runShell("#/terminal/a1", running);
+  await flush();
+  sockets[0]!.open();
+  sockets[0]!.drop();
+  await flush();
+  const grace = timeouts.filter((x) => x.ms === 800 && !x.cleared).pop()!;
+  assert.ok(grace);
+  timeouts
+    .filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800)
+    .pop()!
+    .fn();
+  assert.equal(termOverlay(doc).hidden, true, "still inside the grace delay while the new socket connects");
+  sockets[1]!.open();
+  sockets[1]!.onmessage!({ data: new Uint8Array([1]).buffer });
+  assert.equal(timeouts.filter((x) => x.ms === 800 && !x.cleared).length, 0, "no grace timer left that could paint the spinner");
+  assert.equal(termOverlay(doc).hidden, true);
+});
+
+test("terminal overlay: after a reopen the old screen stays under the spinner until the replay's first bytes; the replay then renders from a reset screen", async () => {
+  const { doc, sockets, terms, timeouts } = runShell("#/terminal/a1", running);
+  await flush();
+  sockets[0]!.open();
+  sockets[0]!.onmessage!({ data: new Uint8Array([111]).buffer }); // old screen content
+  sockets[0]!.drop();
+  await flush();
+  timeouts
+    .filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800)
+    .pop()!
+    .fn();
+  sockets[1]!.open();
+  const t = terms[0]!;
+  assert.equal(t.resets, 1, "no wipe on open");
+  assert.equal(t.writes.length, 1);
+  timeouts
+    .filter((x) => x.ms === 800 && !x.cleared)
+    .pop()!
+    .fn();
+  assert.equal(termOverlay(doc).kind, "busy");
+  assert.equal(termOverlay(doc).label, "Restoring screen\u2026");
+  sockets[1]!.onmessage!({ data: new Uint8Array([114]).buffer });
+  assert.equal(t.resets, 2, "reset happens before the first replay byte is written");
+  assert.equal(t.writes.length, 2);
+  assert.equal(text(t.writes[1]), "r");
+  assert.equal(termOverlay(doc).hidden, true);
+  sockets[1]!.onmessage!({ data: new Uint8Array([115]).buffer });
+  assert.equal(t.resets, 2, "later frames do not reset again");
+});
+
+test("terminal overlay: an empty replay resets and clears the overlay after the wait; a drop before any byte keeps the screen", async () => {
+  const a = runShell("#/terminal/a1", running);
+  await flush();
+  a.sockets[0]!.open();
+  a.sockets[0]!.drop();
+  await flush();
+  a.timeouts
+    .filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800)
+    .pop()!
+    .fn();
+  a.sockets[1]!.open();
+  const wait = a.timeouts.filter((x) => !x.cleared && x.ms === 1500).pop()!;
+  assert.ok(wait, "replay wait timer armed");
+  wait.fn();
+  assert.equal(a.terms[0]!.resets, 2);
+  assert.equal(termOverlay(a.doc).hidden, true);
+  // the socket dies before any replay byte: nothing is wiped and the timer is cancelled
+  const b = runShell("#/terminal/a1", running);
+  await flush();
+  b.sockets[0]!.open();
+  b.sockets[0]!.drop();
+  await flush();
+  b.timeouts
+    .filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800)
+    .pop()!
+    .fn();
+  b.sockets[1]!.open();
+  const w = b.timeouts.filter((x) => !x.cleared && x.ms === 1500).pop()!;
+  b.sockets[1]!.drop();
+  await flush();
+  assert.equal(w.cleared, true);
+  assert.equal(b.terms[0]!.resets, 1, "negative control: the screen was never wiped");
+});
+
+test("terminal overlay: a finished agent is a danger overlay with the cause, a yielded one a pause; the screen stays", async () => {
+  const done = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "exited" } } });
+  await flush();
+  done.sockets[0]!.open();
+  done.sockets[0]!.drop();
+  await flush();
+  const o = termOverlay(done.doc);
+  assert.equal(o.kind, "dead");
+  assert.match(o.label, /^Disconnected: no live terminal: agent exited/);
+  assert.notEqual(role(done.doc, "wrap")!.style.display, "none");
+  assert.equal(done.terms[0]!.disposed, false);
+  const y = runShell("#/terminal/a1", { "/v1/agents/a1": { body: { state: "yielded" } } });
+  await flush();
+  y.sockets[0]!.open();
+  y.sockets[0]!.drop();
+  await flush();
+  assert.equal(termOverlay(y.doc).kind, "idle");
+  const gaveUp = runShell("#/terminal/a1", running);
+  await flush();
+  for (let i = 0; i < 13; i++) {
+    gaveUp.sockets[gaveUp.sockets.length - 1]!.drop();
+    await flush();
+    const retry = gaveUp.timeouts.filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800).pop();
+    if (!retry) break;
+    retry.fn();
+  }
+  assert.deepEqual(termOverlay(gaveUp.doc), {
+    hidden: false,
+    kind: "dead",
+    label: "Disconnected: gave up reconnecting",
+    icon: "stale-icon",
+    role: "status",
+    live: "polite",
+  });
+});
+
+test("terminal overlay: unmount cancels the grace and replay timers", async () => {
+  const r = runShell("#/terminal/a1", running);
+  await flush();
+  r.sockets[0]!.open();
+  r.sockets[0]!.drop();
+  await flush();
+  const grace = r.timeouts.filter((x) => x.ms === 800 && !x.cleared).pop()!;
+  r.navigate("#/tree");
+  await flush();
+  assert.equal(grace.cleared, true);
+});
+
 test("terminal: a resize storm re-arms one debounce timer and sends a single deduped frame", async () => {
   const { sockets, timeouts, fitDims, resize } = runShell("#/terminal/a1", running);
   await flush();
@@ -987,7 +1171,7 @@ test("terminal: a resize storm re-arms one debounce timer and sends a single ded
   assert.equal(ws.sent.length, before + 1); // same size again: deduped
 });
 
-test("terminal: a server 'closed' frame then a socket drop reconnects with backoff and resets the screen", async () => {
+test("terminal: a server 'closed' frame then a socket drop reconnects with backoff and resets the screen at the replay's first bytes", async () => {
   const { doc, sockets, terms, timeouts, intervals, host } = runShell("#/terminal/a1", running);
   await flush();
   sockets[0]!.open();
@@ -1003,6 +1187,8 @@ test("terminal: a server 'closed' frame then a socket drop reconnects with backo
   retry.fn();
   assert.equal(sockets.length, 2);
   sockets[1]!.open();
+  assert.equal(terms[0]!.resets, 1, "the old screen stays until the replay starts");
+  sockets[1]!.onmessage!({ data: new Uint8Array([104]).buffer });
   assert.equal(terms[0]!.resets, 2); // the daemon replays on connect, so the screen restarts clean
   assert.equal(statusText(host, "connection"), "connected");
   assert.equal(role(doc, "note")!.textContent, "");
@@ -1071,7 +1257,15 @@ test("terminal: an unknown agent (404) shows the 'no longer available' placehold
   sockets[0]!.drop();
   await flush();
   assert.equal(role(doc, "note")!.textContent, "This agent is no longer available.");
-  assert.equal(role(doc, "wrap")!.style.display, "none", "the terminal host is hidden");
+  assert.notEqual(role(doc, "wrap")!.style.display, "none", "the last screen stays visible");
+  assert.deepEqual(termOverlay(doc), {
+    hidden: false,
+    kind: "dead",
+    label: "This agent is no longer available",
+    icon: "stale-icon",
+    role: "status",
+    live: "polite",
+  });
   assert.equal(sockets.length, 1, "no reconnect");
   assert.equal(timeouts.filter((t) => !t.cleared && t.ms >= 375).length, 0, "no reconnect timer left armed");
   assert.ok(
@@ -1098,7 +1292,8 @@ test("terminal: an agent that disappears while connected is caught by the poll a
   pollTimer.fn();
   await flush();
   assert.equal(role(r.doc, "note")!.textContent, "This agent is no longer available.");
-  assert.equal(role(r.doc, "wrap")!.style.display, "none");
+  assert.notEqual(role(r.doc, "wrap")!.style.display, "none");
+  assert.equal(termOverlay(r.doc).kind, "dead");
   assert.equal(r.sockets[0]!.closed, true, "the socket is closed");
   r.sockets[0]!.drop(); // the late close must not schedule a reconnect
   await flush();

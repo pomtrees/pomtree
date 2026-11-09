@@ -481,7 +481,7 @@ test("status messages set the status line; url and title go in as textContent on
   assert.equal(stateText(t), "connecting");
 });
 
-test("no-browser clears the canvas and closes the held bitmap", async () => {
+test("no-browser keeps the last frame (bitmap held, canvas not cleared) under a danger overlay", async () => {
   const t = setup();
   const ws = t.sockets[0]!;
   ws.open();
@@ -491,8 +491,9 @@ test("no-browser clears the canvas and closes the held bitmap", async () => {
   const bmp = t.ctx2d.draws[0]!.bmp;
   const clears = t.ctx2d.clears;
   ws.text({ type: "status", state: "no-browser" });
-  assert.equal(bmp.closed, true);
-  assert.ok(t.ctx2d.clears > clears);
+  assert.equal(bmp.closed, false);
+  assert.equal(t.ctx2d.clears, clears);
+  assert.deepEqual(overlay(t), { hidden: false, kind: "dead", label: "No browser running", icon: "stale-icon", role: "status", live: "polite" });
 });
 
 test("a decode in flight when no-browser arrives draws nothing and closes its bitmap", async () => {
@@ -567,7 +568,7 @@ test("the view never sends on the socket, whatever it receives or however it rec
   ws.text({ type: "closed", reason: "local" });
   ws.drop();
   await t.flush();
-  t.timeouts[0]!.fn(); // the backoff timer fires: second socket
+  t.timeouts.find((x) => x.ms !== 800)!.fn(); // the backoff timer fires (not the overlay grace timer): second socket
   const ws2 = t.sockets[1]!;
   ws2.open();
   ws2.text(live);
@@ -681,7 +682,7 @@ test("mounting without an agent throws a cause-and-action error and leaves the r
 
 test("the pane root is pane-fill and the canvas has no padding wrapper", () => {
   const t = setup();
-  assert.equal(t.root.children[0]!.className, "browser pane pane-fill");
+  assert.equal(t.root.children[0]!.className, "browser pane pane-fill stale-host");
 });
 
 test("no note row sits above the canvas: the first visible child is the canvas, and the footer carries the agent-controlled note", () => {
@@ -708,22 +709,155 @@ test("a page title from the stream titles the tile as text; none keeps the id ti
   assert.equal(t.titles.at(-1), "Browser · agent-12");
 });
 
-test("an agent that no longer exists shows the placeholder, hides the canvas and stops reconnecting", async () => {
+test("an agent that no longer exists keeps the last frame under a danger overlay and stops reconnecting", async () => {
   const gone = setup({ responses: { "/v1/agents/agent-1": { status: 404, body: {} } } });
-  gone.sockets[0]!.drop();
+  const ws = gone.sockets[0]!;
+  await frameShown(gone, ws);
+  const bmp = gone.ctx2d.draws[0]!.bmp;
+  ws.drop();
   await gone.flush();
-  const ph = gone.find((n) => n.textContent === "This agent is no longer available.");
-  assert.ok(ph, "placeholder text");
-  assert.ok(!ph.hidden);
-  assert.equal(gone.find((n) => n.tagName === "canvas")!.style.display, "none");
-  assert.equal(gone.timeouts.length, 0);
+  assert.deepEqual(overlay(gone), {
+    hidden: false,
+    kind: "dead",
+    label: "This agent is no longer available",
+    icon: "stale-icon",
+    role: "status",
+    live: "polite",
+  });
+  assert.equal(gone.find((n) => n.tagName === "canvas")!.style.display, "block", "the canvas stays visible");
+  assert.equal(bmp.closed, false, "the last frame is still held");
+  assert.equal(gone.timeouts.filter((x) => x.ms !== 800).length, 0);
   assert.equal(gone.sockets.length, 1);
-  // negative control: a present agent keeps its canvas and shows no placeholder
+  // negative control: a present agent shows the spinner (after the grace delay), not the danger overlay
   const here = setup({ responses: { "/v1/agents/agent-1": { body: { state: "pending" } } } });
+  await frameShown(here, here.sockets[0]!);
   here.sockets[0]!.drop();
   await here.flush();
-  assert.equal(here.find((n) => n.tagName === "canvas")!.style.display, "block");
-  assert.equal(here.find((n) => n.textContent === "This agent is no longer available.")!.hidden, true);
+  assert.notEqual(overlay(here).kind, "dead");
+});
+
+// ---- stale overlay -----------------------------------------------------------------------------------------------
+
+const overlay = (t: ReturnType<typeof setup>) => {
+  const n = t.find((x) => x.className.split(" ").includes("stale-overlay"))!;
+  return {
+    hidden: n.hidden === true,
+    kind: (n.className.split(" ")[1] ?? "stale-none").slice(6),
+    label: n.children[1]!.textContent,
+    icon: n.children[0]!.className,
+    role: n.attrs.get("role"),
+    live: n.attrs.get("aria-live"),
+  };
+};
+const frameShown = async (t: ReturnType<typeof setup>, ws: ReturnType<typeof setup>["sockets"][number]) => {
+  ws.open();
+  ws.text(live);
+  ws.frame();
+  t.decodes[t.decodes.length - 1]!.resolve(t.bitmap(t.decodes[t.decodes.length - 1]!.blob));
+  await t.flush();
+};
+const graceTimer = (t: ReturnType<typeof setup>) => t.timeouts.filter((x) => x.ms === 800 && !x.cleared).pop();
+
+test("overlay: the first connect with no frame yet shows a spinner at once; live removes it", () => {
+  const t = setup();
+  assert.deepEqual(overlay(t), { hidden: false, kind: "busy", label: "Connecting\u2026", icon: "stale-icon stale-spinner", role: "status", live: "polite" });
+  assert.equal(graceTimer(t), undefined, "no grace delay when there is nothing to keep");
+  t.sockets[0]!.open();
+  t.sockets[0]!.text(live);
+  assert.equal(overlay(t).hidden, true);
+  assert.equal(t.last("stream")!.text, "live", "footer keeps the state text");
+});
+
+test("overlay: a drop keeps the frame and shows the spinner only after the grace delay; a quick reconnect never shows it", async () => {
+  const t = setup();
+  const ws = t.sockets[0]!;
+  await frameShown(t, ws);
+  const bmp = t.ctx2d.draws[0]!.bmp;
+  const clears = t.ctx2d.clears;
+  ws.drop();
+  await t.flush();
+  assert.equal(overlay(t).hidden, true, "not yet: inside the grace delay");
+  const timer = graceTimer(t)!;
+  assert.ok(timer, "a grace timer is armed");
+  timer.fn();
+  assert.deepEqual(overlay(t), { hidden: false, kind: "busy", label: "Reconnecting\u2026", icon: "stale-icon stale-spinner", role: "status", live: "polite" });
+  assert.equal(bmp.closed, false, "the last frame is still held");
+  assert.equal(t.ctx2d.clears, clears, "the canvas was not cleared");
+  assert.equal(t.find((n) => n.tagName === "canvas")!.style.display, "block");
+  assert.equal(stateText(t), "reconnecting", "footer keeps the state text");
+  // quick reconnect: live before the grace timer fires
+  t.timeouts.find((x) => x.ms !== 800)!.fn();
+  const ws2 = t.sockets[1]!;
+  ws2.open();
+  ws2.text(live);
+  assert.equal(overlay(t).hidden, true);
+  // negative control: a drop followed by a live socket before the timer never paints it
+  ws2.drop();
+  await t.flush();
+  const pending = graceTimer(t)!;
+  t.timeouts
+    .filter((x) => x.ms !== 800 && !x.cleared)
+    .pop()!
+    .fn();
+  t.sockets[2]!.open();
+  t.sockets[2]!.text(live);
+  assert.equal(pending.cleared, true, "the grace timer was cancelled");
+  assert.equal(overlay(t).hidden, true);
+});
+
+test("overlay: a finished agent shows a danger icon and the cause over the kept frame, not the waiting pause", async () => {
+  const t = setup({ responses: { "/v1/agents/agent-1": { body: { state: "exited" } } } });
+  const ws = t.sockets[0]!;
+  await frameShown(t, ws);
+  ws.text({ type: "closed", reason: "local" });
+  ws.drop();
+  await t.flush();
+  assert.deepEqual(overlay(t), {
+    hidden: false,
+    kind: "dead",
+    label: "Disconnected: ended (stream daemon shut down)",
+    icon: "stale-icon",
+    role: "status",
+    live: "polite",
+  });
+  assert.equal(stateText(t), "ended", "footer says the same");
+  assert.equal(t.ctx2d.draws[0]!.bmp.closed, false);
+  // a yielded agent is not a fault: pause icon, no danger
+  const y = setup({ responses: { "/v1/agents/agent-1": { body: { state: "yielded" } } } });
+  await frameShown(y, y.sockets[0]!);
+  y.sockets[0]!.drop();
+  await y.flush();
+  assert.deepEqual(overlay(y), { hidden: false, kind: "idle", label: "no browser: agent is waiting", icon: "stale-icon", role: "status", live: "polite" });
+});
+
+test("overlay: giving up after repeated drops is a danger overlay with the cause", async () => {
+  const t = setup();
+  for (let i = 0; i < 13; i++) {
+    const ws = t.sockets[t.sockets.length - 1]!;
+    ws.drop();
+    await t.flush();
+    const retry = t.timeouts.filter((x) => x.ms !== 800 && !x.cleared).pop();
+    if (!retry) break;
+    retry.fn();
+  }
+  assert.deepEqual(overlay(t), {
+    hidden: false,
+    kind: "dead",
+    label: "Disconnected: gave up reconnecting",
+    icon: "stale-icon",
+    role: "status",
+    live: "polite",
+  });
+});
+
+test("overlay: unmount hides it and arms nothing", async () => {
+  const t = setup();
+  await frameShown(t, t.sockets[0]!);
+  t.sockets[0]!.drop();
+  await t.flush();
+  const pending = graceTimer(t)!;
+  t.handle.unmount();
+  assert.equal(pending.cleared, true);
 });
 
 // ---- shipping --------------------------------------------------------------------------------------------------

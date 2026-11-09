@@ -342,3 +342,154 @@ test("emitted CSS has no // comment lines and the inbox highlight rule parses as
   assert.equal(hl.length, 1);
   assert.ok(hl[0]!.body.includes("outline"));
 });
+
+// ---- stale-content overlay (K.staleOverlay) ----------------------------------------------------------------------
+
+type OvNode = {
+  tagName: string;
+  className: string;
+  textContent: string;
+  hidden: boolean;
+  attrs: Map<string, string>;
+  children: OvNode[];
+  setAttribute(k: string, v: string): void;
+  appendChild(c: OvNode): void;
+};
+const ovNode = (tagName: string): OvNode => {
+  const n: OvNode = {
+    tagName,
+    className: "",
+    textContent: "",
+    hidden: false,
+    attrs: new Map(),
+    children: [],
+    setAttribute: (k, v) => void n.attrs.set(k, v),
+    appendChild: (c) => void n.children.push(c),
+  };
+  return n;
+};
+const loadOverlay = () => {
+  const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+  const ctx = createContext({
+    document: { createElement: ovNode },
+    setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms, cleared: false }),
+    clearTimeout: (n: number) => {
+      timers[n - 1]!.cleared = true;
+    },
+    JSON,
+    Object,
+    Array,
+    Set,
+    Map,
+    String,
+    Error,
+    RegExp,
+    Date,
+    Math,
+    Number,
+    WeakSet,
+  });
+  const K = runInContext(`(() => { ${PANE_KIT_JS}; return K; })()`, ctx) as {
+    STALE_GRACE_MS: number;
+    overlayPlan(painted: string, kind: string, hasContent: boolean): string;
+    staleOverlay(parent: OvNode, hasContent: () => boolean): { set(kind: string, text: string): void; kind(): string; destroy(): void };
+  };
+  return { K, timers };
+};
+const shape = (parent: OvNode) => {
+  const box = parent.children[0]!;
+  return {
+    hidden: box.hidden,
+    cls: box.className,
+    icon: box.children[0]!.className,
+    glyph: box.children[0]!.textContent,
+    label: box.children[1]!.textContent,
+    role: box.attrs.get("role"),
+    live: box.attrs.get("aria-live"),
+  };
+};
+
+test("overlayPlan: busy over existing content waits the grace delay; everything else is immediate; none hides", () => {
+  const { K } = loadOverlay();
+  assert.equal(K.STALE_GRACE_MS, 800);
+  assert.equal(K.overlayPlan("none", "busy", true), "later");
+  assert.equal(K.overlayPlan("none", "busy", false), "now");
+  assert.equal(K.overlayPlan("busy", "busy", true), "now");
+  assert.equal(K.overlayPlan("dead", "busy", true), "now");
+  assert.equal(K.overlayPlan("none", "dead", true), "now");
+  assert.equal(K.overlayPlan("none", "idle", true), "now");
+  assert.equal(K.overlayPlan("busy", "none", true), "hide");
+});
+
+test("staleOverlay: one persistent status element; spinner for busy, danger icon for dead, pause for idle; hidden for none", () => {
+  const { K, timers } = loadOverlay();
+  const parent = ovNode("div");
+  parent.className = "pane";
+  let content = false;
+  const ov = K.staleOverlay(parent, () => content);
+  assert.equal(parent.className, "pane stale-host");
+  assert.deepEqual(shape(parent), { hidden: true, cls: "stale-overlay", icon: "", glyph: "", label: "", role: "status", live: "polite" });
+  ov.set("busy", "Connecting\u2026");
+  assert.deepEqual(shape(parent), {
+    hidden: false,
+    cls: "stale-overlay stale-busy",
+    icon: "stale-icon stale-spinner",
+    glyph: "",
+    label: "Connecting\u2026",
+    role: "status",
+    live: "polite",
+  });
+  assert.equal(timers.length, 0, "no content to keep: no grace timer");
+  ov.set("dead", "Disconnected: ended");
+  assert.deepEqual(shape(parent), {
+    hidden: false,
+    cls: "stale-overlay stale-dead",
+    icon: "stale-icon",
+    glyph: "\u26a0",
+    label: "Disconnected: ended",
+    role: "status",
+    live: "polite",
+  });
+  ov.set("idle", "waiting");
+  assert.equal(shape(parent).cls, "stale-overlay stale-idle");
+  ov.set("none", "");
+  assert.equal(shape(parent).hidden, true);
+  assert.equal(parent.children.length, 1, "the same element is reused");
+  content = true;
+  assert.throws(() => ov.set("sad", "x"), /unknown kind "sad".*use one of/);
+});
+
+test("staleOverlay: with content, busy appears only after the grace delay and a quick none cancels it (negative control: it fires if left alone)", () => {
+  const { K, timers } = loadOverlay();
+  const parent = ovNode("div");
+  const ov = K.staleOverlay(parent, () => true);
+  ov.set("busy", "Reconnecting\u2026");
+  assert.equal(shape(parent).hidden, true);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0]!.ms, 800);
+  ov.set("none", "");
+  assert.equal(timers[0]!.cleared, true);
+  ov.set("busy", "Reconnecting\u2026");
+  timers[1]!.fn();
+  assert.equal(shape(parent).hidden, false);
+  assert.equal(shape(parent).label, "Reconnecting\u2026");
+  // already painted: a relabel is immediate (no flicker back to hidden)
+  ov.set("busy", "Restoring screen\u2026");
+  assert.equal(shape(parent).label, "Restoring screen\u2026");
+  ov.set("none", "");
+  ov.set("busy", "again");
+  ov.destroy();
+  assert.equal(timers[timers.length - 1]!.cleared, true);
+  assert.equal(shape(parent).hidden, true);
+});
+
+test("overlay CSS: semi-transparent, never takes the pointer, spinner honours prefers-reduced-motion, and the helper uses no innerHTML", () => {
+  const rule = (sel: string) => new RegExp("\\n" + sel.replace(/[.[\]]/g, "\\$&") + " \\{([^}]*)\\}").exec(PANE_CSS)?.[1] ?? "";
+  assert.match(rule(".stale-overlay"), /pointer-events: none/);
+  assert.match(rule(".stale-overlay"), /color-mix\(in srgb, var\(--surface\) 72%, transparent\)/);
+  assert.match(rule(".stale-overlay"), /position: absolute/);
+  assert.match(rule(".stale-overlay[hidden]"), /display: none/);
+  assert.match(rule(".stale-spinner"), /animation: stalespin/);
+  assert.match(PANE_CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.stale-spinner \{ animation: none; \} \}/);
+  assert.ok(!/innerHTML/.test(PANE_KIT_JS));
+});
