@@ -75,10 +75,33 @@ function createUiDriver(wm, cfg) {
   const es = new EventSource(cfg.path);
   es.addEventListener("message", (ev) => { clear(); onMessage(ev); });
   es.addEventListener("open", clear);
+  // EventSource hides the HTTP status, so a closed stream is followed by one probe fetch of the same path (aborted as soon as
+  // the headers arrive) to name what the daemon answered. Without fetch the notice just omits the status.
+  const reason = (status) => {
+    if (status === 401 || status === 403) return " The daemon answered HTTP " + status + ": sign in again (reload the page).";
+    if (status === 404) return " The daemon answered HTTP 404: this pomtreed does not serve /live/ui; restart it from a build that has it.";
+    if (status === 503) return " The daemon answered HTTP 503: too many open streams; close other pomtree tabs, then reload.";
+    if (status === 200) return " The daemon accepts the stream (HTTP 200), so the browser or a proxy rejected it; check the response is text/event-stream and unbuffered.";
+    if (status) return " The daemon answered HTTP " + status + "; check the pomtreed log.";
+    return " The daemon could not be reached; check that pomtreed is running.";
+  };
+  const stopped = (status) => {
+    if (!shown) return; // a frame or open event arrived while probing
+    try { api.notify(STREAM, "Live UI control stopped: the connection to /live/ui was closed." + reason(status) + " If it keeps failing, reload the page and check that you are signed in and that pomtreed is running."); } catch (e) {}
+  };
+  const probe = () => {
+    if (typeof fetch !== "function") { stopped(0); return; }
+    const ac = typeof AbortController === "function" ? new AbortController() : null;
+    let done = false;
+    const finish = (status) => { if (!done) { done = true; if (ac) ac.abort(); stopped(status); } };
+    try {
+      fetch(cfg.path, { headers: { Accept: "text/event-stream" }, signal: ac ? ac.signal : undefined }).then((r) => finish(r.status), () => finish(0));
+    } catch (e) { finish(0); }
+  };
   es.addEventListener("error", () => {
     if (es.readyState !== 2 || shown) return;
     shown = true;
-    try { api.notify(STREAM, "Live UI control stopped: the connection to /live/ui was closed by the browser or refused by the daemon. Reload the page; if it keeps failing, check that you are signed in and that pomtreed is running."); } catch (e) {}
+    probe();
   });
   return { close: () => { if (es.close) es.close(); } };
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { run } from "@pomtree/pomtree";
@@ -248,5 +249,72 @@ test("reconnect hygiene: a stream opened after a command was posted does not del
     await c.feed(1, d);
     assert.deepEqual(d.take(), ["reset"], "only the command posted after connecting arrives");
     c.s.close();
+  });
+});
+
+// The browser's own sequence: POST /ui/login (the #token= link does this), keep only the Set-Cookie pair, then the EventSource GET with the
+// headers a browser sends. Real server over loopback; observed from the CLI's POST /v1/ui/command tab count.
+const httpCall = (port: number, method: string, path: string, headers: Record<string, string>, body?: string) =>
+  new Promise<{ status: number; headers: IncomingHttpHeaders; text: () => string; close: () => void }>((resolve, reject) => {
+    let s = "";
+    const req = request({ host: "127.0.0.1", port, path, method, headers }, (res) => {
+      res.on("data", (d) => (s += d));
+      resolve({ status: res.statusCode ?? 0, headers: res.headers, text: () => s, close: () => req.destroy() });
+    });
+    req.on("error", () => {});
+    setTimeout(() => reject(new Error("response timeout")), 2000);
+    req.end(body);
+  });
+const browserHeaders = (port: number, cookie?: string) => ({
+  accept: "text/event-stream",
+  "cache-control": "no-cache",
+  "sec-fetch-site": "same-origin",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-dest": "empty",
+  referer: `http://127.0.0.1:${port}/ui`,
+  ...(cookie ? { cookie } : {}),
+});
+
+test("browser sign-in cookie opens /live/ui exactly like /live/messages and registers one tab; no cookie does not", async () => {
+  const t = setup(idle);
+  await withServer(t, async (port) => {
+    const body = JSON.stringify({ token: op });
+    const login = await httpCall(port, "POST", "/ui/login", { "content-type": "application/json", "content-length": String(body.length) }, body);
+    assert.equal(login.status, 200);
+    const cookie = String(login.headers["set-cookie"]).split(";")[0]!;
+    const opened: { status: number; type: string }[] = [];
+    const streams = [];
+    for (const path of ["/live/messages", UI_STREAM_PATH]) {
+      const r = await httpCall(port, "GET", path, browserHeaders(port, cookie));
+      streams.push(r);
+      opened.push({ status: r.status, type: String(r.headers["content-type"]) });
+      await until(() => r.text().startsWith(": connected"));
+    }
+    assert.deepEqual(opened, [
+      { status: 200, type: "text/event-stream" },
+      { status: 200, type: "text/event-stream" },
+    ]);
+    const post = await httpCall(
+      port,
+      "POST",
+      "/v1/ui/command",
+      { ...browserHeaders(port, cookie), accept: "application/json", "x-pomtree-ui": "1", "content-type": "application/json" },
+      JSON.stringify({ idempotencyKey: "k1", command: { cmd: "reset" } }),
+    );
+    await until(() => post.text() !== "");
+    assert.equal(JSON.parse(post.text()).tabs, 1);
+    // negative control: the same GET without the cookie is refused and is not counted as a tab
+    const anon = await httpCall(port, "GET", UI_STREAM_PATH, browserHeaders(port));
+    assert.equal(anon.status, 401);
+    const post2 = await httpCall(
+      port,
+      "POST",
+      "/v1/ui/command",
+      { ...browserHeaders(port, cookie), accept: "application/json", "x-pomtree-ui": "1", "content-type": "application/json" },
+      JSON.stringify({ idempotencyKey: "k2", command: { cmd: "reset" } }),
+    );
+    await until(() => post2.text() !== "");
+    assert.equal(JSON.parse(post2.text()).tabs, 1);
+    for (const r of streams) r.close();
   });
 });

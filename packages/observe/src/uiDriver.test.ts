@@ -17,6 +17,7 @@ interface Opts {
   closeSubject?: boolean;
   focusDirection?: boolean;
   throwOn?: string;
+  fetch?: (url: string, init: { signal?: unknown }) => Promise<{ status: number }>;
 }
 
 function boot(o: Opts = {}) {
@@ -69,7 +70,20 @@ function boot(o: Opts = {}) {
       for (const f of this.others[t] ?? []) f();
     }
   }
-  const ctx = createContext({ JSON, Math, Object, Array, Set, Map, String, Number, isFinite, EventSource: FakeES, globalThis: {} });
+  const ctx = createContext({
+    JSON,
+    Math,
+    Object,
+    Array,
+    Set,
+    Map,
+    String,
+    Number,
+    isFinite,
+    EventSource: FakeES,
+    globalThis: {},
+    ...(o.fetch && { fetch: o.fetch, AbortController }),
+  });
   runInContext(LAYOUT_LOGIC_JS, ctx);
   runInContext(UI_COMMAND_JS, ctx);
   runInContext(UI_DRIVER_JS, ctx);
@@ -211,7 +225,7 @@ test("the driver source never uses innerHTML and is template-literal safe", () =
 });
 
 const STREAM_TEXT =
-  /^notify:ui-stream:Live UI control stopped: the connection to \/live\/ui was closed by the browser or refused by the daemon\. Reload the page; if it keeps failing, check that you are signed in and that pomtreed is running\.$/;
+  /^notify:ui-stream:Live UI control stopped: the connection to \/live\/ui was closed\. The daemon could not be reached; check that pomtreed is running\. If it keeps failing, reload the page and check that you are signed in and that pomtreed is running\.$/;
 
 test("a closed stream after an error shows one notice naming cause and action", () => {
   const s = boot();
@@ -243,4 +257,61 @@ test("a later frame or open event dismisses the stream notice", () => {
   assert.deepEqual(s.take(), ["dismiss:ui-stream"]);
   s.sources[0]!.fire("open");
   assert.deepEqual(s.take(), [], "nothing to dismiss when no notice is shown");
+});
+
+const settle = () => new Promise((r) => setTimeout(r, 0));
+const closed = async (status: number | Error) => {
+  const aborted: boolean[] = [];
+  const urls: string[] = [];
+  const s = boot({
+    fetch: (url, init) => {
+      urls.push(url);
+      aborted.push(init.signal !== undefined);
+      return status instanceof Error ? Promise.reject(status) : Promise.resolve({ status });
+    },
+  });
+  s.sources[0]!.readyState = 2;
+  s.sources[0]!.fire("error");
+  s.sources[0]!.fire("error");
+  await settle();
+  return { notices: s.take(), urls, aborted };
+};
+
+test("a closed stream probes the same path once and names the HTTP status with its action", async () => {
+  const want: [number, RegExp][] = [
+    [401, /HTTP 401: sign in again/],
+    [403, /HTTP 403: sign in again/],
+    [404, /HTTP 404: this pomtreed does not serve \/live\/ui/],
+    [503, /HTTP 503: too many open streams/],
+    [200, /HTTP 200\), so the browser or a proxy rejected it/],
+    [500, /HTTP 500; check the pomtreed log/],
+  ];
+  for (const [status, re] of want) {
+    const r = await closed(status);
+    assert.equal(r.notices.length, 1, String(status));
+    assert.match(r.notices[0]!, re);
+    assert.deepEqual(r.urls, ["/live/ui"]);
+    assert.deepEqual(r.aborted, [true], "the probe stream is aborted");
+  }
+});
+
+test("a probe that cannot reach the daemon says so; a retrying stream never probes", async () => {
+  const r = await closed(new Error("net"));
+  assert.match(r.notices[0]!, /The daemon could not be reached/);
+  let probes = 0;
+  const s = boot({ fetch: () => (probes++, Promise.resolve({ status: 200 })) });
+  s.sources[0]!.readyState = 0;
+  s.sources[0]!.fire("error");
+  await settle();
+  assert.equal(probes, 0);
+  assert.deepEqual(s.take(), []);
+});
+
+test("a frame arriving while the probe is pending cancels the notice", async () => {
+  const s = boot({ fetch: () => Promise.resolve({ status: 200 }) });
+  s.sources[0]!.readyState = 2;
+  s.sources[0]!.fire("error");
+  s.cmd(1, { cmd: "reset" });
+  await settle();
+  assert.deepEqual(s.take(), ["dismiss:ui-stream", "reset"]);
 });
