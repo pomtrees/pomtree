@@ -168,6 +168,8 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
     return { ok: true, command: out };
   };
 
+  // TODO(ui-command-focused-ref): no ui verb addresses the focused window without a ref; today every window command
+  // needs a view/subject or targets everything (close --all, arrange, reset). Trigger: scripts that need "the focused window".
   const parse = (raw) => {
     try {
       if (!plainObject(raw)) return err("command must be a JSON object (for example " + JSON.stringify({ cmd: "reset" }) + "); send one object");
@@ -198,19 +200,33 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
     return { kind: "split", id, dir: dirOf(depth), ratio: k / leaves.length, children: [a, b] };
   };
 
-  // Re-tiles the CURRENT leaves (view, params and ids kept; focus kept). Null for an empty layout, an unknown preset
-  // or a result LayoutKit.parse would refuse.
+  // Re-tiles the CURRENT leaves (view, params and ids kept). The SHOWN (non-hidden) leaves get the balanced tiling;
+  // hidden leaves keep their ids, view, params and hidden flag as a balanced subtree that is the second child of one
+  // extra root split (LayoutKit.rects collapses it, so shown tiles are unaffected). max is cleared; focus stays on the
+  // focused leaf if it is shown, else the first shown leaf, else "". Null for a layout with no shown leaf and no
+  // leaves at all, for "single" with nothing shown, an unknown preset or a result LayoutKit.parse would refuse.
   const tile = (layout, preset) => {
     if (PRESETS.indexOf(preset) < 0 || !layout || !layout.root) return null;
     const all = LayoutKit.leaves(layout);
     if (all.length === 0) return null;
-    const focused = all.filter((l) => l.id === layout.focus)[0] || all[0];
-    const leaves = preset === "single" ? [focused] : all;
-    if (layout.next + leaves.length > MAX_NEXT) return null;
+    const shown = all.filter((l) => l.hidden !== true);
+    const hidden = all.filter((l) => l.hidden === true);
+    const focused = shown.filter((l) => l.id === layout.focus)[0] || shown[0];
+    if (preset === "single" && !focused) return null;
+    if (layout.next + all.length > MAX_NEXT) return null;
+    const keep = preset === "single" ? [focused] : shown;
+    const copy = (l) => {
+      const lf = { kind: "leaf", id: l.id, view: l.view, params: Object.assign({}, l.params) };
+      if (l.hidden === true) lf.hidden = true;
+      return lf;
+    };
     const dirOf = preset === "columns" ? () => "row" : preset === "rows" ? () => "col" : (d) => (d % 2 === 0 ? "row" : "col");
-    const root = build(leaves.map((l) => ({ kind: "leaf", id: l.id, view: l.view, params: Object.assign({}, l.params) })), dirOf, 0, { n: layout.next });
-    const next = layout.next + leaves.length - 1;
-    const res = LayoutKit.parse(JSON.stringify({ version: 1, next: Math.max(next, layout.next), focus: focused.id, root }));
+    const counter = { n: layout.next };
+    const hide = preset === "single" ? [] : hidden;
+    const top = keep.length ? build(keep.map(copy), dirOf, 0, counter) : null;
+    const sub = hide.length ? build(hide.map(copy), dirOf, 1, counter) : null;
+    const root = top && sub ? { kind: "split", id: "s" + counter.n++, dir: "row", ratio: 0.5, children: [top, sub] } : top || sub;
+    const res = LayoutKit.parse(JSON.stringify({ version: 1, next: counter.n, focus: focused ? focused.id : "", root }));
     return res.ok ? res.layout : null;
   };
 

@@ -268,6 +268,122 @@ test("tile on an empty layout is null; unknown preset is null", () => {
   assert.equal(K.tile(many(2), "tabs"), null);
 });
 
+// A layout of n agent terminals where the leaves whose index is in `hide` are minimized (via the layout kit itself).
+const withHidden = (n: number, hide: number[], focusIdx = 0): Layout => {
+  let l = many(n);
+  const all = L.leaves(l).map((x) => x.id) as string[];
+  l = L.focus(l, all[focusIdx] as string);
+  for (const i of hide) l = L.minimize(l, all[i] as string);
+  return l;
+};
+const area = (l: Layout) =>
+  Object.values(plain(L.rects(l)) as Record<string, { w: number; h: number }>)
+    .reduce((a, r) => a + r.w * r.h, 0)
+    .toFixed(9);
+const ids = (l: Layout) => L.leaves(l).map((x) => x.id);
+
+test("tile with hidden leaves: shown tiles fill the area, hidden flags and ids kept, max cleared", () => {
+  for (const preset of ["columns", "rows", "grid"]) {
+    const src = withHidden(6, [1, 4], 2);
+    const out = K.tile(src, preset) as Layout;
+    assert.ok(out, preset);
+    assert.equal(L.parse(L.serialize(out)).ok, true, `${preset} parses`);
+    assert.equal(Object.keys(plain(L.rects(out))).length, 4, `${preset} shows 4`);
+    assert.equal(area(out), "1.000000000", `${preset} shown tiles fill the area`);
+    const hid = L.leaves(out).filter((x) => x.hidden === true);
+    assert.equal(json(hid.map((x) => x.id).sort()), json([ids(src)[1], ids(src)[4]].sort()), `${preset} hidden ids`);
+    assert.equal(sig(out), sig(src), `${preset} keeps views`);
+    assert.equal(out.focus, src.focus, `${preset} focus kept when shown`);
+    assert.equal(out.max, undefined);
+    // negative control: shown windows are exactly the non-hidden ones
+    assert.equal(
+      json(Object.keys(plain(L.rects(out))).sort()),
+      json(
+        L.visibleLeaves(src)
+          .map((x) => x.id)
+          .sort(),
+      ),
+    );
+  }
+});
+
+test("tile with hidden leaves: shown areas equal a tiling of only the shown leaves (grid)", () => {
+  const src = withHidden(5, [0, 3]);
+  const out = K.tile(src, "grid") as Layout;
+  const solo = K.tile(many(3), "grid") as Layout;
+  const a = Object.values(plain(L.rects(out)) as Record<string, { w: number; h: number }>).map((r) => (r.w * r.h).toFixed(9));
+  const b = Object.values(plain(L.rects(solo)) as Record<string, { w: number; h: number }>).map((r) => (r.w * r.h).toFixed(9));
+  assert.equal(json(a), json(b));
+  // negative control: tiling all five would give different areas
+  const five = Object.values(plain(L.rects(K.tile(many(5), "grid") as Layout)) as Record<string, { w: number; h: number }>).map((r) => (r.w * r.h).toFixed(9));
+  assert.notEqual(json(a), json(five));
+});
+
+test("tile clears max and falls back focus to the first shown leaf when the focused one is hidden", () => {
+  let src = many(3);
+  const [a, b, c] = ids(src) as [string, string, string];
+  src = L.maximize(src, b);
+  assert.equal(src.max, b);
+  const out = K.tile(src, "columns") as Layout;
+  assert.equal(out.max, undefined);
+  assert.equal(out.focus, b);
+  const hiddenFocus = { ...L.minimize(many(3), a), focus: a } as Layout; // focus on a hidden leaf (invalid input, parse would repair)
+  const out2 = K.tile(hiddenFocus, "rows") as Layout;
+  assert.equal(out2.focus, b);
+  assert.equal(L.parse(L.serialize(out2)).ok, true);
+  assert.notEqual(out2.focus, c);
+});
+
+test("tile with every leaf hidden keeps the hidden subtree and focus is empty; single is null", () => {
+  const src = withHidden(3, [0, 1, 2]);
+  for (const preset of ["columns", "rows", "grid"]) {
+    const out = K.tile(src, preset) as Layout;
+    assert.ok(out, preset);
+    assert.equal(
+      L.leaves(out).every((x) => x.hidden === true),
+      true,
+    );
+    assert.equal(out.focus, "");
+    assert.equal(L.parse(L.serialize(out)).ok, true);
+  }
+  assert.equal(K.tile(src, "single"), null);
+});
+
+test("tile single keeps only the focused shown leaf, dropping hidden ones; hidden focus falls to first shown", () => {
+  const src = withHidden(4, [0, 2], 3);
+  const out = K.tile(src, "single") as Layout;
+  assert.equal(json(ids(out)), json([ids(src)[3]]));
+  assert.equal(L.leaves(out)[0]?.hidden, undefined);
+  const hf = { ...src, focus: ids(src)[0] } as Layout;
+  assert.equal(json(ids(K.tile(hf, "single") as Layout)), json([ids(src)[1]]));
+});
+
+test("tile without hidden leaves is unchanged by the hidden handling (no extra split, next as before)", () => {
+  const src = many(5);
+  const out = K.tile(src, "grid") as Layout;
+  assert.equal(out.next, src.next + 4);
+  assert.equal(
+    L.leaves(out).some((x) => x.hidden !== undefined),
+    false,
+  );
+});
+
+test("tile depth stays within MAX_DEPTH at 16 leaves with hidden windows, every preset", () => {
+  for (const [n, hide] of [
+    [16, [9, 10, 11, 12, 13, 14, 15]],
+    [16, Array.from({ length: 15 }, (_, i) => i + 1)],
+    [16, [0]],
+  ] as Array<[number, number[]]>) {
+    const src = withHidden(n, hide, 0);
+    for (const preset of UI_PRESETS) {
+      const out = K.tile(src, preset) as Layout;
+      assert.ok(out, `${preset} ${hide.length} hidden`);
+      assert.equal(L.parse(L.serialize(out)).ok, true, `${preset} ${hide.length} hidden parses`);
+      assert.equal(L.leaves(out).length, preset === "single" ? 1 : 16);
+    }
+  }
+});
+
 test("kit source is template-literal safe", () => {
   assert.equal(UI_COMMAND_JS.includes("`"), false);
   assert.equal(UI_COMMAND_JS.includes("${"), false);
