@@ -51,6 +51,15 @@ const VALID: unknown[] = [
   { cmd: "focus", dir: "left" },
   { cmd: "focus", dir: "down" },
   { cmd: "close", view: "terminal", agent: "a1" },
+  { cmd: "close", view: "terminal", agent: "a1", scope: "others" },
+  { cmd: "close", view: "tree", scope: "left" },
+  { cmd: "close", view: "report", agent: "a1", report: "r1", scope: "right" },
+  { cmd: "close", scope: "all" },
+  { cmd: "maximize", view: "terminal", agent: "a1" },
+  { cmd: "maximize", view: "report", agent: "a1", report: "r1" },
+  { cmd: "minimize", view: "tree" },
+  { cmd: "restore" },
+  { cmd: "restore", view: "terminal", agent: "a1" },
   { cmd: "arrange", preset: "grid" },
   { cmd: "reset" },
   { cmd: "follow", on: true },
@@ -92,6 +101,24 @@ const NEGATIVE: Array<[string, unknown, string]> = [
   ["follow of number", { cmd: "follow", on: true, of: 5 }, '"of"'],
   ["follow of empty", { cmd: "follow", on: true, of: "" }, '"of"'],
   ["follow of too long", { cmd: "follow", on: true, of: "x".repeat(257) }, '"of"'],
+  ["close scope self", { cmd: "close", view: "tree", scope: "self" }, "others, left, right, all"],
+  ["close scope typo", { cmd: "close", view: "tree", scope: "other" }, "others, left, right, all"],
+  ["close scope non-string", { cmd: "close", view: "tree", scope: 3 }, "scope"],
+  ["close scope others without view", { cmd: "close", scope: "others" }, "needs"],
+  ["close scope left without view", { cmd: "close", scope: "left", agent: "a1" }, "needs"],
+  ["close all with view", { cmd: "close", scope: "all", view: "tree" }, "takes no"],
+  ["close all with agent", { cmd: "close", scope: "all", agent: "a1" }, "takes no"],
+  ["close all with report", { cmd: "close", scope: "all", report: "r1" }, "takes no"],
+  ["close all unknown key", { cmd: "close", scope: "all", foo: 1 }, "unknown key"],
+  ["close scope with unknown key", { cmd: "close", view: "tree", scope: "left", foo: 1 }, "unknown key"],
+  ["maximize without view", { cmd: "maximize" }, "needs"],
+  ["maximize with scope", { cmd: "maximize", view: "tree", scope: "all" }, "unknown key"],
+  ["minimize without view", { cmd: "minimize" }, "needs"],
+  ["minimize report without agent", { cmd: "minimize", view: "report", report: "r1" }, "agent"],
+  ["restore agent without view", { cmd: "restore", agent: "a1" }, "needs"],
+  ["restore report without view", { cmd: "restore", report: "r1" }, "needs"],
+  ["restore unknown key", { cmd: "restore", foo: 1 }, "unknown key"],
+  ["restore bad view", { cmd: "restore", view: "Tree" }, "view"],
   ["follow views empty", { cmd: "follow", on: true, views: [] }, "views"],
   ["follow views five", { cmd: "follow", on: true, views: ["a", "b", "c", "d", "e"] }, "views"],
   ["follow views dupes", { cmd: "follow", on: true, views: ["tree", "tree"] }, "views"],
@@ -111,6 +138,25 @@ test("negative controls are rejected with a cause and a fix", () => {
     assert.equal(typeof r.error === "string" && r.error.length > 10, true, name);
     assert.equal(r.error?.includes(needle), true, `${name}: ${r.error}`);
   }
+});
+
+test("the command list names the new window commands and a typo lists them", () => {
+  const e = (plain(parseUiCommand({ cmd: "maximise", view: "tree" })) as { error: string }).error;
+  for (const c of ["close", "maximize", "minimize", "restore"]) assert.equal(e.includes(c), true, e);
+});
+
+test("close scope and plain close stay distinct in the parsed data", () => {
+  const plainClose = plain(parseUiCommand({ cmd: "close", view: "tree" })) as { command: object };
+  assert.equal("scope" in plainClose.command, false);
+  assert.equal(json(plain(parseUiCommand({ cmd: "restore" }))), '{"ok":true,"command":{"cmd":"restore"}}');
+});
+
+test("parseFrame accepts the new window commands and rejects an invalid scope", () => {
+  const f = (command: unknown) => json({ type: "command", seq: 1, ts: 1, command });
+  assert.notEqual(parseUiFrame(f({ cmd: "close", scope: "all" })), null);
+  assert.notEqual(parseUiFrame(f({ cmd: "restore" })), null);
+  assert.equal(parseUiFrame(f({ cmd: "close", view: "tree", scope: "self" })), null);
+  assert.equal(parseUiFrame(f({ cmd: "restore", agent: "a1" })), null);
 });
 
 test("open missing view names the fix with an example", () => {

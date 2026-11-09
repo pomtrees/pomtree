@@ -148,7 +148,6 @@ interface WmApi {
   notify(key: string, text: string): void;
   dismiss(key: string): void;
   focusSubject(view: string, params: { agent?: string; report?: string }): boolean;
-  closeSubject(view: string, params: { agent?: string; report?: string }): boolean;
   leafOf(view: string, params: { agent?: string; report?: string }): string | null;
   windowCommand(command: string, leafId: string | null): boolean;
   windowMenuItems(leafId: string): { kind: string; command?: string; label?: string; enabled?: boolean; visible?: boolean }[];
@@ -188,6 +187,7 @@ function boot(o: Opts = {}) {
   const winListeners = new Map<string, L[]>();
   const rafs: (() => void)[] = [];
   const mqListeners: L[] = [];
+  const eventSources: { handlers: Map<string, (ev: { data?: string }) => void> }[] = [];
   const mq = { matches: !!o.narrow, addEventListener: (_t: string, fn: L) => mqListeners.push(fn) };
   // hash assignments (location.hash = ...) each add a history entry; replaceState swaps the current one in place.
   const assigns: string[] = [];
@@ -272,6 +272,17 @@ function boot(o: Opts = {}) {
     addEventListener: (t: string, fn: L) => winListeners.set(t, [...(winListeners.get(t) ?? []), fn]),
     matchMedia: () => mq,
     requestAnimationFrame: (fn: () => void) => rafs.push(fn),
+    EventSource: class {
+      handlers = new Map<string, (ev: { data?: string }) => void>();
+      readyState = 1;
+      constructor() {
+        eventSources.push(this);
+      }
+      addEventListener(t: string, fn: (ev: { data?: string }) => void) {
+        this.handlers.set(t, fn);
+      }
+      close() {}
+    },
     setTimeout: () => 0,
     localStorage: {
       getItem: (k: string) => {
@@ -390,7 +401,14 @@ function boot(o: Opts = {}) {
     hist.length++;
     for (const fn of winListeners.get("hashchange") ?? []) fn({});
   };
+  // The live UI driver against this window manager: send() delivers one command frame as the daemon's stream would.
+  let seq = 0;
+  const startDriver = () => {
+    runInContext('createUiDriver(wm, { path: "/live/ui" })', ctx);
+    return (command: object) => eventSources[0]!.handlers.get("message")!({ data: JSON.stringify({ type: "command", seq: ++seq, ts: 1, command }) });
+  };
   return {
+    startDriver,
     html,
     ctx,
     root,
@@ -1696,25 +1714,6 @@ test("api.focusSubject focuses the tile showing that subject and returns false w
   assert.equal(s.api.focusSubject("report", { agent: "a1", report: "r1" }), false);
 });
 
-test("api.closeSubject closes that tile once, then returns false", () => {
-  const s = boot();
-  s.api.openView("terminal", "a1");
-  const before = s.api.state().leaves.length;
-  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), true);
-  assert.equal(s.api.state().leaves.length, before - 1);
-  assert.equal(
-    s.api.state().leaves.some((l) => l.params.agent === "a1"),
-    false,
-  );
-  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), false);
-});
-
-test("api.closeSubject may close the last tile into the empty state", () => {
-  const s = boot({ store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "terminal", { agent: "a1" }) }) } });
-  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), true);
-  assert.equal(s.api.state().leaves.length, 0);
-});
-
 // What the drive does for a close: leafOf (params normalised like focusSubject), then window.close.
 const closeBySubject = (s: ReturnType<typeof boot>, view: string, params: { agent?: string; report?: string }) => {
   const at = s.api.leafOf(view, params);
@@ -1818,9 +1817,9 @@ test("focus and close normalise params like open: a browsing view with an agent,
   s.api.openView("terminal", "a1", "r9");
   assert.equal(s.api.focusSubject("tree", { agent: "a1" }), true);
   assert.equal(s.api.focusSubject("terminal", { agent: "a1", report: "r9" }), true);
-  assert.equal(s.api.closeSubject("terminal", { agent: "a1", report: "r9" }), true);
-  assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), false);
-  assert.equal(s.api.closeSubject("tree", { agent: "a1" }), true);
+  assert.equal(closeBySubject(s, "terminal", { agent: "a1", report: "r9" }), true);
+  assert.equal(closeBySubject(s, "terminal", { agent: "a1" }), false);
+  assert.equal(closeBySubject(s, "tree", { agent: "a1" }), true);
 });
 
 // ---- window menu, maximize and minimize ----
@@ -2268,6 +2267,33 @@ test("narrow: closing a window that is not in the saved desktop layout shows a n
   assert.match(n.noticeTexts().join("|"), /Close did nothing: this window is not in the saved desktop layout/);
   assert.equal(JSON.stringify(n.store), before);
   assert.equal(n.api.state().leaves[0]!.view, "hosts");
+});
+
+test("the ui driver applies close-others, maximize, minimize and restore through the real window manager", () => {
+  const s = three();
+  const send = s.startDriver();
+  const hosts = idOf(s, "hosts");
+  send({ cmd: "maximize", view: "hosts" });
+  assert.equal(s.api.state().maximized, hosts);
+  send({ cmd: "restore" });
+  assert.equal(s.api.state().maximized, "");
+  send({ cmd: "minimize", view: "terminal", agent: "a1" });
+  assert.deepEqual(hiddenOf(s), ["terminal"]);
+  send({ cmd: "restore", view: "terminal", agent: "a1" });
+  assert.deepEqual(hiddenOf(s), []);
+  send({ cmd: "close", view: "hosts", scope: "others" });
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+  );
+  send({ cmd: "close", scope: "all" });
+  assert.equal(s.api.state().leaves.length, 0);
+  assert.deepEqual(s.noticeTexts(), []);
+  const t = three();
+  const sendT = t.startDriver();
+  sendT({ cmd: "close", view: "reports", scope: "others" });
+  assert.match(t.noticeTexts().join("|"), /Cannot close reports: that window is not open\./);
+  assert.equal(t.api.state().leaves.length, 3, "negative control: an unknown window changes nothing");
 });
 
 test("maximize and restore (and un-minimize through Restore) move DOM focus into the focused tile; minimize and a refused command do not", () => {

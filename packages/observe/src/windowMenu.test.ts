@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { LAYOUT_LOGIC_JS, type Layout, type LayoutKitApi } from "./layout.ts";
+import { UI_CLOSE_SCOPES } from "./uiCommand.ts";
 import { WINDOW_MENU_JS, type WindowMenuKitApi } from "./windowMenu.ts";
 
 const load = `(() => { ${LAYOUT_LOGIC_JS}; ${WINDOW_MENU_JS}; return { LayoutKit, WindowMenuKit }; })()`;
@@ -244,4 +245,25 @@ test("reason texts: first, last, only, none maximized, minimized, narrow, unknow
   assert.equal(W.reason(f, "window.close", "nope"), "that window is not open.");
   assert.equal(W.reason(f, "window.maximize", "t2", { narrow: true }), "narrow screens show one window at a time. Make the window wider than 640px.");
   assert.equal(W.reason(f, "window.close", "t2", { narrow: true }), "", "close stays enabled in narrow mode");
+});
+
+test("parity: every ui close scope maps to a COMMANDS id, every command is reachable from a ui command, an unknown scope maps to null", () => {
+  const ids: string[] = plain(W.COMMANDS);
+  const reached = new Set<string>();
+  for (const scope of UI_CLOSE_SCOPES) {
+    const id = W.fromUiCommand({ cmd: "close", scope });
+    assert.equal(id !== null && ids.includes(id), true, `scope ${scope} -> ${id}`);
+    if (id) reached.add(id);
+  }
+  for (const cmd of ["close", "maximize", "minimize", "restore"]) {
+    const id = W.fromUiCommand({ cmd });
+    assert.equal(id !== null && ids.includes(id), true, `cmd ${cmd} -> ${id}`);
+    if (id) reached.add(id);
+  }
+  assert.deepEqual(
+    ids.filter((c) => !reached.has(c)),
+    [],
+    "a command no ui verb can reach",
+  );
+  assert.equal(W.fromUiCommand({ cmd: "close", scope: "sideways" }), null, "negative control: a scope outside the map");
 });

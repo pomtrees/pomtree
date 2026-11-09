@@ -21,12 +21,21 @@ export const UI_PRESETS = ["single", "columns", "rows", "grid"] as const;
 export type UiPreset = (typeof UI_PRESETS)[number];
 export const isUiPreset = (v: unknown): v is UiPreset => typeof v === "string" && (UI_PRESETS as readonly string[]).includes(v);
 
+// Which windows `close` closes: absent = the named window; others/left/right are relative to the named window in the
+// launcher bar's order; all takes no window.
+export const UI_CLOSE_SCOPES = ["others", "left", "right", "all"] as const;
+export type UiCloseScope = (typeof UI_CLOSE_SCOPES)[number];
+
 export type UiDir = "left" | "right" | "up" | "down";
 export type UiCommand =
   | { cmd: "open"; view: string; agent?: string; report?: string }
   | { cmd: "focus"; view: string; agent?: string; report?: string }
   | { cmd: "focus"; dir: UiDir }
-  | { cmd: "close"; view: string; agent?: string; report?: string }
+  | { cmd: "close"; view: string; agent?: string; report?: string; scope?: UiCloseScope }
+  | { cmd: "close"; scope: "all" }
+  | { cmd: "maximize"; view: string; agent?: string; report?: string }
+  | { cmd: "minimize"; view: string; agent?: string; report?: string }
+  | { cmd: "restore"; view?: string; agent?: string; report?: string }
   | { cmd: "arrange"; preset: UiPreset }
   | { cmd: "reset" }
   | { cmd: "follow"; on: boolean; views?: string[]; of?: string };
@@ -41,7 +50,8 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
   const MAX_BODY = 2048;
   const MAX_ID = 256;
   const MAX_VIEWS = 4;
-  const CMDS = ["open", "focus", "close", "arrange", "reset", "follow"];
+  const CMDS = ["open", "focus", "close", "maximize", "minimize", "restore", "arrange", "reset", "follow"];
+  const SCOPES = ["others", "left", "right", "all"];
   const DIRS = ["left", "right", "up", "down"];
   const PRESETS = ["single", "columns", "rows", "grid"];
   const VIEW_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -88,6 +98,33 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
     if (s.params.agent !== undefined) out.agent = s.params.agent;
     if (s.params.report !== undefined) out.report = s.params.report;
     return { ok: true, command: out };
+  };
+
+  // close: a view window, or with scope others/left/right the windows around it, or scope all (no window named).
+  const closeCommand = (raw) => {
+    if (raw.scope === undefined) return viewCommand(raw);
+    if (SCOPES.indexOf(raw.scope) < 0) return err("close scope " + show(raw.scope) + " is not a scope; use one of " + SCOPES.join(", ") + " or omit it to close the named window");
+    if (raw.scope === "all") {
+      const extra = ["view", "agent", "report"].filter((k) => raw[k] !== undefined)[0];
+      if (extra) return err("close scope " + JSON.stringify("all") + " closes every window and takes no " + JSON.stringify(extra) + "; remove it (for example " + JSON.stringify({ cmd: "close", scope: "all" }) + ")");
+      const bad = unknownKey(raw, ["scope"]);
+      return bad ? err(bad) : { ok: true, command: { cmd: "close", scope: "all" } };
+    }
+    const rest = Object.assign({}, raw);
+    delete rest.scope;
+    const r = viewCommand(rest);
+    if (r.ok) r.command.scope = raw.scope;
+    return r;
+  };
+
+  // restore: like the other window commands, but the view is optional (no view un-maximizes).
+  const restoreCommand = (raw) => {
+    if (raw.view !== undefined) return viewCommand(raw);
+    const bad = unknownKey(raw, ["view", "agent", "report"]);
+    if (bad) return err(bad);
+    const extra = SUBJECT_KEYS.filter((k) => raw[k] !== undefined)[0];
+    if (extra) return err("restore with " + JSON.stringify(extra) + " needs " + JSON.stringify("view") + " too (for example " + JSON.stringify({ cmd: "restore", view: "terminal", agent: "<id>" }) + "); add the view or drop " + JSON.stringify(extra));
+    return { ok: true, command: { cmd: "restore" } };
   };
 
   const focusCommand = (raw) => {
@@ -137,7 +174,9 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
       const text = JSON.stringify(raw);
       if (text.length > MAX_BODY) return err("command is " + text.length + " characters, over the " + MAX_BODY + " limit; send a smaller command");
       if (CMDS.indexOf(raw.cmd) < 0) return err("cmd " + show(raw.cmd) + " is not a command; use one of " + CMDS.join(", "));
-      if (raw.cmd === "open" || raw.cmd === "close") return viewCommand(raw);
+      if (raw.cmd === "open" || raw.cmd === "maximize" || raw.cmd === "minimize") return viewCommand(raw);
+      if (raw.cmd === "close") return closeCommand(raw);
+      if (raw.cmd === "restore") return restoreCommand(raw);
       if (raw.cmd === "focus") return focusCommand(raw);
       if (raw.cmd === "arrange") return arrangeCommand(raw);
       if (raw.cmd === "follow") return followCommand(raw);

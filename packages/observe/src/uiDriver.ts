@@ -32,6 +32,17 @@ function createUiDriver(wm, cfg) {
     follow = { views, of: c.of };
   };
 
+  // The window-menu commands (every close, maximize, minimize, restore): WindowMenuKit maps the drive command to its
+  // command id, the window manager runs it (and shows its own notice when it cannot). No view = no leaf (close all, restore).
+  const windowOp = (c) => {
+    const command = WindowMenuKit.fromUiCommand(c);
+    if (!command) { say("Cannot " + c.cmd + ": the window menu has no such command. Reload the page and send it again."); return; }
+    if (c.view === undefined) { api.windowCommand(command, null); return; }
+    const leaf = api.leafOf(c.view, subjectParams(c));
+    if (leaf === null || leaf === undefined) { say("Cannot " + c.cmd + " " + label(c) + ": that window is not open."); return; }
+    api.windowCommand(command, leaf);
+  };
+
   const apply = (c) => {
     if (c.cmd === "open") {
       if (!known(c.view)) { say("View not available: " + c.view + ". Check the name with the views the launcher lists."); return; }
@@ -40,8 +51,8 @@ function createUiDriver(wm, cfg) {
       if (c.dir) {
         api.focusDirection(c.dir); // the window manager shows its own notice when it cannot move focus
       } else if (!api.focusSubject(c.view, subjectParams(c))) say("Cannot focus " + label(c) + ": that window is not open. Open it first.");
-    } else if (c.cmd === "close") {
-      if (!api.closeSubject(c.view, subjectParams(c))) say("Cannot close " + label(c) + ": that window is not open.");
+    } else if (c.cmd === "close" || c.cmd === "maximize" || c.cmd === "minimize" || c.cmd === "restore") {
+      windowOp(c);
     } else if (c.cmd === "arrange") {
       api.arrange(c.preset);
     } else if (c.cmd === "reset") {

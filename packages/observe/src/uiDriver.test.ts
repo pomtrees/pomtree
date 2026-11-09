@@ -16,6 +16,9 @@ interface Opts {
   focusSubject?: boolean;
   closeSubject?: boolean;
   focusDirection?: boolean;
+  noMenu?: boolean;
+  leafOf?: string | null;
+  windowCommand?: boolean;
   throwOn?: string;
   fetch?: (url: string, init: { signal?: unknown }) => Promise<{ status: number }>;
 }
@@ -50,6 +53,14 @@ function boot(o: Opts = {}) {
       return true;
     },
     resetLayout: () => void calls.push("reset"),
+    leafOf: (v: string, p: object) => {
+      calls.push("leafOf:" + j([v, p]));
+      return o.leafOf === undefined ? "l1" : o.leafOf;
+    },
+    windowCommand: (c: string, leaf: string | null) => {
+      calls.push("windowCommand:" + j([c, leaf]));
+      return o.windowCommand ?? true;
+    },
     dismiss: (key: string) => void calls.push(`dismiss:${key}`),
   };
   const sources: FakeES[] = [];
@@ -86,6 +97,12 @@ function boot(o: Opts = {}) {
   });
   runInContext(LAYOUT_LOGIC_JS, ctx);
   runInContext(UI_COMMAND_JS, ctx);
+  // The declared WindowMenuKit.fromUiCommand (S1 writes the real one): a scripted fake with the same signature.
+  runInContext(
+    'globalThis.WindowMenuKit = { fromUiCommand: function (c) { return c.cmd === "close" ? (c.scope ? "window.close-" + c.scope : "window.close") : "window." + c.cmd; } }; var WindowMenuKit = globalThis.WindowMenuKit;' +
+      (o.noMenu ? " WindowMenuKit.fromUiCommand = function () { return null; };" : ""),
+    ctx,
+  );
   runInContext(UI_DRIVER_JS, ctx);
   Object.assign(ctx, { wm: { api }, cfg: { path: UI_STREAM_PATH } });
   runInContext("createUiDriver(wm, cfg)", ctx);
@@ -121,7 +138,8 @@ test("each command routes to the right api call with the right arguments", () =>
     'open:["tree",null,null]',
     'focusSubject:["terminal",{"agent":"a1"}]',
     "focusDirection:left",
-    'closeSubject:["report",{"agent":"a1","report":"r1"}]',
+    'leafOf:["report",{"agent":"a1","report":"r1"}]',
+    'windowCommand:["window.close","l1"]',
     "arrange:grid",
     "reset",
   ]);
@@ -136,15 +154,89 @@ test("open of a view that is not registered shows a notice and makes no api call
 });
 
 test("focus and close of a window that is not open show a notice", () => {
-  const s = boot({ focusSubject: false, closeSubject: false, focusDirection: false });
+  const s = boot({ focusSubject: false, leafOf: null, focusDirection: false });
   s.cmd(1, { cmd: "focus", view: "terminal", agent: "a1" });
   s.cmd(2, { cmd: "close", view: "terminal", agent: "a1" });
   s.cmd(3, { cmd: "focus", dir: "up" });
   const c = s.take();
   assert.equal(c.filter((x) => x.startsWith("notify:")).length, 2, "the window manager owns the focus-direction notice");
   assert.match(c[1]!, /not open/);
-  assert.match(c[3]!, /not open/);
+  assert.equal(c[2], 'leafOf:["terminal",{"agent":"a1"}]');
+  assert.match(c[3]!, /Cannot close terminal for a1: that window is not open\./);
+  assert.equal(
+    c.some((x) => x.startsWith("windowCommand:")),
+    false,
+  );
   assert.equal(c[4], "focusDirection:up");
+});
+
+test("window commands map through WindowMenuKit and call api.leafOf then api.windowCommand", () => {
+  const s = boot();
+  s.cmd(1, { cmd: "close", view: "terminal", agent: "a1", scope: "others" });
+  s.cmd(2, { cmd: "close", view: "tree", scope: "left" });
+  s.cmd(3, { cmd: "close", view: "tree", scope: "right" });
+  s.cmd(4, { cmd: "maximize", view: "report", agent: "a1", report: "r1" });
+  s.cmd(5, { cmd: "minimize", view: "tree" });
+  s.cmd(6, { cmd: "restore", view: "terminal", agent: "a1" });
+  assert.deepEqual(s.take(), [
+    'leafOf:["terminal",{"agent":"a1"}]',
+    'windowCommand:["window.close-others","l1"]',
+    'leafOf:["tree",{}]',
+    'windowCommand:["window.close-left","l1"]',
+    'leafOf:["tree",{}]',
+    'windowCommand:["window.close-right","l1"]',
+    'leafOf:["report",{"agent":"a1","report":"r1"}]',
+    'windowCommand:["window.maximize","l1"]',
+    'leafOf:["tree",{}]',
+    'windowCommand:["window.minimize","l1"]',
+    'leafOf:["terminal",{"agent":"a1"}]',
+    'windowCommand:["window.restore","l1"]',
+  ]);
+});
+
+test("restore without a view and close all pass a null leaf and never look one up", () => {
+  const s = boot();
+  s.cmd(1, { cmd: "restore" });
+  s.cmd(2, { cmd: "close", scope: "all" });
+  assert.deepEqual(s.take(), ['windowCommand:["window.restore",null]', 'windowCommand:["window.close-all",null]']);
+});
+
+test("plain close goes through leafOf and window.close, never api.closeSubject", () => {
+  const s = boot();
+  s.cmd(1, { cmd: "close", view: "tree" });
+  assert.deepEqual(s.take(), ['leafOf:["tree",{}]', 'windowCommand:["window.close","l1"]']);
+});
+
+test("a window command on a window that is not open says so and does not run the command", () => {
+  const s = boot({ leafOf: null });
+  s.cmd(1, { cmd: "maximize", view: "terminal", agent: "a1" });
+  s.cmd(2, { cmd: "close", view: "tree", scope: "others" });
+  s.cmd(3, { cmd: "restore", view: "tree" });
+  const c = s.take();
+  assert.equal(
+    c.some((x) => x.startsWith("windowCommand:")),
+    false,
+  );
+  assert.match(c[1]!, /^notify:[^:]+:Cannot maximize terminal for a1: that window is not open\./);
+  assert.match(c[3]!, /Cannot close tree: that window is not open\./);
+  assert.match(c[5]!, /Cannot restore tree: that window is not open\./);
+});
+
+test("a refused window command adds no driver notice (the window manager owns it)", () => {
+  const s = boot({ windowCommand: false });
+  s.cmd(1, { cmd: "minimize", view: "tree" });
+  assert.equal(
+    s.take().some((x) => x.startsWith("notify:")),
+    false,
+  );
+});
+
+test("a command the window menu cannot map becomes a notice with an action and no api call", () => {
+  const s = boot({ noMenu: true });
+  s.cmd(1, { cmd: "restore" });
+  const c = s.take();
+  assert.equal(c.length, 1);
+  assert.match(c[0]!, /^notify:[^:]+:Cannot restore: the window menu has no such command\. Reload/);
 });
 
 test("a stale or duplicate seq is ignored, a newer one applies", () => {

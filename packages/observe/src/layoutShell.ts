@@ -660,12 +660,6 @@ function createWindowManager(tabs, storageKey) {
       focusLeaf(at);
       return true;
     },
-    closeSubject: (view, params) => {
-      const at = LK.find(layout(), view, subjectArgs(view, params), multiOf(view));
-      if (!at) return false;
-      commit(LK.close(layout(), at));
-      return true;
-    },
     // Any leaf of the layout, minimized ones included; params are normalised like focusSubject.
     leafOf: (view, params) => LK.find(layout(), view, subjectArgs(view, params), multiOf(view)),
     windowCommand,
