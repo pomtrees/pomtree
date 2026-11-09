@@ -4,12 +4,12 @@ import { EXIT, run } from "./cli.ts";
 import { buildUiCommand, formatUiResult } from "./uiCmd.ts";
 import { harness } from "./test-kit.ts";
 
-const ok = (args: string[], flags: Record<string, string | undefined> = {}) => {
+const ok = (args: string[], flags: Record<string, string | boolean | undefined> = {}) => {
   const r = buildUiCommand(args, flags);
   assert.equal(r.ok, true, JSON.stringify(r));
   return r.ok ? JSON.stringify(r.command) : "";
 };
-const bad = (args: string[], flags: Record<string, string | undefined> = {}) => {
+const bad = (args: string[], flags: Record<string, string | boolean | undefined> = {}) => {
   const r = buildUiCommand(args, flags);
   assert.equal(r.ok, false, JSON.stringify(r));
   return r.ok ? "" : r.error;
@@ -23,6 +23,39 @@ test("open/focus/close build the exact command and omit absent optional fields",
   assert.equal(ok(["focus", "report", "a1", "r1"]), '{"cmd":"focus","view":"report","agent":"a1","report":"r1"}');
   assert.equal(ok(["close", "terminal", "a1"]), '{"cmd":"close","view":"terminal","agent":"a1"}');
   assert.equal(ok(["close", "tree"]), '{"cmd":"close","view":"tree"}');
+});
+
+test("close scopes, maximize, minimize and restore build the exact command", () => {
+  assert.equal(ok(["close", "terminal", "a1"], { others: true }), '{"cmd":"close","view":"terminal","agent":"a1","scope":"others"}');
+  assert.equal(ok(["close", "tree"], { left: true }), '{"cmd":"close","view":"tree","scope":"left"}');
+  assert.equal(ok(["close", "report", "a1", "r1"], { right: true }), '{"cmd":"close","view":"report","agent":"a1","report":"r1","scope":"right"}');
+  assert.equal(ok(["close"], { all: true }), '{"cmd":"close","scope":"all"}');
+  assert.equal(ok(["maximize", "terminal", "a1"]), '{"cmd":"maximize","view":"terminal","agent":"a1"}');
+  assert.equal(ok(["minimize", "tree"]), '{"cmd":"minimize","view":"tree"}');
+  assert.equal(ok(["restore"]), '{"cmd":"restore"}');
+  assert.equal(ok(["restore", "terminal", "a1"]), '{"cmd":"restore","view":"terminal","agent":"a1"}');
+  assert.equal(ok(["restore", "report", "a1", "r1"]), '{"cmd":"restore","view":"report","agent":"a1","report":"r1"}');
+  assert.equal(ok(["close", "tree"], { others: false }), '{"cmd":"close","view":"tree"}');
+});
+
+test("usage error: scope flags are exclusive, close-only and --all takes no view", () => {
+  assert.match(
+    bad(["close", "terminal"], { others: true, left: true }),
+    /one of --others, --left, --right or --all, not --others and --left.*for example: pomtree ui close terminal a1 --others/,
+  );
+  assert.match(bad(["close", "terminal"], { left: true, right: true, all: true }), /not --left and --right and --all/);
+  assert.match(bad(["maximize", "terminal"], { others: true }), /--others only applies to ui close.*for example/);
+  assert.match(bad(["restore"], { all: true }), /--all only applies to ui close/);
+  assert.match(bad(["open", "tree"], { right: true }), /--right only applies to ui close/);
+  assert.match(bad(["close", "terminal"], { all: true }), /--all closes every window and takes no view, got "terminal".*for example: pomtree ui close --all/);
+});
+
+test("usage error: maximize and minimize need a view; restore and close name extra arguments", () => {
+  assert.match(bad(["maximize"]), /maximize needs a view.*for example: pomtree ui maximize terminal a1/);
+  assert.match(bad(["minimize"]), /minimize needs a view.*for example: pomtree ui minimize terminal a1/);
+  assert.match(bad(["close"], { left: true }), /close needs a view.*for example/);
+  assert.match(bad(["restore", "report", "a1", "r1", "x"]), /unexpected extra argument "x".*for example: pomtree ui restore/);
+  assert.match(bad(["maximize", "terminal", "a1", "r1", "x"]), /unexpected extra argument "x"/);
 });
 
 test("focus --dir builds a direction command", () => {
@@ -42,7 +75,7 @@ test("arrange, reset and follow build the exact command", () => {
 test("usage error: unknown or missing verb names the verbs and gives an example", () => {
   for (const args of [[], ["bogus"]]) {
     const e = bad(args);
-    assert.match(e, /open\|focus\|close\|arrange\|reset\|follow/);
+    assert.match(e, /open\|focus\|close\|maximize\|minimize\|restore\|arrange\|reset\|follow/);
     assert.match(e, /for example: pomtree ui open terminal a1/);
   }
 });
@@ -151,4 +184,19 @@ test("pomtree ui: a daemon 400 shows the daemon's error and exits 2", async () =
   assert.equal(await run(["ui", "open", "nope"], h.io), EXIT.usage);
   assert.match(h.err.join("\n"), /unknown view nope; use one of tree, terminal/);
   assert.deepEqual(h.out, []);
+});
+
+test("pomtree ui close --all, --left and restore post the exact bodies; two scope flags exit 2 without a call", async () => {
+  const h = harness(() => ({ status: 200, body: { seq: 3, tabs: 1 } }));
+  assert.equal(await run(["ui", "close", "--all", "--key", "k1"], h.io), EXIT.ok);
+  assert.equal(await run(["ui", "close", "terminal", "a1", "--left", "--key", "k2"], h.io), EXIT.ok);
+  assert.equal(await run(["ui", "restore", "--key", "k3"], h.io), EXIT.ok);
+  assert.deepEqual(
+    h.calls.map((c) => JSON.stringify((c.body as { command: unknown }).command)),
+    ['{"cmd":"close","scope":"all"}', '{"cmd":"close","view":"terminal","agent":"a1","scope":"left"}', '{"cmd":"restore"}'],
+  );
+  const n = h.calls.length;
+  assert.equal(await run(["ui", "close", "terminal", "--others", "--right"], h.io), EXIT.usage);
+  assert.equal(h.calls.length, n);
+  assert.match(h.err.join("\n"), /not --others and --right/);
 });

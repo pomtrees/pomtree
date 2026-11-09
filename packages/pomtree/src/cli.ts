@@ -166,11 +166,14 @@ const USAGE = `usage: pomtree [--json] <command>
   peers                                                     list the agents this agent can address
   send ID BODY [--interrupt] [--key K]                      send a message to a peer's mailbox; the operator's --interrupt stops the agent's
                                                             current work and delivers it now (agents may not interrupt)
-  ui open|focus|close VIEW [AGENT [REPORT]] | ui focus --dir left|right|up|down | ui arrange single|columns|rows|grid | ui reset |
+  ui open|focus|close|maximize|minimize VIEW [AGENT [REPORT]] | ui close VIEW [AGENT [REPORT]] --others|--left|--right | ui close --all |
+  ui restore [VIEW [AGENT [REPORT]]] | ui focus --dir left|right|up|down | ui arrange single|columns|rows|grid | ui reset |
   ui follow on|off [--views terminal,browser] [--of AGENT] [--key K]
                                                             drive the operator web UI from a session (operator only; agents cannot use it).
-                                                            VIEW is e.g. terminal, browser, report, tree; follow opens a window when a child
-                                                            spawns (--views 1-4 views, default terminal; --of limits it to children of AGENT).
+                                                            VIEW is e.g. terminal, browser, report, tree; --others/--left/--right close the windows
+                                                            around VIEW in the bar's order, --all closes every window; minimize keeps the window listed
+                                                            in the bar; restore un-maximizes, or with VIEW brings that window back.
+                                                            follow opens a window when a child spawns (--views 1-4 views, default terminal; --of limits it to children of AGENT).
                                                             It reaches only tabs connected to this daemon: exit 0 sent to at least one tab; exit 3
                                                             (not found) recorded but no tab is connected (nothing applied and a later tab will not replay it:
                                                             open /ui and run it again); exit 2 usage error or rejected by the daemon; exit 1 unexpected reply
@@ -883,7 +886,15 @@ export async function run(argv: string[], io: Io): Promise<number> {
         throw new Usage(sub ? `unknown escalations command: ${sub}` : "escalations needs a subcommand (ls|answer)");
       }
       case "ui": {
-        const built = buildUiCommand(rest, { views: flag("views"), of: flag("of"), dir: flag("dir") });
+        const built = buildUiCommand(rest, {
+          views: flag("views"),
+          of: flag("of"),
+          dir: flag("dir"),
+          others: has("others"),
+          left: has("left"),
+          right: has("right"),
+          all: has("all"),
+        });
         if (!built.ok) throw new Usage(built.error);
         const reply = (await api("POST", "/v1/ui/command", { idempotencyKey: idemKey(), command: built.command }, false, "ui")) as {
           seq: number;

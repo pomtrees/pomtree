@@ -6,6 +6,11 @@ export interface UiFlags {
   views?: string;
   of?: string;
   dir?: string;
+  // Boolean scope flags of `ui close` (--others, --left, --right, --all).
+  others?: boolean;
+  left?: boolean;
+  right?: boolean;
+  all?: boolean;
 }
 export interface UiExit {
   error: number;
@@ -20,11 +25,15 @@ export interface UiOutcome {
 
 const PRESETS = ["single", "columns", "rows", "grid"];
 const DIRS = ["left", "right", "up", "down"];
-const VERBS = "open|focus|close|arrange|reset|follow";
+const VERBS = "open|focus|close|maximize|minimize|restore|arrange|reset|follow";
+const SCOPE_FLAGS = ["others", "left", "right", "all"] as const;
 const EXAMPLE: Record<string, string> = {
   open: "pomtree ui open terminal a1",
   focus: "pomtree ui focus terminal a1",
   close: "pomtree ui close terminal a1",
+  maximize: "pomtree ui maximize terminal a1",
+  minimize: "pomtree ui minimize terminal a1",
+  restore: "pomtree ui restore terminal a1",
   arrange: "pomtree ui arrange grid",
   reset: "pomtree ui reset",
   follow: "pomtree ui follow on --views terminal,browser --of a1",
@@ -41,18 +50,32 @@ export function buildUiCommand(args: string[], flags: UiFlags): UiBuild {
   if (flags.views !== undefined && verb !== "follow") return fail(`--views only applies to ui follow${eg(EXAMPLE.follow)}`);
   if (flags.of !== undefined && verb !== "follow") return fail(`--of only applies to ui follow${eg(EXAMPLE.follow)}`);
   if (flags.dir !== undefined && verb !== "focus") return fail(`--dir only applies to ui focus${eg("pomtree ui focus --dir left")}`);
+  const scopes = SCOPE_FLAGS.filter((f) => flags[f]);
+  if (scopes.length > 0 && verb !== "close") return fail(`--${scopes[0]} only applies to ui close${eg("pomtree ui close terminal a1 --others")}`);
+  if (scopes.length > 1)
+    return fail(
+      `ui close takes one of --others, --left, --right or --all, not ${scopes.map((f) => `--${f}`).join(" and ")}${eg("pomtree ui close terminal a1 --others")}`,
+    );
   const extra = (n: number): UiBuild | null => (rest.length > n ? fail(`unexpected extra argument "${rest[n]}"${eg()}`) : null);
 
   switch (verb) {
     case "open":
     case "focus":
-    case "close": {
+    case "close":
+    case "maximize":
+    case "minimize":
+    case "restore": {
+      if (verb === "close" && flags.all) {
+        if (rest.length > 0) return fail(`ui close --all closes every window and takes no view, got "${rest[0]}"${eg("pomtree ui close --all")}`);
+        return { ok: true, command: { cmd: "close", scope: "all" } };
+      }
       if (verb === "focus" && flags.dir !== undefined) {
         if (rest.length > 0) return fail(`ui focus takes either a view or --dir, not both${eg("pomtree ui focus --dir left")}`);
         if (!DIRS.includes(flags.dir)) return fail(`--dir "${flags.dir}" is not a direction: use left, right, up or down${eg("pomtree ui focus --dir left")}`);
         return { ok: true, command: { cmd: "focus", dir: flags.dir } };
       }
       const [view, agent, report] = rest;
+      if (view === undefined && verb === "restore") return { ok: true, command: { cmd: "restore" } };
       if (view === undefined) {
         return fail(
           `${verb} needs a view${verb === "focus" ? " or --dir" : ""} (e.g. terminal, browser, report, tree)${eg(verb === "focus" ? "pomtree ui focus --dir left" : EXAMPLE[verb])}`,
@@ -60,7 +83,11 @@ export function buildUiCommand(args: string[], flags: UiFlags): UiBuild {
       }
       const e = extra(3);
       if (e) return fail(`unexpected extra argument "${rest[3]}"${eg(verb === "open" ? "pomtree ui open report a1 r1" : EXAMPLE[verb])}`);
-      return { ok: true, command: { cmd: verb, view, ...(agent !== undefined && { agent }), ...(report !== undefined && { report }) } };
+      const scope = scopes[0];
+      return {
+        ok: true,
+        command: { cmd: verb, view, ...(agent !== undefined && { agent }), ...(report !== undefined && { report }), ...(scope && { scope }) },
+      };
     }
     case "arrange": {
       const [preset] = rest;

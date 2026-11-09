@@ -65,6 +65,8 @@ function boot(naive = false) {
     focusDirection: (d: string) => rec(`focusDirection:${d}`),
     arrange: (p: string) => rec(`arrange:${p}`),
     resetLayout: () => void calls.push("reset"),
+    leafOf: (v: string, p: object) => (calls.push(`leafOf:${j([v, p])}`), "l1"),
+    windowCommand: (c: string, leaf: string | null) => rec(`windowCommand:${j([c, leaf])}`),
   };
   const handlers: ((ev: { data: string }) => void)[] = [];
   const urls: string[] = [];
@@ -80,6 +82,11 @@ function boot(naive = false) {
   runInContext(LAYOUT_LOGIC_JS, ctx);
   runInContext(UI_COMMAND_JS, ctx);
   if (naive) runInContext("UiCommandKit.parseFrame = function (text) { return JSON.parse(text); };", ctx);
+  // The declared WindowMenuKit.fromUiCommand, scripted: the real kit is observe's windowMenu.ts (covered by its own tests).
+  runInContext(
+    'var WindowMenuKit = { fromUiCommand: function (c) { return "window." + (c.cmd === "close" ? "close" + (c.scope ? "-" + c.scope : "") : c.cmd); } };',
+    ctx,
+  );
   runInContext(UI_DRIVER_JS, ctx);
   Object.assign(ctx, { wm: { api }, cfg: { path: UI_STREAM_PATH } });
   runInContext("createUiDriver(wm, cfg)", ctx);
@@ -146,8 +153,37 @@ test("round trip: every ui verb goes CLI -> daemon -> journal -> stream -> real 
       [["ui", "focus", "--dir", "left"], ["focusDirection:left"]],
       [["ui", "arrange", "grid"], ["arrange:grid"]],
       [["ui", "follow", "on", "--views", "terminal", "--of", rootId], []],
-      [["ui", "close", "terminal", "a1"], ['closeSubject:["terminal",{"agent":"a1"}]']],
+      [
+        ["ui", "close", "terminal", "a1"],
+        ['leafOf:["terminal",{"agent":"a1"}]', 'windowCommand:["window.close","l1"]'],
+      ],
       [["ui", "reset"], ["reset"]],
+      [
+        ["ui", "close", "terminal", "a1", "--others"],
+        ['leafOf:["terminal",{"agent":"a1"}]', 'windowCommand:["window.close-others","l1"]'],
+      ],
+      [
+        ["ui", "close", "tree", "--left"],
+        ['leafOf:["tree",{}]', 'windowCommand:["window.close-left","l1"]'],
+      ],
+      [
+        ["ui", "close", "tree", "--right"],
+        ['leafOf:["tree",{}]', 'windowCommand:["window.close-right","l1"]'],
+      ],
+      [["ui", "close", "--all"], ['windowCommand:["window.close-all",null]']],
+      [
+        ["ui", "maximize", "terminal", "a1"],
+        ['leafOf:["terminal",{"agent":"a1"}]', 'windowCommand:["window.maximize","l1"]'],
+      ],
+      [
+        ["ui", "minimize", "terminal", "a1"],
+        ['leafOf:["terminal",{"agent":"a1"}]', 'windowCommand:["window.minimize","l1"]'],
+      ],
+      [
+        ["ui", "restore", "terminal", "a1"],
+        ['leafOf:["terminal",{"agent":"a1"}]', 'windowCommand:["window.restore","l1"]'],
+      ],
+      [["ui", "restore"], ['windowCommand:["window.restore",null]']],
     ];
     let n = 0;
     for (const [argv, want] of verbs) {
@@ -164,6 +200,14 @@ test("round trip: every ui verb goes CLI -> daemon -> journal -> stream -> real 
       `{"cmd":"follow","on":true,"views":["terminal"],"of":"${rootId}"}`,
       '{"cmd":"close","view":"terminal","agent":"a1"}',
       '{"cmd":"reset"}',
+      '{"cmd":"close","view":"terminal","agent":"a1","scope":"others"}',
+      '{"cmd":"close","view":"tree","scope":"left"}',
+      '{"cmd":"close","view":"tree","scope":"right"}',
+      '{"cmd":"close","scope":"all"}',
+      '{"cmd":"maximize","view":"terminal","agent":"a1"}',
+      '{"cmd":"minimize","view":"terminal","agent":"a1"}',
+      '{"cmd":"restore","view":"terminal","agent":"a1"}',
+      '{"cmd":"restore"}',
     ]);
     assert.equal((await uiRows(t))[0]!.payload.kind, "ext.observe.ui_command");
     c.s.close();
