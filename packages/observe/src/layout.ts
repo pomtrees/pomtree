@@ -19,6 +19,8 @@ export interface LeafNode {
   id: string;
   view: ViewId;
   params: LeafParams;
+  // Minimized: kept in the tree and listed in the launcher bar, but not tiled. The key is absent when not hidden.
+  hidden?: true;
 }
 export interface SplitNode {
   kind: "split";
@@ -35,12 +37,20 @@ export interface Layout {
   focus: string;
   // Null for an empty layout (every window closed); an empty layout is valid, stored and parsed like any other.
   root: LayoutNode | null;
+  // The id of the maximized leaf (it fills the whole tiling area; the tree underneath is untouched). The key is absent
+  // when nothing is maximized; the named leaf exists and is not hidden.
+  max?: string;
 }
 export interface Rect {
   x: number;
   y: number;
   w: number;
   h: number;
+}
+export interface SplitRect extends Rect {
+  id: string;
+  dir: "row" | "col";
+  ratio: number;
 }
 export type Edge = "left" | "right" | "top" | "bottom" | "center";
 export type FocusDir = "left" | "right" | "up" | "down";
@@ -59,8 +69,25 @@ export interface LayoutKitApi {
   move(layout: Layout, fromLeafId: string, toLeafId: string, edge: Edge): Layout;
   focus(layout: Layout, leafId: string): Layout;
   focusDir(layout: Layout, dir: FocusDir): Layout;
+  // Rects of the shown leaves only: the maximized leaf alone fills the unit square; otherwise hidden subtrees collapse.
   rects(layout: Layout): Record<string, Rect>;
+  // The splits with two shown subtrees (none while a leaf is maximized), with their geometry on the collapsed tiling.
+  splits(layout: Layout): SplitRect[];
+  // Every leaf in reading order, hidden ones included (the launcher bar's order).
   leaves(layout: Layout): LeafNode[];
+  visibleLeaves(layout: Layout): LeafNode[];
+  isHidden(layout: Layout, leafId: string): boolean;
+  // The maximized leaf id, "" when none.
+  maximized(layout: Layout): string;
+  closeOthers(layout: Layout, leafId: string): Layout;
+  // Left and right follow leaves() order.
+  closeLeft(layout: Layout, leafId: string): Layout;
+  closeRight(layout: Layout, leafId: string): Layout;
+  closeAll(layout: Layout): Layout;
+  maximize(layout: Layout, leafId: string): Layout;
+  // No id: clear the maximized state. A hidden id is unhidden and focused; the maximized id is un-maximized.
+  restore(layout: Layout, leafId?: string | null): Layout;
+  minimize(layout: Layout, leafId: string): Layout;
   setView(layout: Layout, leafId: string, view: ViewId, params?: LeafParams): Layout;
   open(layout: Layout, view: ViewId, params?: LeafParams, multi?: boolean): Layout;
   find(layout: Layout, view: ViewId, params?: LeafParams, multi?: boolean): string | null;
@@ -102,7 +129,23 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
   const agentOf = (p) => (p && typeof p.agent === "string" ? p.agent : null);
   const reportOf = (p) => (p && typeof p.report === "string" ? p.report : null);
   const subjectKey = (p) => JSON.stringify([agentOf(p), reportOf(p)]);
-  const mkLeaf = (id, view, params) => ({ kind: "leaf", id, view, params: cleanParams(params) });
+  const mkLeaf = (id, view, params, hidden) => {
+    const lf = { kind: "leaf", id, view, params: cleanParams(params) };
+    if (hidden === true) lf.hidden = true;
+    return lf;
+  };
+  // The one place a layout is rebuilt: o overrides next, focus, root or max; max is carried and omitted when unset.
+  const mk = (layout, o) => {
+    const out = {
+      version: VERSION,
+      next: "next" in o ? o.next : layout.next,
+      focus: "focus" in o ? o.focus : layout.focus,
+      root: "root" in o ? o.root : layout.root,
+    };
+    const m = "max" in o ? o.max : layout.max;
+    if (m) out.max = m;
+    return out;
+  };
   const mkSplit = (id, dir, ratio, a, b) => ({ kind: "split", id, dir, ratio, children: [a, b] });
 
   // The one source of the leaf rules, shared by parse and every constructor: a problem description, or null when the
@@ -128,6 +171,34 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     return out;
   };
   const leaves = (layout) => (layout.root ? leavesOf(layout.root, []) : []);
+  const visibleLeaves = (layout) => leaves(layout).filter((l) => l.hidden !== true);
+  const leafById = (layout, id) => {
+    const p = layout.root ? pathTo(layout.root, id, []) : null;
+    return p && p[p.length - 1].kind === "leaf" ? p[p.length - 1] : null;
+  };
+  const isHidden = (layout, leafId) => {
+    const lf = leafById(layout, leafId);
+    return !!lf && lf.hidden === true;
+  };
+  const maximized = (layout) => (layout.max ? layout.max : "");
+  const shown = (n) => (n.kind === "leaf" ? n.hidden !== true : shown(n.children[0]) || shown(n.children[1]));
+  // The first visible leaf of root in reading order, "" when none.
+  const firstVisible = (root) => {
+    const v = root ? leavesOf(root, []).filter((l) => l.hidden !== true) : [];
+    return v.length ? v[0].id : "";
+  };
+  // Focus after leafId leaves the tiling (closed or hidden): the visible edge leaf of its sibling subtree, as close
+  // always did, else the first visible leaf in reading order, "" when none is left.
+  const refocus = (layout, leafId, root) => {
+    const path = leafPath(layout, leafId);
+    if (path && path.length >= 2) {
+      const parent = path[path.length - 2];
+      const idx = parent.children[0].id === leafId ? 0 : 1;
+      const vis = leavesOf(parent.children[1 - idx], []).filter((l) => l.hidden !== true);
+      if (vis.length) return (idx === 0 ? vis[0] : vis[vis.length - 1]).id;
+    }
+    return firstVisible(root);
+  };
 
   // Nodes from the root down to the node with this id, or null.
   const pathTo = (n, id, acc) => {
@@ -172,21 +243,70 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     const nl = mkLeaf("t" + layout.next, view, params);
     const sid = "s" + (layout.next + 1);
     const root = replace(layout.root, leafId, (old) => (place === "before" ? mkSplit(sid, dir, 0.5, nl, old) : mkSplit(sid, dir, 0.5, old, nl)));
-    return { version: VERSION, next: layout.next + 2, focus: nl.id, root };
+    return mk(layout, { next: layout.next + 2, focus: nl.id, root, max: undefined });
   };
 
   // Closing the focused leaf moves focus to the sibling subtree's leaf nearest to where it was (first leaf if it
   // was the first child, else last); closing any other leaf keeps focus. Closing the only leaf leaves an empty layout.
   const close = (layout, leafId) => {
-    if (layout.root && layout.root.kind === "leaf" && layout.root.id === leafId) return { version: VERSION, next: layout.next, focus: "", root: null };
+    if (layout.root && layout.root.kind === "leaf" && layout.root.id === leafId) return mk(layout, { focus: "", root: null, max: undefined });
     const d = detach(layout, leafId);
     if (!d) return layout;
+    const focus = layout.focus === leafId ? refocus(layout, leafId, d.root) : layout.focus;
+    return mk(layout, { focus, root: d.root, max: layout.max === leafId ? undefined : layout.max });
+  };
+
+  // Drops every leaf in the set, keeping the ids and ratios of what stays; a split left with one child is replaced by it.
+  const prune = (n, gone) => {
+    if (n.kind === "leaf") return gone[n.id] ? null : n;
+    const a = prune(n.children[0], gone);
+    const b = prune(n.children[1], gone);
+    if (a === n.children[0] && b === n.children[1]) return n;
+    return a && b ? mkSplit(n.id, n.dir, n.ratio, a, b) : a || b;
+  };
+  // Closes the leaves picked by want(index of the kept leaf, index of the candidate); a no-op when none is picked.
+  // A closed focus moves to the kept leaf (or, when that one is hidden, the first visible survivor); a surviving max
+  // is the focus.
+  const closeWhere = (layout, leafId, want) => {
+    const all = leaves(layout);
+    const at = all.findIndex((l) => l.id === leafId);
+    if (at < 0) return layout;
+    const gone = {};
+    let n = 0;
+    all.forEach((l, i) => { if (i !== at && want(at, i)) { gone[l.id] = true; n++; } });
+    if (!n) return layout;
+    const root = prune(layout.root, gone);
     let focus = layout.focus;
-    if (focus === leafId) {
-      const ls = leavesOf(d.sibling, []);
-      focus = (d.idx === 0 ? ls[0] : ls[ls.length - 1]).id;
-    }
-    return { version: VERSION, next: layout.next, focus, root: d.root };
+    if (gone[focus]) focus = all[at].hidden === true ? firstVisible(root) : leafId;
+    const max = gone[layout.max] ? undefined : layout.max;
+    return mk(layout, { focus: max || focus, root, max });
+  };
+  const closeOthers = (layout, leafId) => closeWhere(layout, leafId, () => true);
+  const closeLeft = (layout, leafId) => closeWhere(layout, leafId, (at, i) => i < at);
+  const closeRight = (layout, leafId) => closeWhere(layout, leafId, (at, i) => i > at);
+  const closeAll = (layout) => (layout.root ? mk(layout, { focus: "", root: null, max: undefined }) : layout);
+
+  // Maximize also unhides the leaf and focuses it; restore and minimize are its inverses (see the API comments).
+  const maximize = (layout, leafId) => {
+    const lf = leafById(layout, leafId);
+    if (!lf) return layout;
+    if (layout.max === leafId && layout.focus === leafId) return layout;
+    const root = lf.hidden === true ? replace(layout.root, leafId, () => mkLeaf(lf.id, lf.view, lf.params)) : layout.root;
+    return mk(layout, { focus: leafId, root, max: leafId });
+  };
+  const restore = (layout, leafId) => {
+    if (leafId === undefined || leafId === null || leafId === "") return layout.max ? mk(layout, { max: undefined }) : layout;
+    const lf = leafById(layout, leafId);
+    if (!lf) return layout;
+    if (lf.hidden === true) return focus(layout, leafId);
+    return layout.max === leafId ? mk(layout, { max: undefined }) : layout;
+  };
+  const minimize = (layout, leafId) => {
+    const lf = leafById(layout, leafId);
+    if (!lf || lf.hidden === true) return layout;
+    const root = replace(layout.root, leafId, () => mkLeaf(lf.id, lf.view, lf.params, true));
+    const focusId = layout.focus === leafId ? refocus(layout, leafId, root) : layout.focus;
+    return mk(layout, { focus: focusId, root, max: layout.max === leafId ? undefined : layout.max });
   };
 
   const resize = (layout, splitId, ratio, minRatio) => {
@@ -198,7 +318,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     const node = path && path[path.length - 1];
     if (!node || node.kind !== "split" || node.ratio === r) return layout;
     const root = replace(layout.root, splitId, (s) => mkSplit(s.id, s.dir, r, s.children[0], s.children[1]));
-    return { version: VERSION, next: layout.next, focus: layout.focus, root };
+    return mk(layout, { root });
   };
 
   const EDGES = { left: ["row", true], right: ["row", false], top: ["col", true], bottom: ["col", false] };
@@ -206,17 +326,17 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
   // Center swaps the two leaves' view and params (focus follows the dragged content to the target tile). An edge
   // detaches "from" and splits "to" there; the moved leaf keeps its id and gets focus.
   const move = (layout, fromId, toId, edge) => {
-    if (fromId === toId) return layout;
+    if (fromId === toId || layout.max) return layout;
     const a = leafPath(layout, fromId);
     const b = leafPath(layout, toId);
     if (!a || !b) return layout;
     const from = a[a.length - 1];
     const to = b[b.length - 1];
-    if (badLeaf(from) || badLeaf(to)) return layout;
+    if (from.hidden === true || to.hidden === true || badLeaf(from) || badLeaf(to)) return layout;
     if (edge === "center") {
       let root = replace(layout.root, fromId, () => mkLeaf(fromId, to.view, to.params));
       root = replace(root, toId, () => mkLeaf(toId, from.view, from.params));
-      return { version: VERSION, next: layout.next, focus: toId, root };
+      return mk(layout, { focus: toId, root });
     }
     const e = EDGES[edge];
     if (!e || layout.next + 1 > MAX_NEXT) return layout;
@@ -225,15 +345,31 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     const sid = "s" + layout.next;
     const root = replace(d.root, toId, (old) => (e[1] ? mkSplit(sid, e[0], 0.5, from, old) : mkSplit(sid, e[0], 0.5, old, from)));
     if (maxDepth(root) > MAX_DEPTH) return layout;
-    return { version: VERSION, next: layout.next + 1, focus: fromId, root };
+    return mk(layout, { next: layout.next + 1, focus: fromId, root });
   };
 
-  const focus = (layout, leafId) => (layout.focus === leafId || !leafPath(layout, leafId) ? layout : { version: VERSION, next: layout.next, focus: leafId, root: layout.root });
+  // Focusing a hidden leaf unhides it; while a leaf is maximized the maximized state follows focus (bar entries act
+  // as tabs).
+  const focus = (layout, leafId) => {
+    const lf = leafById(layout, leafId);
+    if (!lf) return layout;
+    const hidden = lf.hidden === true;
+    if (layout.focus === leafId && !hidden && (!layout.max || layout.max === leafId)) return layout;
+    const root = hidden ? replace(layout.root, leafId, () => mkLeaf(lf.id, lf.view, lf.params)) : layout.root;
+    return mk(layout, { focus: leafId, root, max: layout.max ? leafId : undefined });
+  };
 
-  const rects = (layout) => {
-    const out = {};
+  // Walks the shown tiling: a split with one fully hidden child gives the other child its whole area.
+  const walk = (layout, onLeaf, onSplit) => {
     const go = (n, x, y, w, h) => {
-      if (n.kind === "leaf") { out[n.id] = { x, y, w, h }; return; }
+      if (n.kind === "leaf") { if (n.hidden !== true) onLeaf(n, x, y, w, h); return; }
+      const sa = shown(n.children[0]);
+      const sb = shown(n.children[1]);
+      if (!sa || !sb) {
+        if (sa || sb) go(n.children[sa ? 0 : 1], x, y, w, h);
+        return;
+      }
+      if (onSplit) onSplit(n, x, y, w, h);
       if (n.dir === "row") {
         const w1 = w * n.ratio;
         go(n.children[0], x, y, w1, h);
@@ -245,6 +381,17 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
       }
     };
     if (layout.root) go(layout.root, 0, 0, 1, 1);
+  };
+  const rects = (layout) => {
+    const out = {};
+    if (layout.max) { out[layout.max] = { x: 0, y: 0, w: 1, h: 1 }; return out; }
+    walk(layout, (n, x, y, w, h) => { out[n.id] = { x, y, w, h }; }, null);
+    return out;
+  };
+  const splits = (layout) => {
+    const out = [];
+    if (layout.max) return out;
+    walk(layout, () => {}, (n, x, y, w, h) => { out.push({ id: n.id, dir: n.dir, ratio: n.ratio, x, y, w, h }); });
     return out;
   };
 
@@ -259,6 +406,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     for (const lf of leaves(layout)) {
       if (lf.id === layout.focus) continue;
       const c = r[lf.id];
+      if (!c) continue;
       let adj;
       let ov;
       if (dir === "left" || dir === "right") {
@@ -279,8 +427,8 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     if (!path) return layout;
     const old = path[path.length - 1];
     if (old.view === view && subjectKey(old.params) === subjectKey(params)) return layout;
-    const root = replace(layout.root, leafId, () => mkLeaf(leafId, view, params));
-    return { version: VERSION, next: layout.next, focus: layout.focus, root };
+    const root = replace(layout.root, leafId, () => mkLeaf(leafId, view, params, old.hidden));
+    return mk(layout, { root });
   };
 
   // First leaf in reading order showing this view (for multi views, the same agent and report too), else null.
@@ -297,10 +445,13 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     if (!layout.root) {
       if (layout.next + 1 > MAX_NEXT) return layout;
       const nl = mkLeaf("t" + layout.next, view, params);
-      return { version: VERSION, next: layout.next + 1, focus: nl.id, root: nl };
+      return mk(layout, { next: layout.next + 1, focus: nl.id, root: nl, max: undefined });
     }
     const id = find(layout, view, params, multi);
-    return id ? focus(layout, id) : setView(layout, layout.focus, view, params);
+    if (id) return focus(layout, id);
+    // Every window is minimized (focus ""): no tile to reuse, so the new window is split in beside the first leaf.
+    if (!leafById(layout, layout.focus)) return split(layout, leaves(layout)[0].id, "row", view, params);
+    return setView(layout, layout.focus, view, params);
   };
 
   const serialize = (layout) => JSON.stringify(layout);
@@ -315,6 +466,7 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     let raw;
     try { raw = JSON.parse(text); } catch (e) { return fail("Layout text is not valid JSON" + RESET + "."); }
     if (!plainObject(raw)) return fail("Layout is not a JSON object" + RESET + ".");
+    if (raw.max !== undefined && typeof raw.max !== "string") return fail("Layout is invalid: max is " + show(raw.max) + ", which must be a tile id string" + RESET + ".");
     if (raw.version !== VERSION) return fail("Layout version " + show(raw.version) + " is not supported (this build reads version " + VERSION + ")" + RESET + ".");
     const subjects = opts && plainObject(opts.subjects) ? opts.subjects : null;
     const ids = {};
@@ -336,7 +488,8 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
         const need = subjects && Object.prototype.hasOwnProperty.call(subjects, n.view) ? subjects[n.view] : null;
         if (need && !agentOf(n.params)) bad("tile " + n.id + " shows " + n.view + " without an agent");
         if (need === "report" && !reportOf(n.params)) bad("tile " + n.id + " shows " + n.view + " without a report id");
-        return mkLeaf(n.id, n.view, n.params);
+        if (n.hidden !== undefined && typeof n.hidden !== "boolean") bad("tile " + n.id + " has hidden " + show(n.hidden) + ", which must be true or false");
+        return mkLeaf(n.id, n.view, n.params, n.hidden);
       }
       if (n.dir !== "row" && n.dir !== "col") bad("split " + n.id + " has invalid dir " + show(n.dir));
       if (typeof n.ratio !== "number" || !isFinite(n.ratio) || n.ratio <= 0 || n.ratio >= 1) bad("split " + n.id + " has ratio " + show(n.ratio) + ", which must be a number between 0 and 1 exclusive");
@@ -356,12 +509,18 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
       throw e;
     }
     const all = root ? leavesOf(root, []) : [];
-    const focusId = typeof raw.focus === "string" && ids[raw.focus] === "leaf" ? raw.focus : all.length ? all[0].id : "";
+    const live = all.filter((l) => l.hidden !== true);
+    // A max naming a hidden or unknown leaf is dropped; a kept max is the focus (focus follows the zoom).
+    const maxId = typeof raw.max === "string" && live.some((l) => l.id === raw.max) ? raw.max : "";
+    const focusOk = typeof raw.focus === "string" && live.some((l) => l.id === raw.focus);
+    const focusId = maxId ? maxId : focusOk ? raw.focus : live.length ? live[0].id : "";
     const known = opts && Array.isArray(opts.views) ? opts.views : null;
     const unknown = known ? all.filter((l) => known.indexOf(l.view) < 0).map((l) => l.id) : [];
-    return { ok: true, layout: { version: VERSION, next: raw.next, focus: focusId, root }, unknown };
+    const layout = { version: VERSION, next: raw.next, focus: focusId, root };
+    if (maxId) layout.max = maxId;
+    return { ok: true, layout, unknown };
   };
 
-  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, leaves, setView, open, find, subjectKey, serialize, parse };
+  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, splits, leaves, visibleLeaves, isHidden, maximized, closeOthers, closeLeft, closeRight, closeAll, maximize, restore, minimize, setView, open, find, subjectKey, serialize, parse };
 })());
 `;

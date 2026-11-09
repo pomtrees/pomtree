@@ -680,3 +680,532 @@ test("parse with opts.subjects accepts leaves with their subject and rejects tho
   // an inherited property name is not a subject requirement
   assert.ok(K.parse(leafOf("constructor", {}), { subjects }).ok);
 });
+
+// ---- maximize, minimize and the close variants ----
+
+// t1 | (t2 / (t4 | t6)): reading order t1 t2 t4 t6, focus t6.
+const four = () => K.split(three(), "t4", "row", "tree", {});
+const hid = (l: Layout): string[] =>
+  plain(
+    K.leaves(l)
+      .filter((x) => x.hidden)
+      .map((x) => x.id),
+  );
+const shownIds = (l: Layout): string[] => Object.keys(K.rects(l)).sort();
+const roundTrip = (l: Layout): Layout => {
+  const r = K.parse(K.serialize(l));
+  assert.ok(r.ok, "layout must reparse");
+  return r.layout;
+};
+
+test("maximize sets max and focus, unhides the leaf and leaves the tree untouched", () => {
+  const l = K.maximize(three(), "t1");
+  assert.deepEqual([l.max, l.focus, K.maximized(l), K.maximized(three())], ["t1", "t1", "t1", ""]);
+  assert.deepEqual(plain(l.root), plain(three().root));
+  const h = K.maximize(K.minimize(three(), "t2"), "t2");
+  assert.deepEqual([h.max, h.focus, K.isHidden(h, "t2")], ["t2", "t2", false]);
+  assert.equal(K.leaves(h)[1]?.hidden, undefined);
+});
+
+test("maximize returns the same reference for an unknown id, a split id and the maximized focused leaf", () => {
+  const base = three();
+  assert.equal(K.maximize(base, "t9"), base);
+  assert.equal(K.maximize(base, "s3"), base);
+  const l = K.maximize(base, "t2");
+  assert.equal(K.maximize(l, "t2"), l);
+  assert.notEqual(K.maximize(l, "t1"), l); // negative control: another leaf does change
+});
+
+test("restore: no id clears max, the max id clears it, a plain visible id is a no-op", () => {
+  const l = K.maximize(three(), "t2");
+  const a = K.restore(l);
+  assert.equal("max" in a, false);
+  assert.equal(a.focus, "t2");
+  assert.equal("max" in K.restore(l, "t2"), false);
+  assert.equal(K.restore(l, "t1"), l);
+  assert.equal(K.restore(l, "t9"), l);
+});
+
+test("restore returns the same reference with nothing to restore", () => {
+  const base = three();
+  assert.equal(K.restore(base), base);
+  assert.equal(K.restore(base, "t1"), base);
+  assert.equal(K.restore(base, null), base);
+});
+
+test("restore of a hidden leaf unhides and focuses it", () => {
+  const l = K.minimize(three(), "t1");
+  const r = K.restore(l, "t1");
+  assert.deepEqual([K.isHidden(r, "t1"), r.focus], [false, "t1"]);
+  assert.equal(K.leaves(r)[0]?.hidden, undefined);
+});
+
+test("restore of a hidden leaf while another is maximized hands the zoom to it", () => {
+  const l = K.minimize(K.maximize(three(), "t2"), "t4"); // t4 hidden while t2 is maximized
+  assert.deepEqual([l.max, K.isHidden(l, "t4")], ["t2", true]);
+  const r = K.restore(l, "t4");
+  assert.deepEqual([r.max, r.focus, K.isHidden(r, "t4")], ["t4", "t4", false]);
+});
+
+test("minimize hides the leaf in place and moves focus to the sibling subtree's visible leaf", () => {
+  const l = K.minimize(three(), "t4"); // focus is t4
+  assert.deepEqual(hid(l), ["t4"]);
+  assert.equal(l.focus, "t2");
+  assert.deepEqual(ids(l), ["t1", "t2", "t4"]); // still listed
+  assert.deepEqual(plain(K.visibleLeaves(l).map((x) => x.id)), ["t1", "t2"]);
+  assert.equal(K.isHidden(l, "t4"), true);
+  assert.equal(K.isHidden(l, "t1"), false);
+  assert.equal(K.isHidden(l, "nope"), false);
+});
+
+test("minimize of an unfocused leaf keeps focus; of the maximized leaf clears max", () => {
+  const a = K.minimize(three(), "t1");
+  assert.equal(a.focus, "t4");
+  const m = K.maximize(three(), "t1");
+  const b = K.minimize(m, "t1");
+  assert.equal("max" in b, false);
+  assert.equal(b.focus, "t2");
+  const c = K.minimize(K.maximize(three(), "t1"), "t2"); // another leaf: max stays
+  assert.deepEqual([c.max, c.focus, hid(c)], ["t1", "t1", ["t2"]]);
+});
+
+test("minimize focus falls back to the nearest visible leaf when the sibling subtree is hidden", () => {
+  const l = K.minimize(K.minimize(three(), "t2"), "t4"); // sibling t2 hidden, then t4 (focus) hidden
+  assert.deepEqual([hid(l), l.focus], [["t2", "t4"], "t1"]);
+  const m = K.minimize(K.minimize(K.focus(three(), "t4"), "t2"), "t4");
+  assert.equal(m.focus, "t1");
+});
+
+test("minimizing the last shown leaf leaves an all-hidden layout with focus empty", () => {
+  const l = K.minimize(K.minimize(K.minimize(three(), "t4"), "t2"), "t1");
+  assert.deepEqual([hid(l), l.focus], [["t1", "t2", "t4"], ""]);
+  assert.deepEqual(shownIds(l), []);
+  assert.deepEqual(plain(K.splits(l)), []);
+  assert.equal(K.focusDir(l, "left"), l);
+  assert.equal(roundTrip(l).focus, "");
+});
+
+test("minimize returns the same reference for an already hidden leaf and an unknown id", () => {
+  const l = K.minimize(three(), "t2");
+  assert.equal(K.minimize(l, "t2"), l);
+  assert.equal(K.minimize(l, "t9"), l);
+  assert.notEqual(K.minimize(l, "t1"), l);
+});
+
+test("rects: a hidden child hands its area to the sibling; hidden leaves get no rect", () => {
+  const l = K.minimize(three(), "t4");
+  assert.deepEqual(plain(K.rects(l)), { t1: { x: 0, y: 0, w: 0.5, h: 1 }, t2: { x: 0.5, y: 0, w: 0.5, h: 1 } });
+  assert.deepEqual(
+    plain(K.splits(l)).map((s: { id: string }) => s.id),
+    ["s3"],
+  );
+});
+
+test("rects: a nested hidden subtree collapses entirely", () => {
+  const l = K.minimize(K.minimize(four(), "t4"), "t6"); // the (t4 | t6) subtree is hidden
+  assert.deepEqual(shownIds(l), ["t1", "t2"]);
+  assert.deepEqual(plain(K.rects(l).t2), { x: 0.5, y: 0, w: 0.5, h: 1 });
+  assert.deepEqual(
+    plain(K.splits(l)).map((s: { id: string }) => s.id),
+    ["s3"],
+  );
+  const one = K.minimize(K.minimize(four(), "t1"), "t2");
+  assert.deepEqual(shownIds(one), ["t4", "t6"]);
+  assert.deepEqual(plain(K.rects(one).t4), { x: 0, y: 0, w: 0.5, h: 1 });
+});
+
+test("splits geometry is reported on the collapsed tiling", () => {
+  const l = K.minimize(K.minimize(four(), "t1"), "t2"); // only (t4 | t6) is shown, in the whole area
+  const s = plain(K.splits(l));
+  assert.equal(s.length, 1);
+  assert.deepEqual(s[0], { id: "s7", dir: "row", ratio: 0.5, x: 0, y: 0, w: 1, h: 1 });
+  // negative control: with everything shown the same split lives in a smaller box
+  const all = plain(K.splits(four()));
+  assert.deepEqual(
+    all.map((x: { id: string }) => x.id),
+    ["s3", "s5", "s7"],
+  );
+  assert.notDeepEqual(
+    all.find((x: { id: string }) => x.id === "s7"),
+    s[0],
+  );
+});
+
+test("rects with max is only the maximized leaf over the whole area, and splits is empty", () => {
+  const l = K.maximize(three(), "t2");
+  assert.deepEqual(plain(K.rects(l)), { t2: { x: 0, y: 0, w: 1, h: 1 } });
+  assert.deepEqual(plain(K.splits(l)), []);
+  assert.deepEqual(ids(l), ["t1", "t2", "t4"]); // leaves stays all leaves
+});
+
+test("focusDir ignores hidden and non-maximized leaves", () => {
+  const l = K.minimize(three(), "t2"); // t1 | t4 (t2 hidden)
+  const f = K.focusDir(K.focus(l, "t1"), "right");
+  assert.equal(f.focus, "t4");
+  const m = K.maximize(three(), "t1");
+  assert.equal(K.focusDir(m, "right"), m);
+});
+
+test("focus unhides a hidden leaf and, while max is set, moves max to the focused leaf", () => {
+  const l = K.minimize(three(), "t1");
+  const f = K.focus(l, "t1");
+  assert.deepEqual([K.isHidden(f, "t1"), f.focus], [false, "t1"]);
+  assert.equal("max" in f, false);
+  const m = K.focus(K.maximize(three(), "t1"), "t2");
+  assert.deepEqual([m.max, m.focus], ["t2", "t2"]);
+  const same = K.maximize(three(), "t1");
+  assert.equal(K.focus(same, "t1"), same);
+  assert.equal(K.focus(l, "t9"), l);
+});
+
+test("close of the maximized leaf clears max and focuses a visible leaf; of another leaf keeps max", () => {
+  const m = K.maximize(three(), "t2");
+  const a = K.close(m, "t2");
+  assert.equal("max" in a, false);
+  assert.equal(a.focus, "t4");
+  const b = K.close(m, "t4");
+  assert.deepEqual([b.max, b.focus], ["t2", "t2"]);
+});
+
+test("close keeps focus on a visible leaf when the sibling subtree is hidden", () => {
+  const l = K.minimize(three(), "t4");
+  const f = K.focus(l, "t2");
+  const c = K.close(f, "t2"); // sibling t4 is hidden
+  assert.equal(c.focus, "t1");
+  assert.deepEqual(hid(c), ["t4"]);
+});
+
+test("closing the last visible leaf of a layout with hidden leaves leaves focus empty", () => {
+  const l = K.minimize(K.focus(K.minimize(three(), "t2"), "t1"), "t4"); // t2 t4 hidden, t1 shown
+  assert.equal(l.focus, "t1");
+  const c = K.close(l, "t1");
+  assert.deepEqual([c.focus, hid(c)], ["", ["t2", "t4"]]);
+});
+
+test("closeOthers keeps only that leaf, focuses it, keeps max only if it is the max", () => {
+  const c = K.closeOthers(three(), "t2");
+  assert.deepEqual([ids(c), c.focus, "max" in c], [["t2"], "t2", false]);
+  assert.equal(plain(c.root).kind, "leaf");
+  const keepMax = K.closeOthers(K.maximize(three(), "t2"), "t2");
+  assert.equal(keepMax.max, "t2");
+  const dropMax = K.closeOthers(K.maximize(three(), "t1"), "t2");
+  assert.equal("max" in dropMax, false);
+  assert.equal(c.next, three().next);
+});
+
+test("closeOthers no-ops: unknown id and only one leaf", () => {
+  const one = solo("tree");
+  assert.equal(K.closeOthers(one, "t1"), one);
+  const l = three();
+  assert.equal(K.closeOthers(l, "t9"), l);
+});
+
+test("closeLeft and closeRight follow leaves() order, hidden leaves included", () => {
+  const l = K.minimize(four(), "t2"); // order t1 t2(hidden) t4 t6
+  assert.deepEqual(ids(K.closeLeft(l, "t4")), ["t4", "t6"]);
+  assert.deepEqual(ids(K.closeRight(l, "t1")), ["t1"]);
+  assert.deepEqual(ids(K.closeRight(l, "t2")), ["t1", "t2"]);
+  assert.deepEqual(hid(K.closeRight(l, "t2")), ["t2"]);
+  assert.deepEqual(ids(K.closeLeft(four(), "t2")), ["t2", "t4", "t6"]);
+});
+
+test("closeLeft and closeRight focus: a closed focus goes to the kept leaf, an open one stays, max follows survival", () => {
+  const l = four(); // focus t6
+  const left = K.closeLeft(l, "t2");
+  assert.equal(left.focus, "t6");
+  const right = K.closeRight(l, "t2");
+  assert.equal(right.focus, "t2");
+  const keepMax = K.closeRight(K.maximize(l, "t1"), "t2");
+  assert.deepEqual([keepMax.max, keepMax.focus], ["t1", "t1"]); // t1 is kept and maximized, so it is the focus
+});
+
+test("closeLeft keeps max when the maximized leaf survives and drops it when closed", () => {
+  const m = K.maximize(four(), "t4");
+  assert.equal(K.closeLeft(m, "t4").max, "t4");
+  assert.equal("max" in K.closeLeft(m, "t6"), false);
+  assert.equal(K.closeRight(m, "t2").max, undefined);
+  assert.equal(K.closeRight(m, "t6").max, "t4");
+});
+
+test("closeLeft and closeRight no-op on the first and last leaf and on an unknown id", () => {
+  const l = four();
+  assert.equal(K.closeLeft(l, "t1"), l);
+  assert.equal(K.closeRight(l, "t6"), l);
+  assert.equal(K.closeLeft(l, "t9"), l);
+  assert.equal(K.closeRight(l, "t9"), l);
+  assert.notEqual(K.closeLeft(l, "t6"), l); // negative control
+});
+
+test("closing keeps a hidden kept leaf from taking focus: focus goes to the nearest visible leaf", () => {
+  const l = K.minimize(four(), "t2"); // focus t6; t2 hidden
+  const c = K.closeRight(l, "t2"); // t4, t6 closed: nothing visible remains but t1
+  assert.deepEqual([ids(c), c.focus], [["t1", "t2"], "t1"]);
+  const d = K.closeOthers(l, "t2");
+  assert.deepEqual([ids(d), d.focus], [["t2"], ""]);
+});
+
+test("closeAll empties the layout, keeps next, clears max; no-op on an empty layout", () => {
+  const c = K.closeAll(K.maximize(three(), "t1"));
+  assert.deepEqual(plain(c), { version: 1, next: 6, focus: "", root: null });
+  assert.equal(K.closeAll(c), c);
+  assert.equal(K.open(c, "tree", {}).focus, "t6");
+});
+
+test("every existing operation carries max and hidden through", () => {
+  const base = K.minimize(K.maximize(four(), "t1"), "t6"); // max t1, t6 hidden
+  assert.deepEqual([base.max, hid(base)], ["t1", ["t6"]]);
+  // resize
+  const rs = K.resize(base, "s3", 0.3);
+  assert.deepEqual([rs.max, hid(rs)], ["t1", ["t6"]]);
+  // setView on the hidden leaf keeps it hidden, on the max leaf keeps max
+  const sv = K.setView(base, "t6", "notes", {});
+  assert.deepEqual([sv.max, hid(sv), views(sv)[3]], ["t1", ["t6"], "notes"]);
+  const sv2 = K.setView(base, "t1", "notes", {});
+  assert.deepEqual([sv2.max, hid(sv2)], ["t1", ["t6"]]);
+  // focus on the max leaf's own id keeps both
+  assert.equal(K.focus(base, "t1"), base);
+  // focusDir
+  assert.equal(K.focusDir(base, "right"), base);
+  // open of a subject that exists elsewhere is a focus (moves max, hidden kept)
+  const op = K.open(base, "agent", { agent: "a1" }, true);
+  assert.deepEqual([op.max, op.focus, hid(op)], ["t2", "t2", ["t6"]]);
+  // open that replaces the focused (max) leaf's view keeps max and hidden
+  const op2 = K.open(base, "notes", {}, false);
+  assert.deepEqual([op2.max, hid(op2), views(op2)[0]], ["t1", ["t6"], "notes"]);
+  // move is refused while max is set
+  assert.equal(K.move(base, "t1", "t2", "left"), base);
+  // tile via parse: serialize then parse keeps both
+  const rt = roundTrip(base);
+  assert.deepEqual([rt.max, hid(rt)], ["t1", ["t6"]]);
+  // close of a leaf other than max or the hidden one keeps both
+  const cl = K.close(base, "t4");
+  assert.deepEqual([cl.max, hid(cl)], ["t1", ["t6"]]);
+});
+
+test("move carries hidden leaves it does not touch, and refuses a hidden leaf as source or target", () => {
+  const l = K.minimize(four(), "t6");
+  assert.deepEqual(hid(K.move(l, "t1", "t2", "bottom")), ["t6"]);
+  assert.deepEqual(hid(K.move(l, "t1", "t2", "center")), ["t6"]);
+  assert.equal(K.move(l, "t6", "t1", "left"), l);
+  assert.equal(K.move(l, "t1", "t6", "right"), l);
+  assert.equal(K.move(l, "t1", "t6", "center"), l);
+});
+
+test("split clears max, may split a hidden leaf, and gives the new leaf focus", () => {
+  const m = K.maximize(three(), "t1");
+  const s = K.split(m, "t1", "row", "inbox", {});
+  assert.equal("max" in s, false);
+  assert.equal(s.focus, "t6");
+  const h = K.split(K.minimize(three(), "t1"), "t1", "row", "inbox", {});
+  assert.deepEqual([hid(h), h.focus], [["t1"], "t6"]);
+});
+
+test("open of a new subject with every window minimized splits it in beside the first leaf", () => {
+  const l = K.minimize(solo("tree"), "t1");
+  assert.equal(l.focus, "");
+  const o = K.open(l, "inbox", {});
+  assert.deepEqual([ids(o), hid(o), o.focus], [["t1", "t2"], ["t1"], "t2"]);
+  // an existing subject is found, focused and unhidden instead
+  const same = K.open(l, "tree", {});
+  assert.deepEqual([hid(same), same.focus], [[], "t1"]);
+});
+
+test("serialize omits max and hidden when unset: a legacy layout round-trips byte-identical", () => {
+  const legacy = K.serialize(three());
+  assert.equal(legacy.includes("max"), false);
+  assert.equal(legacy.includes("hidden"), false);
+  const r = K.parse(legacy);
+  assert.ok(r.ok);
+  assert.equal(K.serialize(r.layout), legacy);
+  const explicit = '{"version":1,"next":3,"focus":"t1","root":{"kind":"leaf","id":"t1","view":"tree","params":{}}}';
+  const p = K.parse(explicit);
+  assert.ok(p.ok);
+  assert.equal(K.serialize(p.layout), explicit);
+  // negative control: the new keys do appear when set
+  assert.equal(K.serialize(K.maximize(three(), "t1")).includes('"max":"t1"'), true);
+  assert.equal(K.serialize(K.minimize(three(), "t1")).includes('"hidden":true'), true);
+});
+
+test("parse accepts max and hidden, repairing focus and dropping invalid max silently", () => {
+  const mk = (extra: object, leafExtra: object = {}) =>
+    JSON.stringify({
+      version: 1,
+      next: 5,
+      focus: "t1",
+      ...extra,
+      root: {
+        kind: "split",
+        id: "s3",
+        dir: "row",
+        ratio: 0.5,
+        children: [
+          { kind: "leaf", id: "t1", view: "tree", params: {}, ...leafExtra },
+          { kind: "leaf", id: "t2", view: "tree", params: {} },
+        ],
+      },
+    });
+  const a = K.parse(mk({ max: "t2" }));
+  assert.ok(a.ok);
+  assert.deepEqual([a.layout.max, a.layout.focus], ["t2", "t2"]);
+  const hiddenMax = K.parse(mk({ max: "t1" }, { hidden: true }));
+  assert.ok(hiddenMax.ok);
+  assert.deepEqual(["max" in hiddenMax.layout, hiddenMax.layout.focus, hid(hiddenMax.layout)], [false, "t2", ["t1"]]);
+  const unknown = K.parse(mk({ max: "t9" }));
+  assert.ok(unknown.ok);
+  assert.equal("max" in unknown.layout, false);
+  const falsy = K.parse(mk({}, { hidden: false }));
+  assert.ok(falsy.ok);
+  assert.equal(falsy.layout && JSON.stringify(falsy.layout).includes("hidden"), false);
+  const allHidden = K.parse(JSON.stringify({ version: 1, next: 2, focus: "t1", root: { kind: "leaf", id: "t1", view: "tree", params: {}, hidden: true } }));
+  assert.ok(allHidden.ok);
+  assert.equal(allHidden.layout.focus, "");
+  assert.equal(plain(allHidden.layout.root).hidden, true);
+});
+
+test("parse rejects malformed max and hidden with a reason that names the key", () => {
+  const body = (extra: object, leafExtra: object = {}) =>
+    JSON.stringify({ version: 1, next: 2, focus: "t1", ...extra, root: { kind: "leaf", id: "t1", view: "tree", params: {}, ...leafExtra } });
+  for (const bad of ["yes", 1, null, {}]) {
+    const r = K.parse(body({}, { hidden: bad }));
+    assert.equal(r.ok, false, `hidden ${JSON.stringify(bad)}`);
+    if (!r.ok) assert.match(r.reason, /hidden.*true or false|tile t1/);
+  }
+  for (const bad of [1, null, true, ["t1"]]) {
+    const r = K.parse(body({ max: bad }));
+    assert.equal(r.ok, false, `max ${JSON.stringify(bad)}`);
+    if (!r.ok) assert.match(r.reason, /max .*tile id string.*reset to the default layout/);
+  }
+  assert.equal(K.parse(body({ max: "t1" })).ok, true); // negative control: a valid max is accepted
+});
+
+test("parse of a layout whose focus names a hidden leaf falls back to the first visible leaf", () => {
+  const text = JSON.stringify({
+    version: 1,
+    next: 4,
+    focus: "t1",
+    root: {
+      kind: "split",
+      id: "s3",
+      dir: "row",
+      ratio: 0.5,
+      children: [
+        { kind: "leaf", id: "t1", view: "tree", params: {}, hidden: true },
+        { kind: "leaf", id: "t2", view: "tree", params: {} },
+      ],
+    },
+  });
+  const r = K.parse(text);
+  assert.ok(r.ok);
+  assert.equal(r.layout.focus, "t2");
+});
+
+test("no operation mutates a frozen layout that carries max and hidden", () => {
+  const base = deepFreeze(K.minimize(K.maximize(four(), "t1"), "t6"));
+  const ops: Layout[] = [
+    K.restore(base),
+    K.restore(base, "t6"),
+    K.minimize(base, "t2"),
+    K.maximize(base, "t2"),
+    K.closeOthers(base, "t2"),
+    K.closeLeft(base, "t4"),
+    K.closeRight(base, "t1"),
+    K.closeAll(base),
+    K.close(base, "t1"),
+    K.focus(base, "t2"),
+  ];
+  assert.equal(ops.length, 10);
+});
+
+// Invariants after every operation (plan: I1 focus is a visible leaf whenever one exists, else ""; I2 max names a
+// visible leaf and is the focus; I3 hidden leaves stay listed and ids are unique).
+const invariants = (l: Layout, what: string): void => {
+  const all = plain(K.leaves(l)) as { id: string; hidden?: boolean }[];
+  const vis = all.filter((x) => !x.hidden);
+  if (vis.length)
+    assert.ok(
+      vis.some((x) => x.id === l.focus),
+      `${what}: focus ${JSON.stringify(l.focus)} must be a visible leaf`,
+    );
+  else assert.equal(l.focus, "", `${what}: focus must be empty when nothing is visible`);
+  if (l.max) {
+    assert.ok(
+      vis.some((x) => x.id === l.max),
+      `${what}: max must name a visible leaf`,
+    );
+    assert.equal(l.focus, l.max, `${what}: focus must equal max`);
+  }
+  assert.equal(new Set(all.map((x) => x.id)).size, all.length, `${what}: leaf ids are unique`);
+  assert.deepEqual(
+    plain(K.visibleLeaves(l)).map((x: { id: string }) => x.id),
+    vis.map((x) => x.id),
+    `${what}: visibleLeaves`,
+  );
+  assert.deepEqual(Object.keys(K.rects(l)).sort(), l.max ? [l.max] : vis.map((x) => x.id).sort(), `${what}: rects cover the shown leaves`);
+  const re = K.parse(K.serialize(l));
+  assert.ok(re.ok, `${what}: must reparse`);
+  if (re.ok) assert.equal(K.serialize(re.layout), K.serialize(l), `${what}: round trip`);
+};
+
+test("invariants hold after every operation over plain, maximized, partly hidden and all-hidden layouts", () => {
+  const allHidden = ["t1", "t2", "t4"].reduce((l, id) => K.minimize(l, id), three());
+  const starts: [string, Layout][] = [
+    ["three", three()],
+    ["four", four()],
+    ["max", K.maximize(four(), "t2")],
+    ["hidden", K.minimize(four(), "t2")],
+    ["hidden+max", K.minimize(K.maximize(four(), "t1"), "t6")],
+    ["all hidden", allHidden],
+    ["single", solo("tree")],
+  ];
+  let n = 0;
+  for (const [name, l0] of starts) {
+    invariants(l0, name);
+    for (const id of ["t1", "t2", "t4", "t6", "t9"]) {
+      const ops: [string, Layout][] = [
+        ["maximize", K.maximize(l0, id)],
+        ["restore", K.restore(l0, id)],
+        ["minimize", K.minimize(l0, id)],
+        ["close", K.close(l0, id)],
+        ["closeOthers", K.closeOthers(l0, id)],
+        ["closeLeft", K.closeLeft(l0, id)],
+        ["closeRight", K.closeRight(l0, id)],
+        ["focus", K.focus(l0, id)],
+        ["split", K.split(l0, id, "row", "tree", {})],
+        ["setView", K.setView(l0, id, "notes", {})],
+        ["move", K.move(l0, id, "t1", "left")],
+      ];
+      for (const [op, l] of ops) {
+        invariants(l, `${name}/${op}(${id})`);
+        n++;
+      }
+    }
+    const more: [string, Layout][] = [
+      ["restore()", K.restore(l0)],
+      ["closeAll", K.closeAll(l0)],
+      ["open", K.open(l0, "notes", {})],
+      ["open existing", K.open(l0, "tree", {})],
+      ["focusDir", K.focusDir(l0, "right")],
+      ["resize", K.resize(l0, "s3", 0.3)],
+    ];
+    for (const [op, l] of more) {
+      invariants(l, `${name}/${op}`);
+      n++;
+    }
+  }
+  assert.ok(n > 300);
+});
+
+test("invariants check can fail: a layout with focus on a hidden leaf or a stray max is flagged", () => {
+  const bad = { ...K.minimize(three(), "t1"), focus: "t1" } as Layout;
+  assert.throws(() => invariants(bad, "bad"));
+  const stray = { ...three(), max: "t1" } as Layout; // focus is t4, not the max
+  assert.throws(() => invariants(stray, "stray"));
+});
+
+test("minimize and close pick the sibling subtree's visible edge leaf, else the first visible leaf", () => {
+  const l = K.focus(four(), "t6");
+  assert.equal(K.minimize(l, "t6").focus, "t4"); // sibling of t6 is t4 (t6 is the second child: last visible of sibling)
+  const l2 = K.minimize(K.minimize(four(), "t6"), "t4"); // t6 hidden (focus t4), then t4: its sibling t6 is hidden
+  assert.equal(l2.focus, "t1"); // falls to the first visible leaf in reading order
+  assert.equal(K.close(K.minimize(K.focus(four(), "t4"), "t6"), "t4").focus, "t1");
+});
