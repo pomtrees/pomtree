@@ -62,20 +62,12 @@ export default function (pi: ExtensionAPI) {
     let runBash: ((cmd: string, signal?: AbortSignal) => Promise<string>) | undefined;
     const bash = async (cmd: string, signal?: AbortSignal): Promise<string> => {
       if (!runBash) {
-        try {
-          const mod: any = await import("@earendil-works/pi-coding-agent");
-          const tool = mod.createBashTool(process.cwd());
-          runBash = async (c, s) => {
-            const r = await tool.execute(`jobs-${Date.now().toString(36)}`, { command: c, timeout: 30 }, s, undefined);
-            return (r?.content ?? []).map((x: { text?: string }) => x.text ?? "").join("");
-          };
-        } catch {
-          // TODO(pi-fallback): drop this pi.exec path once the pinned Pi (scripts/build.ts) is confirmed to export createBashTool; the Pi source was not available offline to check. Current behavior: used when the import or createBashTool fails.
-          runBash = async (c) => {
-            const r = await (pi as any).exec("sh", ["-c", c], { timeout: 30_000 });
-            return `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
-          };
-        }
+        const mod: any = await import("@earendil-works/pi-coding-agent");
+        const tool = mod.createBashTool(process.cwd());
+        runBash = async (c, s) => {
+          const r = await tool.execute(`jobs-${Date.now().toString(36)}`, { command: c, timeout: 30 }, s, undefined);
+          return (r?.content ?? []).map((x: { text?: string }) => x.text ?? "").join("");
+        };
       }
       return runBash(cmd, signal);
     };
