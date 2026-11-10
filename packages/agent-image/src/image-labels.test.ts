@@ -17,8 +17,8 @@ const ID = `sha256:${"ab".repeat(32)}`;
 const inspect = (labels: Record<string, string> | null, id: unknown = ID) => JSON.stringify([{ Id: id, Config: { Labels: labels } }]);
 
 test("parseImageInspect reads the image id, the revision and the Pi version labels", () => {
-  const out = inspect({ [REVISION_LABEL]: "c6e8c16", [PI_VERSION_LABEL]: "1.1.0", other: "x" });
-  assert.deepEqual(parseImageInspect("pomtree/agent:dev", out), { id: ID, revision: "c6e8c16", piVersion: "1.1.0" });
+  const out = inspect({ [REVISION_LABEL]: "c6e8c16", [PI_VERSION_LABEL]: "1.5.1", other: "x" });
+  assert.deepEqual(parseImageInspect("pomtree/agent:dev", out), { id: ID, revision: "c6e8c16", piVersion: "1.5.1" });
 });
 
 test("parseImageInspect refuses an image without the Pi version label and names the rebuild", () => {
@@ -28,12 +28,12 @@ test("parseImageInspect refuses an image without the Pi version label and names 
   );
   // An empty build arg stamps an empty label: that is no label either.
   assert.throws(() => parseImageInspect("img", inspect({ [REVISION_LABEL]: "c6e8c16", [PI_VERSION_LABEL]: "" })), /has no org\.pomtree\.pi\.version label/);
-  assert.throws(() => parseImageInspect("img", inspect({ [PI_VERSION_LABEL]: "1.1.0" })), /has no org\.opencontainers\.image\.revision label/);
+  assert.throws(() => parseImageInspect("img", inspect({ [PI_VERSION_LABEL]: "1.5.1" })), /has no org\.opencontainers\.image\.revision label/);
   assert.throws(() => parseImageInspect("img", inspect(null)), /has no org\.opencontainers\.image\.revision label/);
 });
 
 test("parseImageInspect refuses malformed labels, ids and output", () => {
-  const ok = { [REVISION_LABEL]: "c6e8c16", [PI_VERSION_LABEL]: "1.1.0" };
+  const ok = { [REVISION_LABEL]: "c6e8c16", [PI_VERSION_LABEL]: "1.5.1" };
   assert.throws(() => parseImageInspect("img", inspect({ ...ok, [PI_VERSION_LABEL]: "latest" })), /malformed org\.pomtree\.pi\.version label/);
   assert.throws(() => parseImageInspect("img", inspect({ ...ok, [REVISION_LABEL]: "HEAD; rm" })), /malformed org\.opencontainers\.image\.revision label/);
   assert.throws(() => parseImageInspect("img", inspect(ok, "abc")), /no sha256 image id/);
