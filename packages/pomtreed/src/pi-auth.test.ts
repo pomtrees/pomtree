@@ -189,7 +189,7 @@ test("mutating the constructed options after construction does not change staged
   });
 });
 
-test("the staged Pi settings turn Pi's own retry ladder off, so pomtreed's provider backoff is the only one (TODO(retry-ladder))", () => {
+test("the staged Pi settings turn Pi's own retry ladder and cache warming off, so pomtreed's provider backoff is the only one (TODO(retry-ladder))", () => {
   const s = JSON.parse(PI_SETTINGS);
-  assert.deepEqual(s, { defaultProjectTrust: "never", retry: { enabled: false, provider: { maxRetries: 0 } } });
+  assert.deepEqual(s, { defaultProjectTrust: "never", cacheWarming: "off", retry: { enabled: false, provider: { maxRetries: 0 } } });
 });

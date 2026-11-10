@@ -53,7 +53,8 @@ export const agentAuthPath = (stateDir: string, id: AgentId) => join(agentPiDir(
 // agents through the provider breaker, bounded by maxProviderRetries, and frees the placement slot during a long outage. Cost: a
 // transient 429 costs a stop/resume instead of an in-container sleep. Reopen if that cost shows up in real runs: the alternative is
 // Pi retries in-container and the harness journals only auto_retry_end{success:false} as the provider_error.
-export const PI_SETTINGS = '{"defaultProjectTrust":"never","retry":{"enabled":false,"provider":{"maxRetries":0}}}\n';
+// cacheWarming off: Pi defaults it to "idle", which sends provider requests between runs to keep prompt caches warm; an idle agent must send none.
+export const PI_SETTINGS = '{"defaultProjectTrust":"never","cacheWarming":"off","retry":{"enabled":false,"provider":{"maxRetries":0}}}\n';
 
 // Creates the per-agent writable Pi config dir, writes the given scoped auth.json plus the read-only settings.json and a models.json, and
 // returns the bind mounts. The operator's real file is never touched; failures propagate so the agent
