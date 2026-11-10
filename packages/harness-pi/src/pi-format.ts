@@ -207,8 +207,9 @@ export function normalizeRecord(rec: unknown): HarnessEvent[] {
       if (m.stopReason === "error" && typeof m.errorMessage === "string") {
         out.push(providerFailure(stripControl(m.errorMessage), statusOf(m)));
       }
-      // A reply cut at the output-token limit (stopReason "length") that contains a tool call: Pi may still run that call with truncated
-      // or empty arguments, so say so where the operator (journal) sees it; the model sees the tool's own result.
+      // A reply cut at the output-token limit (stopReason "length") that contains a tool call: the call's arguments may be truncated or
+      // empty (Pi fails a call whose arguments text is cut, but a cut that still parses as an object runs), so say so where the operator
+      // (journal) sees it; the model sees the tool's own result.
       if (m.stopReason === "length" && Array.isArray(m.content)) {
         const calls = m.content
           .filter((b): b is Obj => isObj(b) && b.type === "toolCall")
@@ -219,10 +220,9 @@ export function normalizeRecord(rec: unknown): HarnessEvent[] {
             message: `the model's reply hit its output-token limit (stopReason length) while writing a call to ${calls.join(", ")}: the arguments may be truncated, so check that tool's result; raise the model's max output tokens or have the agent write large content in smaller steps`,
           });
       }
-      // Malformed tool-call JSON is not caught here: the pinned Pi repairs a cut arguments text (`{"command": "echo`) and runs the
-      // truncated call (cli scenario 8, seen ok with output "\n"). The model proxy therefore replaces such a call's arguments with
-      // its tagged refusal (pomtreed model-proxy/tool-args.ts), which Pi fails as an isError tool result; tool_execution_end below
-      // journals it.
+      // Malformed tool-call JSON is not caught here: Pi fails a cut arguments text (`{"command": "echo`) as an isError tool result
+      // without a pomtree tag. The model proxy therefore replaces such a call's arguments with its tagged refusal (pomtreed
+      // model-proxy/tool-args.ts), which Pi fails as an isError tool result; tool_execution_end below journals it.
       return out;
     }
     case "user_input": // sink-only: text the user typed in the TTY (the events extension drops mailbox-injected input)
@@ -373,7 +373,7 @@ export function piArgv(opts: PiArgvOptions): string[] {
     ...(guide === false ? [] : ["--append-system-prompt", guide]),
     ...exts.flatMap((e) => ["--extension", e.path]),
     ...(tools ? ["--tools", tools.join(",")] : []),
-    // `--no-approve` on every launch (Pi 1.1.0 docs/cli.md: ignore trust-gated project-local files): trust.json lives in the
+    // `--no-approve` on every launch (Pi docs/cli.md: ignore trust-gated project-local files): trust.json lives in the
     // agent-writable ~/.pi/agent, so a recorded approval there must never load /workspace/.pi resources. Allowlist mode has it in
     // PI_ISOLATION_FLAGS.
     ...(allow !== undefined ? PI_ISOLATION_FLAGS : ["--no-approve"]),
