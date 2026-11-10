@@ -45,8 +45,9 @@ export const agentAuthPath = (stateDir: string, id: AgentId) => join(agentPiDir(
 // host user can reach it (other local users cannot traverse), but the container uid can write.
 // TODO(pi-trust): settings.json is mounted read-only over the dir so the agent cannot loosen project trust.
 // Copies are fresh per agent and removed at settle; failures propagate so the agent start fails loudly.
-// Retry ladder (TODO(retry-ladder) decision): pomtreed's is the ONE ladder; Pi's own is off. Pi 1.1.0 retries transient failures by
-// default (retry.enabled true, 3 attempts, 2s/4s/8s; retry.provider.maxRetries 0 per Pi docs/settings.md), but every failed attempt
+// Retry ladder (TODO(retry-ladder) decision): pomtreed's is the ONE ladder; Pi's own is off. The pinned Pi retries transient failures by
+// default (retry.enabled true, 3 attempts, 2s base delay with exponential backoff; retry.provider.maxRetries 0 per Pi
+// docs/settings.md), but every failed attempt
 // still ends a message with stopReason "error", which the harness journals as a provider_error and pomtreed answers with a timer yield,
 // so the two ladders raced (and Pi's retry wait can mark the settle aborted, TODO(no-passive-settle)). pomtreed's ladder is kept
 // because it is the one that is durable (a timer wait survives a daemon restart), journaled with idempotency keys, shared across

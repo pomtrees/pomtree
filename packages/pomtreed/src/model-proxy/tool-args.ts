@@ -2,8 +2,7 @@ import { modelRefusalTag } from "@pomtree/core";
 
 // Malformed tool-call arguments: a model reply whose completed tool call carries arguments that are not a JSON object (the
 // reply was cut or garbled) is never handed to the harness as a runnable call. The proxy rewrites that call's arguments to a
-// JSON string literal holding the refusal. The pinned Pi does not refuse a cut arguments text itself: it repairs
-// `{"command": "echo` into a runnable call and runs it (cli scenario 8 without this rewrite: ok, output "\n"). A JSON string
+// JSON string literal holding the refusal. Pi fails a cut arguments text itself, but with no tag the harness can read. A JSON string
 // is complete, parses on every Pi path, and is never an object, so Pi fails the call before running it (as malformed arguments,
 // or failing the tool's object schema) with an isError tool result that quotes the received arguments: the model reads the
 // cause and the action, and the harness reads the tag (harness-pi pi-format.ts, tool_execution_end). A string, not a renamed
