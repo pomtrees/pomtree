@@ -52,10 +52,9 @@ const EXTENSIONS_LABEL = "extensions stop"; // close() already ran stopForShutdo
 const CANCEL_GRACE_MS = 1_000;
 type SandboxRef = NonNullable<AgentRecord["sandbox"]>;
 
-// Built-in deepseek-flash metadata from the approved image's Pi (1.1.0); the 1024 cap is the only output limit we allow.
-// Reasoning stays on (no --thinking flag is added): the installed Pi 1.3.0 documents --thinking, but the approved image's Pi is
-// not verifiable offline. Reasoning tokens count against max_tokens, so an empty or truncated answer is caught by the consumer's
-// output validation, not by this factory.
+// Built-in deepseek-flash metadata from the approved image's Pi; the 1024 cap is the only output limit we allow.
+// The entry stays a reasoning model, but the child runs with `--thinking off` (modelPiCommand), so no reasoning tokens are spent. A
+// truncated or empty answer is caught by the consumer's output validation, not by this factory.
 export const DEEPSEEK_FLASH_OVERRIDE: ProxyModelOverride = {
   id: MODEL_ID,
   name: "DeepSeek V4.1 Flash",
@@ -133,7 +132,7 @@ export function selectSourceTransport(o: Pick<ModelRuntimeOptions, "sourceFetch"
 }
 
 // Pi argv for the deepseek-flash child: the existing piArgv output with `--thinking off` inserted right after argv[0] ("pi"),
-// before the "--" separator. Verified against the approved image's Pi 1.1.0 source: off maps to thinking:{type:"disabled"} for
+// before the "--" separator. Verified against the pinned Pi source (openai-completions): off maps to thinking:{type:"disabled"} for
 // deepseek even when the model entry does not set thinkingLevelMap. Nothing is appended after "--", so the prompt stays positional.
 export function modelPiCommand(prompt: string): string[] {
   const argv = piArgv({ prompt, provider: MODEL_PROVIDER, model: MODEL_ID });
