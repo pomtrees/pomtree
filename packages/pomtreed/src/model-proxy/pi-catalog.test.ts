@@ -24,8 +24,8 @@ function managedPi(): { path: string; data: string } {
   writeFileSync(join(agent, "bin", "pi"), "#!/bin/sh\n");
   chmodSync(join(agent, "bin", "pi"), 0o755);
   mkdirSync(join(agent, "install"), { recursive: true });
-  writeFileSync(join(agent, "install", "current-version"), "1.1.0\n");
-  const data = join(agent, "install", "releases", "1.1.0", "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data");
+  writeFileSync(join(agent, "install", "current-version"), "1.5.1\n");
+  const data = join(agent, "install", "releases", "1.5.1", "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "data");
   mkdirSync(data, { recursive: true });
   writeFileSync(join(data, "deepseek.json"), JSON.stringify(catalogFile));
   const bin = join(root, "usr-bin");

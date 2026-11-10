@@ -11,7 +11,7 @@ import { piArgv } from "@pomtree/harness-pi";
 // A spec's systemPrompt (a template's instructions) is delivered as one `--append-system-prompt <text>` value just before the `--` prompt
 // separator, on every path (default, allowlist, and the browser worker, which passes unrecognised flags through): APPENDED, so Pi's built-in
 // tool guidance stays. One argv element, so text such as `--tools bash` is data, never a flag. Absent or empty, the argv is exactly piArgv's.
-// On the standard worker this is a SECOND `--append-system-prompt` after piArgv's guide flag. That is deliberate: the pinned Pi (1.1.0) collects
+// On the standard worker this is a SECOND `--append-system-prompt` after piArgv's guide flag. That is deliberate: the pinned Pi collects
 // every occurrence (cli/args.js pushes each into an array) and joins the resolved values with a blank line in order (agent-session.js), so
 // the guide then the template prompt both reach the model; each value is read as a file if it is an existing path, else as literal text.
 // A spec whose browser block names the interactive profile gets only the events sink, no agent guide and no default loadout extensions: the
