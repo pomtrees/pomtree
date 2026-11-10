@@ -42,8 +42,8 @@ const version = baked.version ?? "";
 
 // Sole Pi version authority. On bump, update the npm integrity alongside this pin (no fallback). The Dockerfile stamps it as the
 // org.pomtree.pi.version label (PI_VERSION_LABEL in src/image-labels.ts), so readers take it from the image, never from here.
-const PI_VERSION = "1.1.0";
-const PI_NPM_INTEGRITY = "sha512-SeEi/4hdcHNgA9UWlefZl7ZZpm3dzi2OoxNjDHsBJ9o298LNOtbL4DGKgitlEj6uCTccvtw6f2hlCkTPVJ2RXg==";
+const PI_VERSION = "1.5.1";
+const PI_NPM_INTEGRITY = "sha512-rdu4pRvpQba2ep83nqHaN8L1pvY1OQ3i/2FucogA/eyRxwoUXMUXdk1Z9JnZFJR+9ck9Gs1ajuSb9m7Hz7ejYw==";
 
 // Opt-in layer cache shared across builds (CI): AGENT_IMAGE_CACHE_DIR=<dir> makes buildx import from and export to a local cache directory
 // (type=local, mode=max so the slow apt layers are kept). Unset (the default) is the plain `docker build` with no cache flags. Needs a
