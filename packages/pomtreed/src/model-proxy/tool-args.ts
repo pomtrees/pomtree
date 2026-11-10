@@ -10,6 +10,7 @@ import { modelRefusalTag } from "@pomtree/core";
 // the rewritten call is verified live on the OpenAI wire (cli scenario 8); the Anthropic wire's rewrite is covered by unit tests.
 // Only OpenAI chat completions and Anthropic messages are checked; TODO(responses-tool-args): the OpenAI Responses route
 // (`function_call` items) passes through unchecked.
+// TODO(malformed-args-rewrite): Pi 1.3.0+ refuses cut tool-call arguments itself, so this proxy rewrite may be redundant. Current behavior: the proxy still rewrites the call to the tagged refusal string, which is what gives the operator the tagged error line and the malformed_tool_arguments class. Dropping it would drop that line; revisit by checking whether Pi's own refusal surfaces an equivalent operator-visible, tagged message.
 
 /** The refusal the model reads in place of the arguments of a call to `tool`. */
 export function malformedToolArgumentsRefusal(tool: string): string {
