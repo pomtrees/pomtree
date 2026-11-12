@@ -149,8 +149,15 @@ interface DoctorBackend {
 function renderBackend(b: DoctorBackend): string {
   const e = b.engine;
   if (!e) return b.id;
-  const socket =
-    e.socket === undefined ? "no socket found" : `${e.socket}, ${e.source === "config" ? `from ${e.via}` : `detected${e.via ? ` via ${e.via}` : ""}`}`;
+  const origin =
+    e.source === "config"
+      ? `from ${e.via}`
+      : e.source === "env"
+        ? `from env ${e.via}`
+        : e.source === "default"
+          ? "default location"
+          : `detected${e.via ? ` via ${e.via}` : ""}`;
+  const socket = e.socket === undefined ? "no socket found" : `${e.socket}, ${origin}`;
   return `${b.id} (${e.binary}, ${socket})`;
 }
 

@@ -122,10 +122,26 @@ export interface OpenLocalFromConfigInput {
 }
 
 // The `openLocal` of resolveBackend: opens the engine with each engine's own configured socket (`sandbox.<id>.socket`, empty =
-// detect), so an explicit engine reads its key and `auto` reads both.
+// detect), so an explicit engine reads only its own key (the other engine's socket is never read) and `auto` reads both.
 export function openLocalFromConfig(i: OpenLocalFromConfigInput): (selection: EngineSelection) => Promise<LocalEngine> {
   const socket = (id: EngineId) => i.backendConfig(id)[engineProfile(id).socketConfigKey] as string | undefined;
-  return (selection) => i.open({ selection, env: i.env, configured: { docker: socket("docker"), podman: socket("podman") } });
+  return (selection) =>
+    i.open({
+      selection,
+      env: i.env,
+      configured: selection === "auto" ? { docker: socket("docker"), podman: socket("podman") } : { [selection]: socket(selection) },
+    });
+}
+
+// One finding per engine socket key that is set but ignored because `sandbox.backend` names the other engine explicitly.
+export function ignoredSocketFindings(selection: string, backendConfig: (id: string) => Readonly<Record<string, unknown>>): string[] {
+  if (selection !== "docker" && selection !== "podman") return [];
+  const other: EngineId = selection === "docker" ? "podman" : "docker";
+  const key = engineProfile(other).socketConfigKey;
+  const value = backendConfig(other)[key];
+  return typeof value === "string" && value !== ""
+    ? [`${key} is set but sandbox.backend is ${selection}; unset it or set sandbox.backend to ${other} or auto`]
+    : [];
 }
 
 export interface ResolveBackendInput {

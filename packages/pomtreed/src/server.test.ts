@@ -523,13 +523,13 @@ test("/readyz and doctor carry the resolved backend (ids and socket path only, n
   const b = await listen(plain.daemon, s2);
   try {
     const r = await get(s, "/readyz");
-    assert.deepEqual(JSON.parse(r.body), {
-      status: "ready",
-      reasons: [],
-      backend: { id: "podman", engine: { binary: "podman", socket: "/run/p.sock", source: "config", via: "sandbox.podman.socket" } },
+    // Unauthenticated: the id and binary only; the socket path, its source and the key stay in doctor().
+    assert.deepEqual(JSON.parse(r.body), { status: "ready", reasons: [], backend: { id: "podman", engine: { binary: "podman" } } });
+    assert.ok(!r.body.includes("planted-token-sentinel") && !r.body.includes("/run/p.sock"));
+    assert.deepEqual((await t.daemon.doctor()).backend, {
+      id: "podman",
+      engine: { binary: "podman", socket: "/run/p.sock", source: "config", via: "sandbox.podman.socket" },
     });
-    assert.ok(!r.body.includes("planted-token-sentinel"));
-    assert.equal((await t.daemon.doctor()).backend?.id, "podman");
     assert.deepEqual(JSON.parse((await get(s2, "/readyz")).body), { status: "ready", reasons: [] });
   } finally {
     delete process.env.POMTREED_TEST_PLANTED_TOKEN;

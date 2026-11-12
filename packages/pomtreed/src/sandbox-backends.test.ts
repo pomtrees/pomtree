@@ -35,6 +35,7 @@ import {
   type ContributedSource,
   createContributedSource,
   createLocalSandbox,
+  ignoredSocketFindings,
   openLocalFromConfig,
   remoteBootRefusal,
   resolveBackend,
@@ -399,11 +400,26 @@ test("openLocalFromConfig hands each engine's own configured socket to the opene
   await openLocal("podman");
   await openLocal("auto");
   assert.deepEqual(seen, [
-    { selection: "podman", configured: { docker: "/run/d.sock", podman: "/run/p.sock" } },
+    { selection: "podman", configured: { podman: "/run/p.sock" } }, // an explicit engine never reads the other engine's socket
     { selection: "auto", configured: { docker: "/run/d.sock", podman: "/run/p.sock" } },
   ]);
   // Negative: a backend view without the key (a core-only view) configures nothing, so detection runs.
   seen.length = 0;
   await openLocalFromConfig({ backendConfig: () => ({}), env: {}, open })("docker");
-  assert.deepEqual(seen[0]?.configured, { docker: undefined, podman: undefined });
+  assert.deepEqual(seen[0]?.configured, { docker: undefined });
+});
+
+test("ignoredSocketFindings names the ignored key and the action, for an explicit engine only", () => {
+  const cfg = (o: Record<string, string>) => (id: string) => ({ [`sandbox.${id}.socket`]: o[id] ?? "" });
+  assert.deepEqual(ignoredSocketFindings("docker", cfg({ podman: "/run/p.sock" })), [
+    "sandbox.podman.socket is set but sandbox.backend is docker; unset it or set sandbox.backend to podman or auto",
+  ]);
+  assert.deepEqual(ignoredSocketFindings("podman", cfg({ docker: "/run/d.sock" })), [
+    "sandbox.docker.socket is set but sandbox.backend is podman; unset it or set sandbox.backend to docker or auto",
+  ]);
+  // Negatives: the selected engine's own key, an unset other key, auto and a non-local backend say nothing.
+  assert.deepEqual(ignoredSocketFindings("docker", cfg({ docker: "/run/d.sock" })), []);
+  assert.deepEqual(ignoredSocketFindings("docker", cfg({})), []);
+  assert.deepEqual(ignoredSocketFindings("auto", cfg({ podman: "/p", docker: "/d" })), []);
+  assert.deepEqual(ignoredSocketFindings("kubernetes", cfg({ podman: "/p" })), []);
 });

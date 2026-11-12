@@ -21,6 +21,7 @@ import {
   bootNeeds,
   createBackendRegistry,
   createLocalSandbox,
+  ignoredSocketFindings,
   openLocalFromConfig,
   remoteBootRefusal,
   type ResolvedBackend,
@@ -201,7 +202,7 @@ if (!backend.localEngine) refuseStart(remoteBootRefusal(backend));
 }
 const localBackend = backend;
 const engine: LocalEngine = localBackend.engine;
-for (const finding of engine.findings) console.error(`pomtreed: ${finding}`);
+for (const finding of [...engine.findings, ...ignoredSocketFindings(cfg["sandbox.backend"], loaded.backendConfig)]) console.error(`pomtreed: ${finding}`);
 // "off" disables the agent TCP endpoint (agents then mount the unix socket); otherwise host:port, port 0 = ephemeral.
 // Default (TODO(agent-endpoint)): Linux binds the engine's bridge gateway (+ loopback), others loopback; see agent-net.ts.
 // Planned before the safety check below: an explicit non-loopback host is compared with the detected gateway (detection is cached).

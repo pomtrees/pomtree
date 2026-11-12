@@ -1475,7 +1475,22 @@ test("doctor names the resolved backend and where the engine socket came from, a
     route({ "/v1/doctor": { ...base, backend: { id: "podman", engine: { binary: "podman", socket: "/run/p.sock", source: "env", via: "CONTAINER_HOST" } } } }),
   );
   await run(["doctor"], det.io);
-  assert.match(det.out[0]!, /^  backend:    podman \(podman, \/run\/p\.sock, detected via CONTAINER_HOST\)$/m);
+  assert.match(det.out[0]!, /^  backend:    podman \(podman, \/run\/p\.sock, from env CONTAINER_HOST\)$/m);
+  const def = harness(
+    route({
+      "/v1/doctor": {
+        ...base,
+        backend: { id: "docker", engine: { binary: "docker", socket: "/var/run/docker.sock", source: "default", via: "/var/run/docker.sock" } },
+      },
+    }),
+  );
+  await run(["doctor"], def.io);
+  assert.match(def.out[0]!, /^  backend:    docker \(docker, \/var\/run\/docker\.sock, default location\)$/m);
+  const cli = harness(
+    route({ "/v1/doctor": { ...base, backend: { id: "docker", engine: { binary: "docker", socket: "/s.sock", source: "cli", via: "docker context" } } } }),
+  );
+  await run(["doctor"], cli.io);
+  assert.match(cli.out[0]!, /^  backend:    docker \(docker, \/s\.sock, detected via docker context\)$/m);
   const none = harness(route({ "/v1/doctor": base }));
   await run(["doctor"], none.io);
   assert.doesNotMatch(none.out[0]!, /backend:/);

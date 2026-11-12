@@ -573,7 +573,7 @@ async function probe(
   try {
     const d = await daemon.doctor();
     r = evaluateReadiness({ storeOpen: true, sandboxUp: d.sandboxUp, journalFailed: d.journalFailed, degraded: d.degraded }, { allowSandboxDown });
-    backend = d.backend;
+    backend = d.backend && { id: d.backend.id, ...(d.backend.engine && { engine: { binary: d.backend.engine.binary } }) }; // unauthenticated: no socket path, source or via
   } catch {
     r = evaluateReadiness({ storeOpen: false, sandboxUp: false, journalFailed: false, degraded: false }, { allowSandboxDown });
   }
