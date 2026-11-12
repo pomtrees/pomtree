@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ResolvedMount, SandboxId, SandboxSpec } from "@pomtree/core";
 import type { EgressProxyConfig } from "./audit.ts";
-import { EGRESS_SOCKET_DIR } from "@pomtree/core";
+import { EGRESS_SOCKET_DIR, ownerStampTags } from "@pomtree/core";
 import {
   buildNetworkArgs,
   EGRESS_PROXY_MEMORY_BYTES,
@@ -393,6 +393,8 @@ export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOpti
     `${ID_LABEL}=${id}`,
     "--label",
     `${AGENT_LABEL}=${spec.agent}`,
+    // The owner stamp (pomtree.host, pomtree.generation): list and inspect read it back so reconcile can prove ownership.
+    ...Object.entries(ownerStampTags(spec)).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
     ...userLabelArgs(spec.labels),
     "--user",
     hard.user,

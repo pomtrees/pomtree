@@ -14,6 +14,7 @@ import {
   SandboxOutcomeUnknownError,
   SandboxUnavailableError,
   sandboxCredentialEnv,
+  ownerStampTags,
   sandboxIdForKey,
   secretFileEnv,
 } from "@pomtree/core";
@@ -171,6 +172,7 @@ export function create(deps: SandboxBackendDeps): Sandbox {
     },
 
     async start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle> {
+      ownerStampTags(spec); // refuses a host or generation that cannot be stamped, before any request
       const problem = labelProblem(spec.labels);
       if (problem !== null) throw new Error(`sandbox backend ${ID} refused to start agent ${spec.agent}: ${problem}`);
       const name = sandboxIdForKey(idempotencyKey);
@@ -205,7 +207,7 @@ export function create(deps: SandboxBackendDeps): Sandbox {
     async inspect(id: SandboxId) {
       const rec = await get(id);
       if (rec === null) return null;
-      return { running: rec.state === "running", exitCode: rec.exitCode, status: rec.state };
+      return { running: rec.state === "running", exitCode: rec.exitCode, status: rec.state, host: rec.host, generation: rec.generation };
     },
 
     async list(owner: SandboxOwner): Promise<SandboxListing[]> {

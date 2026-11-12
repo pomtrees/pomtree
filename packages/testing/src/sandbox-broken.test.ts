@@ -89,7 +89,7 @@ test("brokenSandbox: a mode that needs a facet or the engine the sandbox lacks s
 test("conflictingSandbox: a start that failed does not claim its key, so a later start with another spec is not a conflict", async () => {
   const fake = new FakeSandbox();
   const sandbox = conflictingSandbox(fake);
-  const spec = (image: string) => ({ agent: "a", image, env: {}, mounts: [] });
+  const spec = (image: string) => ({ host: "host-test", generation: 0, agent: "a", image, env: {}, mounts: [] });
   fake.startErrors.push(new Error("provider refused the first start"));
   await assert.rejects(() => sandbox.start(spec("one"), "k"), /provider refused/);
   await sandbox.start(spec("two"), "k");

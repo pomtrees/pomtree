@@ -34,6 +34,8 @@ const ID = sandboxIdForKey("agent-1:1:start");
 const HOST_300 = `host-${"h".repeat(295)}`;
 
 const baseSpec = (): SandboxSpec => ({
+  host: "host-a",
+  generation: 3,
   agent: "agent-1",
   image: "registry.internal:5000/pomtree/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   env: { PTREE_BROWSER: "0", POMTREE_AGENT: "agent-1" },
@@ -42,7 +44,7 @@ const baseSpec = (): SandboxSpec => ({
   resources: { cpus: 2, memoryBytes: 2147483648, shmBytes: 67108864 },
   labels: { store_id: "store-1", daemon_epoch: "7" },
 });
-const baseCtx = (): PodContext => ({ namespace: "pomtree-sandboxes", sandboxId: ID, host: "host-a", generation: 3, maxLifetimeSeconds: 86400 });
+const baseCtx = (): PodContext => ({ namespace: "pomtree-sandboxes", sandboxId: ID, maxLifetimeSeconds: 86400 });
 
 // The vendored Pod schema is a strict subset (no securityContext, volumes or resources), so a full manifest is projected onto the
 // fields that schema names before it is checked.
@@ -125,7 +127,7 @@ test("pod: name is pomtree-<64 hex> and within 253 characters", () => {
 test("pod: every label value is at most 63 characters and legal for a 64-hex id and a 300-character host id", () => {
   assert.equal(ID.length, 64);
   assert.equal(HOST_300.length, 300);
-  const pod = buildPod(baseSpec(), { ...baseCtx(), host: HOST_300 });
+  const pod = buildPod({ ...baseSpec(), host: HOST_300 }, baseCtx());
   const labels = pod.metadata.labels;
   for (const [k, v] of Object.entries(labels)) {
     assert.ok(k.length <= 63, `key ${k}`);
@@ -146,6 +148,20 @@ test("pod: every label value is at most 63 characters and legal for a 64-hex id 
   assert.equal(labels[SANDBOX_POD_LABEL], "1");
 });
 
+test("pod: a host or generation that cannot be stamped is refused before a pod is built, naming the cause and the action", () => {
+  for (const host of ["", "a\nb"])
+    assert.throws(
+      () => buildPod({ ...baseSpec(), host }, baseCtx()),
+      (e: unknown) => e instanceof PodBuildError && /host id.*pass the daemon's host id/s.test(e.message),
+    );
+  for (const generation of [-1, 1.5]) {
+    assert.throws(
+      () => buildPod({ ...baseSpec(), generation }, baseCtx()),
+      (e: unknown) => e instanceof PodBuildError && /generation.*pass the agent's generation/s.test(e.message),
+    );
+  }
+});
+
 test("pod: label values that start with h. are encoded so the prefix always means hashed", () => {
   const pod = buildPod({ ...baseSpec(), agent: "h.agent" }, baseCtx());
   assert.match(pod.metadata.labels["pomtree.agent"] as string, /^h\.[0-9a-f]{40}$/);
@@ -153,10 +169,10 @@ test("pod: label values that start with h. are encoded so the prefix always mean
 });
 
 test("pod: the selector the codec produces for the owner tags matches the pod's labels", () => {
-  const spec = baseSpec();
-  const ctx = { ...baseCtx(), host: HOST_300 };
+  const spec = { ...baseSpec(), host: HOST_300 };
+  const ctx = baseCtx();
   const pod = buildPod(spec, ctx);
-  const sel = tagSelector({ "pomtree.sandbox": ctx.sandboxId, "pomtree.host": ctx.host, "pomtree.generation": "3" }, KUBERNETES_TAG_LIMITS);
+  const sel = tagSelector({ "pomtree.sandbox": ctx.sandboxId, "pomtree.host": spec.host, "pomtree.generation": "3" }, KUBERNETES_TAG_LIMITS);
   for (const [k, v] of Object.entries(sel)) assert.equal(pod.metadata.labels[k], v, k);
 });
 
@@ -227,6 +243,8 @@ test("spec hash: is stored as the annotation and equals specHash of the pod", ()
 test("spec hash: is deterministic and independent of key order", () => {
   const a = baseSpec();
   const b: SandboxSpec = {
+    generation: 3,
+    host: "host-a",
     labels: { daemon_epoch: "7", store_id: "store-1" },
     resources: { shmBytes: 67108864, memoryBytes: 2147483648, cpus: 2 },
     cmd: ["pi", "--print"],
@@ -269,8 +287,8 @@ test("spec hash: changes when any security-relevant spec or context field change
     agent: () => hashFor({ ...baseSpec(), agent: "agent-2" }),
     label: () => hashFor({ ...baseSpec(), labels: { store_id: "store-2", daemon_epoch: "7" } }),
     lifetime: () => hashFor(baseSpec(), { ...baseCtx(), maxLifetimeSeconds: 3600 }),
-    generation: () => hashFor(baseSpec(), { ...baseCtx(), generation: 4 }),
-    host: () => hashFor(baseSpec(), { ...baseCtx(), host: "host-b" }),
+    generation: () => hashFor({ ...baseSpec(), generation: 4 }),
+    host: () => hashFor({ ...baseSpec(), host: "host-b" }),
     namespace: () => hashFor(baseSpec(), { ...baseCtx(), namespace: "other" }),
     serviceAccount: () => hashFor(baseSpec(), { ...baseCtx(), serviceAccountName: "other" }),
   };

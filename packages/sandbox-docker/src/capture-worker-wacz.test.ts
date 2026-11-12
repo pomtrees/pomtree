@@ -127,6 +127,8 @@ test("model-free capture worker records a cross-host redirect and script-rendere
   const job = { job: "job-wacz-1", mode: "browser", url: START_URL, maxBytes: 262144, deadlineMs: 60000, userAgent: USER_AGENT };
   const h = await sb.start(
     {
+      host: "host-test",
+      generation: 0,
       agent: "capture-gate",
       image: IMAGE,
       mounts: [wsMount("/work"), ...captureWorkerMounts(), workerReadyMount()],

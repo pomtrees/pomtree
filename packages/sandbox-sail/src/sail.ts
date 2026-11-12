@@ -7,7 +7,16 @@
 // key (or another key of the same account) can create a sailbox with a matching name and tags, and this adapter would treat it as
 // pomtree's. That is not a security boundary between tenants of one account; give each pomtree deployment its own account or key.
 
-import { SANDBOX_CAPABILITIES, SANDBOX_TAGS, SandboxCapabilityError, SandboxQuotaError, SandboxUnavailableError, sandboxIdForKey } from "@pomtree/core";
+import {
+  SANDBOX_CAPABILITIES,
+  SANDBOX_TAGS,
+  SandboxCapabilityError,
+  SandboxQuotaError,
+  SandboxUnavailableError,
+  ownerStampTags,
+  readOwnerStamp,
+  sandboxIdForKey,
+} from "@pomtree/core";
 import type {
   ByteChannel,
   ImageIdentity,
@@ -18,6 +27,7 @@ import type {
   SandboxDeclaration,
   SandboxHandle,
   SandboxId,
+  SandboxInfo,
   SandboxListing,
   SandboxOwner,
   SandboxSpec,
@@ -87,8 +97,6 @@ export interface SailOptions extends Omit<SailApiOptions, "token"> {
   credential: (name: string) => Promise<string>;
   log: (event: string, fields: Record<string, unknown>) => void;
   now: () => number;
-  // This daemon's host id, stamped on every sailbox it creates.
-  host: string;
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
   probe?: ProbePolicy;
@@ -128,7 +136,7 @@ export class SailSandbox implements Sandbox {
     const name = encodeName(SAIL_NAME_SCHEMA, { sandbox: derivedId.slice(0, NAME_ID_CHARS) });
     // Sorted-key JSON: a replay of this key sends byte-identical bytes.
     const body = canonicalJson({ name, image: spec.image, env: env.vars });
-    const ownerTags = { [SANDBOX_TAGS.host]: this.#o.host, [SANDBOX_TAGS.agent]: spec.agent };
+    const ownerTags = { [SANDBOX_TAGS.host]: spec.host, [SANDBOX_TAGS.agent]: spec.agent };
     const res = await createOnce(
       {
         mechanism: "native-token",
@@ -195,24 +203,28 @@ export class SailSandbox implements Sandbox {
     this.#o.log("sail.terminate", { sandbox: id, sailbox });
   }
 
-  async inspect(id: SandboxId): Promise<{ running: boolean; exitCode: number | null; oomKilled?: boolean; status?: string } | null> {
+  async inspect(id: SandboxId): Promise<SandboxInfo | null> {
     const sailbox = await this.#resolve(id);
-    if (sailbox === null) return this.#terminated.has(id) ? { running: false, exitCode: TERMINATED_EXIT_CODE, status: "exited" } : null;
+    if (sailbox === null) return this.#terminated.has(id) ? { running: false, exitCode: TERMINATED_EXIT_CODE, status: "exited", ...NO_STAMP } : null;
     const rec = await this.#api.get(sailbox);
     const state = rec === null ? "exited" : listingState(rec.status);
+    // The owner stamp rides in the record's create-time variable, so it is read back whenever the record still exists (a record that
+    // is gone has none to report: null for both).
+    const decoded = rec === null ? null : decode(rec);
+    const stamp = { host: decoded?.host ?? null, generation: decoded?.generation ?? null };
     if (state === "exited") {
       // Ended by this adapter: a kill. Ended otherwise (lifetime, provider action): not a clean exit, and no exit code is known.
       return this.#terminated.has(id)
-        ? { running: false, exitCode: TERMINATED_EXIT_CODE, status: "exited" }
-        : { running: false, exitCode: null, status: "terminated" };
+        ? { running: false, exitCode: TERMINATED_EXIT_CODE, status: "exited", ...stamp }
+        : { running: false, exitCode: null, status: "terminated", ...stamp };
     }
     const execId = this.#execOf.get(id);
     if (execId !== undefined) {
       const ex = await this.#api.execStatus(sailbox, execId);
-      if (ex !== null && ex.exitCode !== null) return { running: false, exitCode: ex.exitCode, status: "exited" };
+      if (ex !== null && ex.exitCode !== null) return { running: false, exitCode: ex.exitCode, status: "exited", ...stamp };
     }
-    if (state === "paused") return { running: false, exitCode: null, status: "paused" };
-    return { running: true, exitCode: null, status: rec?.status ?? "running" };
+    if (state === "paused") return { running: false, exitCode: null, status: "paused", ...stamp };
+    return { running: true, exitCode: null, status: rec?.status ?? "running", ...stamp };
   }
 
   // Required on every backend. Sail has no server-side tag filter, so every sailbox is read and filtered here: pomtree's name prefix,
@@ -306,16 +318,12 @@ export class SailSandbox implements Sandbox {
     if (Object.keys(spec.env).length + 1 > MAX_ENV) {
       throw new Error(`Sailboxes accept at most ${MAX_ENV} environment variables and the adapter adds one; trim the template env to ${MAX_ENV - 1}`);
     }
-    // The workspace mount carries the agent generation it was granted to; a spec without one is the first generation.
-    const ws = spec.mounts.find((m) => m.kind === "workspace");
-    const generation = ws?.generation ?? 0;
     const tags = encodeTags(
       {
         [SANDBOX_TAGS.sandbox]: sandboxIdForKey(key),
         [SANDBOX_TAGS.agent]: spec.agent,
         [SANDBOX_TAGS.backend]: SAIL_BACKEND,
-        [SANDBOX_TAGS.host]: this.#o.host,
-        [SANDBOX_TAGS.generation]: String(generation),
+        ...ownerStampTags(spec),
       },
       FREEFORM_TAG_LIMITS,
     );
@@ -375,6 +383,9 @@ export class SailSandbox implements Sandbox {
     return tunnelChannel(await this.#api.tunnel(sailbox, port), `${channel} of sandbox ${id}`);
   }
 }
+
+// What inspect reports when the sandbox is gone and its provider record cannot be read.
+const NO_STAMP = { host: null, generation: null } as const;
 
 const tagOf = (d: Decoded, key: string): string | undefined =>
   key === SANDBOX_TAGS.sandbox ? d.sandbox : key === SANDBOX_TAGS.agent ? d.agent : key === SANDBOX_TAGS.host ? (d.host ?? undefined) : undefined;
@@ -446,12 +457,10 @@ function decode(record: SailboxRecord): Decoded | null {
   if (unresolved.length > 0 || sandbox === undefined || agent === undefined) return null;
   // The name and the tags must agree, or the record was edited by someone else.
   if (!matchesField(SAIL_NAME_SCHEMA, field, sandbox.slice(0, NAME_ID_CHARS))) return null;
-  const gen = Number(tags[SANDBOX_TAGS.generation]);
   return {
     sandbox,
     agent,
-    host: tags[SANDBOX_TAGS.host] ?? null,
-    generation: Number.isInteger(gen) && gen >= 0 ? gen : null,
+    ...readOwnerStamp(tags),
     labels: strMap(parsed.labels),
     record,
   };

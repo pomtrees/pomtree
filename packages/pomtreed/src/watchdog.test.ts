@@ -8,7 +8,14 @@ import { setup, spawnSpec, until } from "./test-setup.ts";
 // watchdog with a controlled clock. Only "stalled" trips: budgetFraction is left alone (spent 0), failureLimit is
 // raised so a lone error event never trips, and stallMs/graceMs are small so clock bumps climb one rung at a time.
 
-const spec = (agent: string): SandboxSpec => ({ agent, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] });
+const spec = (agent: string): SandboxSpec => ({
+  host: "host-test",
+  generation: 0,
+  agent,
+  image: "i",
+  env: {},
+  mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }],
+});
 
 async function runningAgent(t: ReturnType<typeof setup>, idempotencyKey: string): Promise<AgentRecord> {
   const root = await t.daemon.root();

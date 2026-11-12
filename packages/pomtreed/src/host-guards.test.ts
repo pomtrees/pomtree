@@ -12,7 +12,7 @@ test("memoryGate refuses a container that would exceed the reservation", () => {
   assert.equal(memoryGate({ running: 3, perContainerBytes: 2 * G, totalBytes: 8 * G, fraction: 0.9 }).ok, false);
 });
 
-const spec = (agent: string) => ({ agent, image: "i", env: {}, mounts: [] });
+const spec = (agent: string) => ({ host: "host-test", generation: 0, agent, image: "i", env: {}, mounts: [] });
 const holders = async (sb: FakeSandbox) => memoryHolders(await sb.list(TEST_OWNER), (id) => sb.inspect(id));
 
 test("memoryHolders: a held exited child does not reserve memory, so it does not block admission", async () => {

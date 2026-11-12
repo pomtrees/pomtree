@@ -231,7 +231,10 @@ test("gateSandboxDeps: a DockerSandbox built from a podman engine launches only 
     return undefined;
   };
   const sb = new DockerSandbox({ ...gateSandboxDeps(podmanEngine), mounts: stubMounts(), egressProxyImage: pin, execFile, warn: () => {} });
-  await sb.start({ agent: "ag-gate", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } }, "k-gate-threading");
+  await sb.start(
+    { host: "host-test", generation: 0, agent: "ag-gate", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } },
+    "k-gate-threading",
+  );
   assert.ok(files.length > 3, "the start issued its calls");
   assert.deepEqual([...new Set(files)], ["podman"]);
   for (const e of envs) assert.equal(e?.CONTAINER_HOST, `unix://${SOCK}`);

@@ -27,15 +27,19 @@ async function freePort(): Promise<number> {
 // The model proxy binds the docker bridge gateway on Linux whatever agent.listen says, and pomtreed learns the gateway from `docker network
 // inspect bridge`. A real host-side docker0 address is not local inside a container on the default bridge network (EADDRNOTAVAIL), and a
 // missing Docker CLI would change the plan. So every boot gets a stub `docker` first on its PATH that names a bindable stand-in: 127.0.0.2
-// is loopback-range (local anywhere on Linux) and every other docker subcommand fails, as with an unreachable daemon.
+// is loopback-range (local anywhere on Linux) and every other docker subcommand fails with the unreachable-daemon message (the legacy container boot check reads that as a skip).
 const STUB_GATEWAY = "127.0.0.2";
 function stubDockerDir(root: string): string {
   const dir = join(root, "stub-bin");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "docker");
-  writeFileSync(file, `#!/bin/sh\n[ "$1 $2 $3" = "network inspect bridge" ] && { echo ${STUB_GATEWAY}; exit 0; }\nexit 1\n`, { mode: 0o755 });
+  writeFileSync(
+    file,
+    `#!/bin/sh\n[ "$1 $2 $3" = "network inspect bridge" ] && { echo ${STUB_GATEWAY}; exit 0; }\necho "Cannot connect to the Docker daemon at unix:///absent.sock. Is the docker daemon running?" >&2\nexit 1\n`,
+    { mode: 0o755 },
+  );
   // A podman-selected boot must never run the machine's real podman either: every podman subcommand fails, as with no engine.
-  writeFileSync(join(dir, "podman"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  writeFileSync(join(dir, "podman"), `#!/bin/sh\necho "Cannot connect to Podman. Is the podman socket running?" >&2\nexit 1\n`, { mode: 0o755 });
   return dir;
 }
 

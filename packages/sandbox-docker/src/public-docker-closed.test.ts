@@ -7,6 +7,8 @@ import { NetSandbox } from "./test-network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const spec = {
+  host: "host-test",
+  generation: 0,
   agent: "worker",
   image: "pinned-agent-image",
   env: {},

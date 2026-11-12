@@ -26,7 +26,7 @@ import { EGRESS_PROXY_MEMORY_BYTES, EGRESS_PROXY_PATH } from "./egress.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const OWNER: SandboxOwner = { host: "host-1", storeId: "s1", epoch: 1 };
-const spec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
+const spec = { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
 
 function fakeProc() {
   const p = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
@@ -142,7 +142,7 @@ test("kill: concurrent wait resolves with the exit code, container removed, insp
   const cmds = calls.map((c) => c[0]).filter((c) => c !== "run");
   assert.ok(cmds.includes("kill") && cmds.includes("rm"));
   assert.ok(cmds.indexOf("inspect") < cmds.indexOf("rm"));
-  assert.deepEqual(await sb.inspect(h.id), { running: false, exitCode: 137, status: "exited" });
+  assert.deepEqual(await sb.inspect(h.id), { running: false, exitCode: 137, status: "exited", host: null, generation: null });
 });
 
 test("kill captures oomKilled via inspect before rm, so wait/inspect remember it after removal", async () => {
@@ -151,7 +151,7 @@ test("kill captures oomKilled via inspect before rm, so wait/inspect remember it
   const h = await sb.start(spec, "k-kill-oom");
   await sb.kill(h.id, `test-kill:${h.id}`);
   assert.deepEqual(await h.wait(), { exitCode: 137, oomKilled: true });
-  assert.deepEqual(await sb.inspect(h.id), { running: false, exitCode: 137, oomKilled: true, status: "exited" });
+  assert.deepEqual(await sb.inspect(h.id), { running: false, exitCode: 137, oomKilled: true, status: "exited", host: null, generation: null });
   const cmds = calls.map((c) => c[0]).filter((c) => c !== "run");
   assert.ok(cmds.indexOf("inspect") < cmds.indexOf("rm"));
 });
@@ -541,6 +541,73 @@ test("list: tab-delimited labels survive empty and spaced values", async () => {
   ]);
 });
 
+test("list: host and generation come from the pomtree.host and pomtree.generation labels; a missing or damaged one reads null", async () => {
+  const label = (extra: Record<string, string>) => JSON.stringify({ pomtree: "1", store_id: "s1", daemon_epoch: "1", ...extra });
+  const rows: Record<string, string> = {
+    c1: `sb-1\tag\t${label({ "pomtree.host": "host-a", "pomtree.generation": "3" })}`,
+    c2: `sb-2\tag\t${label({})}`,
+    c3: `sb-3\tag\t${label({ "pomtree.host": "host-a", "pomtree.generation": "3x" })}`,
+    c4: `sb-4\tag\t${label({ "pomtree.host": "", "pomtree.generation": "0" })}`,
+    c5: `sb-5\tag\t${label({ "pomtree.host": "my\thost", "pomtree.generation": "3" })}`,
+  };
+  const sb = new NetSandbox({ mounts: stubMounts(), exec: async (args) => (args[0] === "ps" ? "c1\nc2\nc3\nc4\nc5" : rows[args.at(-1)!]!) });
+  const stamps = (await sb.list(OWNER)).map((l) => [l.id, l.host, l.generation]);
+  assert.deepEqual(stamps, [
+    ["sb-1", "host-a", 3],
+    ["sb-2", null, null],
+    ["sb-3", "host-a", null],
+    ["sb-4", null, 0],
+    ["sb-5", null, 3],
+  ]);
+});
+
+test("inspect: the owner stamp rides on the same inspect call as the state; a line without it reports none", async () => {
+  const at = (line: string) => {
+    const calls: string[][] = [];
+    const sb = new NetSandbox({
+      mounts: stubMounts(),
+      exec: async (args) => {
+        calls.push(args);
+        return line;
+      },
+    });
+    return { sb, calls };
+  };
+  const stamped = at("true 0 false none running\thost a,b\t12");
+  assert.deepEqual(await stamped.sb.inspect("x"), { running: true, exitCode: null, status: "running", host: "host a,b", generation: 12 });
+  assert.equal(stamped.calls.length, 1, "the stamp costs no extra Docker call");
+  assert.match(stamped.calls[0]?.join(" ") ?? "", /pomtree\.host.*pomtree\.generation/);
+  assert.deepEqual(await at("true 0 false none running\t\t").sb.inspect("x"), {
+    running: true,
+    exitCode: null,
+    status: "running",
+    host: null,
+    generation: null,
+  });
+  assert.deepEqual(await at("true 0 false none running\t<no value>\t<no value>").sb.inspect("x"), {
+    running: true,
+    exitCode: null,
+    status: "running",
+    host: null,
+    generation: null,
+  });
+  // A label holding a tab splits into the wrong field count: fail closed (null for both), never a truncated host.
+  assert.deepEqual(await at("true 0 false none running\tmy\thost\t3").sb.inspect("x"), {
+    running: true,
+    exitCode: null,
+    status: "running",
+    host: null,
+    generation: null,
+  });
+  assert.deepEqual(await at("true 0 false none running\th\t-1").sb.inspect("x"), {
+    running: true,
+    exitCode: null,
+    status: "running",
+    host: "h",
+    generation: null,
+  });
+});
+
 test("list: exposes caller labels (not reserved ones) and run applies spec.labels", async () => {
   const calls: string[][] = [];
   const sb = new NetSandbox({
@@ -698,8 +765,8 @@ test("exited cache is bounded: oldest delivered-exit entries are evicted past th
   await sb.kill(h2.id, `test-kill:${h2.id}`);
   await sb.kill(h3.id, `test-kill:${h3.id}`);
   assert.equal(await sb.inspect(h1.id), null); // evicted (oldest)
-  assert.deepEqual(await sb.inspect(h2.id), { running: false, exitCode: 0, status: "exited" });
-  assert.deepEqual(await sb.inspect(h3.id), { running: false, exitCode: 0, status: "exited" });
+  assert.deepEqual(await sb.inspect(h2.id), { running: false, exitCode: 0, status: "exited", host: null, generation: null });
+  assert.deepEqual(await sb.inspect(h3.id), { running: false, exitCode: 0, status: "exited", host: null, generation: null });
 });
 
 test("start: an egress sidecar failure is egress_start_failed (not unknown), never retryable, and no worker container is run", async () => {

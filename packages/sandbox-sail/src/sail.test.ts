@@ -22,6 +22,8 @@ import { PLANTED_TOKEN, SAIL_RESOURCE, TEST_IMAGE, TEST_USER_AGENT, fixture, fix
 const KEY = "agent-a:1:start";
 const DAEMON_LABELS = { daemon_epoch: "1", store_id: "store-a" };
 const spec = (extra: Partial<SandboxSpec> = {}): SandboxSpec => ({
+  host: "host-a",
+  generation: 1,
   agent: "agent-a",
   image: TEST_IMAGE,
   env: {},
@@ -212,15 +214,15 @@ test("lifecycle on the stub: stop ends the sailbox, inspect and wait agree, a pr
   const w = await stubWorld();
   try {
     const a = await w.sandbox.start(spec(), KEY);
-    assert.deepEqual(await w.sandbox.inspect(a.id), { running: true, exitCode: null, status: "running" });
+    assert.deepEqual(await w.sandbox.inspect(a.id), { running: true, exitCode: null, status: "running", host: "host-a", generation: 1 });
     await w.sandbox.stop(a.id, 1000, "stop-1");
     assert.deepEqual(await a.wait(), { exitCode: 137 });
-    assert.deepEqual(await w.sandbox.inspect(a.id), { running: false, exitCode: 137, status: "exited" });
+    assert.deepEqual(await w.sandbox.inspect(a.id), { running: false, exitCode: 137, status: "exited", host: null, generation: null });
     await w.sandbox.kill(a.id, "kill-again"); // already gone: success
     const b = await w.sandbox.start(spec({ agent: "agent-b" }), "agent-b:1:start");
     const sb = w.stub.model.resources(SAIL_RESOURCE.collection).find((r) => r.name === `pomtree-${b.id.slice(0, 32)}`);
     await w.request(`${w.stub.baseUrl}/v1/sailboxes/${String(sb?.sailbox_id)}`, { method: "DELETE", headers: { authorization: "Bearer x" } });
-    assert.deepEqual(await w.sandbox.inspect(b.id), { running: false, exitCode: null, status: "terminated" });
+    assert.deepEqual(await w.sandbox.inspect(b.id), { running: false, exitCode: null, status: "terminated", host: null, generation: null });
     await assert.rejects(() => b.wait(), SandboxUnavailableError);
     await assert.rejects(() => w.sandbox.attach(b.id, "agent-b"), SandboxUnavailableError);
   } finally {
@@ -315,13 +317,13 @@ function ownedByUsRules(s: SandboxListing, owner: SandboxOwner): true | string {
 
 test("the daemon's owner labels round-trip: list(owner) returns them and remote reconcile's ownership rules accept the sandbox", async () => {
   // As the daemon builds them: sandboxOwner gives { host, storeId, epoch: Number(epoch) }, ownerLabels gives store_id and
-  // daemon_epoch (the epoch as a millisecond-timestamp string), and the workspace mount carries the generation.
+  // daemon_epoch (the epoch as a millisecond-timestamp string), and the spec carries the generation.
   const epoch = 1_762_900_000_000;
   const owner: SandboxOwner = { host: "host-a", storeId: "store-7", epoch };
   const w = await stubWorld();
   try {
     const labels = { store_id: owner.storeId, daemon_epoch: String(epoch) };
-    const s = spec({ labels, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w", generation: 4 }] });
+    const s = spec({ labels, generation: 4 });
     const h = await w.sandbox.start(s, "agent-a:4:start");
     const listed = await w.sandbox.list(owner);
     assert.equal(listed.length, 1);

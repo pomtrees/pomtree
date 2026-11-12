@@ -358,6 +358,77 @@ export const BREAK_MODES = {
       },
     ],
   },
+  "owner-stamp": {
+    name: "stamp-dropped",
+    collateral: [],
+    fails: /list\(owner\) must report the host stamp-own was started with/,
+    // The backend never stamps the owner: list() and inspect() report null for both, as an adapter that ignores SandboxSpec.host would.
+    wrap: (inner) =>
+      decorate(inner, {
+        list: async (owner) => (await inner.list(owner)).map((l) => ({ ...l, host: null, generation: null })),
+        inspect: async (id) => {
+          const info = await inner.inspect(id);
+          return info === null ? null : { ...info, host: null, generation: null };
+        },
+      }),
+    also: [
+      {
+        name: "stamp-generation-defaulted",
+        collateral: [],
+        fails: /list\(owner\) must report the generation stamp-own was started with/,
+        // The generation is stamped as 0 whatever the spec says (a default instead of the value).
+        wrap: (inner) =>
+          decorate(inner, {
+            list: async (owner) => (await inner.list(owner)).map((l) => ({ ...l, generation: 0 })),
+          }),
+      },
+      {
+        name: "stamp-host-overwritten",
+        collateral: [],
+        fails: /list\(owner\) must report the host stamp-peer was started with/,
+        // Every sandbox is reported under the owner's host, as an adapter that stamps its own configured host would.
+        wrap: (inner) =>
+          decorate(inner, {
+            list: async (owner) => (await inner.list(owner)).map((l) => ({ ...l, host: owner.host })),
+          }),
+      },
+      {
+        name: "stamp-host-truncated",
+        collateral: [],
+        fails: /list\(owner\) must report the host stamp-odd was started with/,
+        // A host longer than 256 characters loses its tail, as a provider limit would without the tag codec's hash.
+        wrap: (inner) =>
+          decorate(inner, {
+            list: async (owner) => (await inner.list(owner)).map((l) => ({ ...l, host: l.host === null ? null : l.host.slice(0, 256) })),
+          }),
+      },
+      {
+        name: "inspect-drops-stamp",
+        collateral: [],
+        fails: /inspect must report the host stamp-own was started with/,
+        // list() reports the stamp but inspect() does not.
+        wrap: (inner) =>
+          decorate(inner, {
+            inspect: async (id) => {
+              const info = await inner.inspect(id);
+              if (info === null) return null;
+              const { host: _h, generation: _g, ...rest } = info;
+              return rest;
+            },
+          }),
+      },
+      {
+        name: "stamp-coerced",
+        collateral: [],
+        fails: /generation -1 cannot be stamped, so the start must be rejected/,
+        // An unstampable generation is coerced to a valid one instead of refused.
+        wrap: (inner) =>
+          decorate(inner, {
+            start: async (spec, key) => inner.start({ ...spec, generation: Math.max(0, Math.trunc(spec.generation)) }, key),
+          }),
+      },
+    ],
+  },
   "idempotent-start": {
     name: "forget-key",
     collateral: ["unknown-outcome-retry"],

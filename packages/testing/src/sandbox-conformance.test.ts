@@ -296,17 +296,19 @@ test("negative: an unknown create outcome that list(owner) cannot reconcile fail
   assert.match(failure(red, "unknown-outcome-reconcile"), /found by list\(owner\) exactly once/);
 });
 
-test("mutation: listing tags are required by default, so a backend that drops the generation fails label-rules", async () => {
-  const stamping = (generation: number | null) => (fake: FakeSandbox) => ({
-    list: async (owner: Parameters<FakeSandbox["list"]>[0]) => (await fake.list(owner)).map((l) => ({ ...l, host: owner.host, generation })),
+test("mutation: the owner stamp is always required, so a backend that drops, defaults or alters it fails owner-stamp and the shared fake passes", async () => {
+  const stamping = (generation: (g: number | null) => number | null) => (fake: FakeSandbox) => ({
+    list: async (owner: Parameters<FakeSandbox["list"]>[0]) => (await fake.list(owner)).map((l) => ({ ...l, generation: generation(l.generation) })),
   });
-  const green = await evaluateSandboxConformance(brokenFake(stamping(1), { listingTags: "required" }), { clauses: only("label-rules") });
-  assert.equal(status(green, "label-rules"), "passed", failure(green, "label-rules"));
-  const dropped = await evaluateSandboxConformance(brokenFake(stamping(null), { listingTags: "required" }), { clauses: only("label-rules") });
-  assert.equal(status(dropped, "label-rules"), "failed");
-  assert.match(failure(dropped, "label-rules"), /integer generation/);
-  const plain = await evaluateSandboxConformance(fakeSandboxUnderTest({ listingTags: "required" }), { clauses: only("label-rules") });
-  assert.equal(status(plain, "label-rules"), "failed", "the fake stamps nothing, so it needs listingTags optional (its descriptor default)");
+  const green = await evaluateSandboxConformance(fakeSandboxUnderTest(), { clauses: only("owner-stamp") });
+  assert.equal(status(green, "owner-stamp"), "passed", failure(green, "owner-stamp"));
+  const same = await evaluateSandboxConformance(brokenFake(stamping((g) => g)), { clauses: only("owner-stamp") });
+  assert.equal(status(same, "owner-stamp"), "passed", failure(same, "owner-stamp"));
+  const dropped = await evaluateSandboxConformance(brokenFake(stamping(() => null)), { clauses: only("owner-stamp") });
+  assert.equal(status(dropped, "owner-stamp"), "failed");
+  assert.match(failure(dropped, "owner-stamp"), /report the generation stamp-own was started with/);
+  const altered = await evaluateSandboxConformance(brokenFake(stamping((g) => (g === null ? g : g + 1))), { clauses: only("owner-stamp") });
+  assert.equal(status(altered, "owner-stamp"), "failed");
 });
 
 test("mutation: a connect stream that never ends fails channel-drop-throws at its deadline instead of hanging", async () => {

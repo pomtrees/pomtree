@@ -44,7 +44,10 @@ test("live e2b: start, inspect, list and kill one sandbox", { skip: skip || fals
     config: { "sandbox.e2b.leaseMs": 120_000 },
   });
   const owner = { host: "live-host", storeId: `live-${process.pid}`, epoch: 1 };
-  const h = await sandbox.start({ agent: "live-e2b", image: "base", env: {}, mounts: [], labels: { store_id: owner.storeId } }, `live-e2b-${Date.now()}`);
+  const h = await sandbox.start(
+    { host: "host-test", generation: 0, agent: "live-e2b", image: "base", env: {}, mounts: [], labels: { store_id: owner.storeId } },
+    `live-e2b-${Date.now()}`,
+  );
   try {
     assert.equal((await sandbox.inspect(h.id))?.running, true);
     assert.ok((await sandbox.list(owner)).some((l) => l.id === h.id));

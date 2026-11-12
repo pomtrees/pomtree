@@ -6,7 +6,15 @@ import { createFakes, FakeByteStream } from "./index.ts";
 test("FakeSandbox terminal.open: records writes/resizes/closes, scripted output, ends on sandbox exit", async () => {
   const f = createFakes();
   const h = await f.sandbox.start(
-    { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }], tty: { cols: 80, rows: 24 } },
+    {
+      host: "host-test",
+      generation: 0,
+      agent: "a",
+      image: "i",
+      env: {},
+      mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }],
+      tty: { cols: 80, rows: 24 },
+    },
     "k-term",
   );
   assert.deepEqual(f.sandbox.started[0]!.tty, { cols: 80, rows: 24 });
@@ -39,7 +47,10 @@ test("FakeSandbox terminal.open: records writes/resizes/closes, scripted output,
 
 test("FakeSandbox loopback facet: records writes/closes, scripted output, ends on sandbox exit, scripted errors", async () => {
   const f = createFakes();
-  const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }] }, "k-lb");
+  const h = await f.sandbox.start(
+    { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }] },
+    "k-lb",
+  );
   const b = await f.sandbox.loopback!.open(h.id, LOOPBACK_PORTS[0]);
   const fake = f.sandbox.loopbackStreams.get(h.id)![0]!;
   assert.equal(fake, b);
@@ -58,7 +69,10 @@ test("FakeSandbox loopback facet: records writes/closes, scripted output, ends o
   assert.equal(fake.closes, 1);
   // Negative: not running, a port outside LOOPBACK_PORTS (also recorded), a scripted error.
   await assert.rejects(() => f.sandbox.loopback!.open(h.id, 9222), SandboxUnavailableError);
-  const h2 = await f.sandbox.start({ agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-b", containerPath: "/w" }] }, "k-lb2");
+  const h2 = await f.sandbox.start(
+    { host: "host-test", generation: 0, agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-b", containerPath: "/w" }] },
+    "k-lb2",
+  );
   await assert.rejects(() => f.sandbox.loopback!.open(h2.id, 22 as LoopbackPort), RangeError);
   f.sandbox.loopbackErrors.push(new Error("scripted"), null);
   await assert.rejects(() => f.sandbox.loopback!.open(h2.id, 9222), /scripted/);

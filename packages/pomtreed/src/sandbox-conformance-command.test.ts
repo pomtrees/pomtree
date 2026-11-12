@@ -72,7 +72,7 @@ export function create(deps) { return globalThis.__pomtreeConformanceFixture(dep
 `,
   };
   // The shared fake cannot stamp the host and generation tags on its listings, so its descriptor relaxes that, as fakeSandboxUnderTest does.
-  const conformance = opts.conformance === undefined ? `export default ({ base }) => ({ ...base, listingTags: "optional" });\n` : opts.conformance;
+  const conformance = opts.conformance === undefined ? `export default ({ base }) => ({ ...base });\n` : opts.conformance;
   if (conformance !== null) files["conformance.mts"] = conformance;
   for (const [rel, text] of Object.entries(files)) writeFileSync(join(dir, rel), text);
   return dir;
@@ -173,14 +173,25 @@ test("a fixture whose sandbox breaks a clause exits 1 naming the clause", async 
   );
 });
 
-test("without conformance.mts the strict listing default applies, and the shared fake (no host tag) fails label-rules", async () => {
-  useSandbox(fake);
+test("without conformance.mts the owner stamp is required, so a backend that does not report it fails owner-stamp and the stamping fake passes it", async () => {
+  const unstamped = (): Sandbox =>
+    new Proxy(fake(), {
+      get(target, prop) {
+        if (prop === "list") return async (o: Parameters<Sandbox["list"]>[0]) => (await target.list(o)).map((l) => ({ ...l, host: null, generation: null }));
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+  useSandbox(unstamped);
   const r = await run([writeExtension({ conformance: null })]);
   assert.equal(r.rc, 1, r.text);
   assert.ok(
-    r.out.some((l) => l.startsWith("FAIL label-rules:") && l.includes("must stamp the owner's host")),
+    r.out.some((l) => l.startsWith("FAIL owner-stamp:") && l.includes("must report the host")),
     r.text,
   );
+  useSandbox(fake);
+  const ok = await run([writeExtension({ conformance: null })]);
+  assert.ok(!ok.out.some((l) => l.startsWith("FAIL owner-stamp")), ok.text);
 });
 
 test("a file changed after pinning is refused before anything is imported", async () => {
@@ -205,7 +216,7 @@ test("the resolve guard is installed: a provider importing an unshipped package 
 test("a backend gated by its conformance.mts (no live endpoint here) exits non-zero, unless --accept-closed", async () => {
   useSandbox(fake);
   const dir = writeExtension({
-    conformance: `export default ({ base }) => ({ ...base, listingTags: "optional", gate: () => "no live endpoint in this run" });\n`,
+    conformance: `export default ({ base }) => ({ ...base, gate: () => "no live endpoint in this run" });\n`,
   });
   const closed = await run([dir]);
   assert.equal(closed.rc, 1, closed.text);

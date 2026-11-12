@@ -116,7 +116,7 @@ function legacyEngineSandbox(profile = DOCKER_PROFILE) {
 
 test("legacy boot check: refuses with the ids, the missing labels and the exact cleanup command, and deletes nothing", async () => {
   const { calls, sandbox } = legacyEngineSandbox();
-  const v = await legacyContainerBootCheck(scriptedLocalEngine(), sandbox, true);
+  const v = await legacyContainerBootCheck(scriptedLocalEngine(), sandbox);
   assert.ok("refuse" in v, JSON.stringify(v));
   assert.match(v.refuse, /'aaaaaaaaaaaa'/);
   assert.match(v.refuse, /pomtree\.host and pomtree\.generation labels/);
@@ -131,22 +131,19 @@ test("legacy boot check: refuses with the ids, the missing labels and the exact 
 
 test("legacy boot check: the podman engine names podman in the cleanup command", async () => {
   const { sandbox } = legacyEngineSandbox(PODMAN_PROFILE);
-  const v = await legacyContainerBootCheck(scriptedLocalEngine({ profile: PODMAN_PROFILE }), sandbox, true);
+  const v = await legacyContainerBootCheck(scriptedLocalEngine({ profile: PODMAN_PROFILE }), sandbox);
   assert.ok("refuse" in v);
   assert.match(v.refuse, /on the podman engine .*run `podman rm -f 'aaaaaaaaaaaa'`/);
   assert.doesNotMatch(v.refuse, /docker/);
 });
 
-test("legacy boot check: off until the adapter stamps the labels (no scan); an unreachable engine is a skip naming the cause", async () => {
-  const { calls, sandbox } = legacyEngineSandbox();
-  assert.deepEqual(await legacyContainerBootCheck(scriptedLocalEngine(), sandbox), { ok: true });
-  assert.deepEqual(calls, [], "the default gate runs no engine call");
+test("legacy boot check: an unreachable engine is a skip naming the cause; a clean engine passes", async () => {
   const down = { legacyContainerRefusal: async () => Promise.reject(new SandboxUnavailableError()) };
-  const v = await legacyContainerBootCheck(scriptedLocalEngine(), down, true);
+  const v = await legacyContainerBootCheck(scriptedLocalEngine(), down);
   assert.ok("skipped" in v);
   assert.match(v.skipped, /could not check the docker engine for containers without the pomtree\.host and pomtree\.generation labels/);
   const none = { legacyContainerRefusal: async () => undefined };
-  assert.deepEqual(await legacyContainerBootCheck(scriptedLocalEngine(), none, true), { ok: true });
+  assert.deepEqual(await legacyContainerBootCheck(scriptedLocalEngine(), none), { ok: true });
 });
 
 test("a Docker socket from the CLI's context (Colima or Desktop style) reaches the CLI as DOCKER_HOST and the adapter as the same socket", async () => {

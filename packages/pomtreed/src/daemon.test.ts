@@ -1,4 +1,4 @@
-import { tmpDir } from "@pomtree/testing";
+import { scaled, tmpDir } from "@pomtree/testing";
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { request } from "node:http";
@@ -10,6 +10,20 @@ import { handle } from "./api.ts";
 import { listen, listenAgents } from "./server.ts";
 import { kinds, op, setup, spawnSpec } from "./test-setup.ts";
 import { bearer, sockRequest } from "./test-http.ts";
+
+test("the daemon starts every sandbox with its host id and the run's generation; a daemon that omits them fails here, fast", async () => {
+  const t = setup(async () => {});
+  const a = await t.spawn();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((r) => {
+    timer = setTimeout(() => r("late"), scaled(8_000));
+  });
+  const outcome = await Promise.race([t.orchestrator.idle().then(() => "idle" as const), late]);
+  clearTimeout(timer);
+  const started = t.fakes.hooks.raw.sandbox.started[0];
+  assert.ok(started !== undefined, `no sandbox started (${outcome}): the spec must carry a stampable host and generation, or every adapter refuses the start`);
+  assert.deepEqual([started.host, started.generation], ["h1", a.generation]);
+});
 
 test("end to end: spawn, run, typed result, events tailable", async () => {
   const t = setup(async (c) => {
@@ -59,6 +73,8 @@ test("end to end: spawn, run, typed result, events tailable", async () => {
     ev.slice(4).map((e) => e.seq),
   );
   assert.equal(t.fakes.hooks.raw.sandbox.started[0]!.env.POMTREE_AGENT_ID, a.id);
+  // The spec carries the owner stamp every adapter writes: this daemon's host and the run's generation.
+  assert.deepEqual([t.fakes.hooks.raw.sandbox.started[0]!.host, t.fakes.hooks.raw.sandbox.started[0]!.generation], ["h1", a.generation]);
   // Reusing the now-terminal key must conflict, not silently return the reaped record.
   assert.equal((await t.operator("POST", "/v1/agents", { task: "x", idempotencyKey: "k1" })).status, 409);
   assert.equal((await t.operator("GET", "/v1/agents?state=exited")).body instanceof Array, true);

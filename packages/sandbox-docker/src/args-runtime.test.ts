@@ -8,7 +8,7 @@ import { stubMounts, wsMount } from "./test-mounts.ts";
 import type { Exec } from "./docker.ts";
 import { gateBackend, gateExecFileSync, runtimeSkip } from "./docker-gate.ts";
 
-const base: SandboxSpec = { agent: "ag1", image: "img@sha256:abc", env: {}, mounts: [wsMount("/work")] };
+const base: SandboxSpec = { host: "host-test", generation: 0, agent: "ag1", image: "img@sha256:abc", env: {}, mounts: [wsMount("/work")] };
 const runsc = (s: SandboxSpec = base): SandboxSpec => ({ ...s, runtime: { ociRuntime: "runsc" } });
 const mountsFor = async (s: SandboxSpec) => Promise.all(s.mounts.map((m) => stubMounts("/host/ws").resolve(s.agent, m)));
 const INFO_ARGS = ["info", "--format", "{{json .Runtimes}}"];

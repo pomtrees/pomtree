@@ -359,6 +359,12 @@ export interface MountProvider {
 
 export interface SandboxSpec {
   agent: AgentId; // labels the sandbox so reconciliation can map it back to an agent
+  // The owning daemon host and the agent generation this sandbox is started for. Every adapter stamps both as provider-side labels
+  // or metadata (SANDBOX_TAGS.host, SANDBOX_TAGS.generation) and reports them back in list(owner) and inspect, so reconcile can
+  // prove ownership and fence by generation. The stamp is validated by ownerStampTags; a value the provider cannot hold verbatim is
+  // hashed by the kit's tag codec.
+  host: HostId;
+  generation: number;
   image: string; // pinned digest
   env: Record<string, string>;
   mounts: MountSpec[]; // the mount of kind "workspace" is the working directory
@@ -382,6 +388,18 @@ export interface SandboxSpec {
 // TODO(exit-reason-wiring): wait() still returns { exitCode: number; oomKilled?: boolean } and no caller passes `reason` to classifyExit;
 // pending: widening wait() to report the reason, the daemon passing it through, and reconciling with the fake's SandboxUnavailableError rejection.
 export type SandboxExitReason = "exited" | "oom" | "killed" | "expired" | "preempted";
+
+// What inspect reports. `host` and `generation` are the owner stamp read back from the provider: null = the sandbox carries none
+// (foreign, untagged or damaged) or is already gone so its provider record cannot be read; absent only from an adapter or test double
+// that does not report it. Every adapter that stamps SandboxSpec.host and generation reports both, null when it cannot read them.
+export interface SandboxInfo {
+  running: boolean;
+  exitCode: number | null;
+  oomKilled?: boolean;
+  status?: string;
+  host?: HostId | null;
+  generation?: number | null;
+}
 
 export interface SandboxHandle {
   id: SandboxId;
@@ -579,7 +597,7 @@ export interface Sandbox extends SandboxFacets {
   // exited, dead); a sandbox whose exit the adapter observed before it was removed reports "exited". `running: false` alone
   // does not tell a created container from an exited one, so a consumer deciding whether a container holds memory must
   // treat an absent or unrecognized status as "may hold memory". null = no such sandbox.
-  inspect(id: SandboxId): Promise<{ running: boolean; exitCode: number | null; oomKilled?: boolean; status?: string } | null>;
+  inspect(id: SandboxId): Promise<SandboxInfo | null>;
   // Used by startup reconciliation: the sandboxes this owner's daemon may have created, with host and generation so reconcile can
   // fence by generation. Required on every backend; `list.byTag` only means the filter runs server-side.
   list(owner: SandboxOwner): Promise<SandboxListing[]>;

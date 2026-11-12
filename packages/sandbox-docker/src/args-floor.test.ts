@@ -4,7 +4,7 @@ import type { SandboxSpec } from "@pomtree/core";
 import { buildRunArgs, CODE_DOCKER_SHAPE, DEFAULT_PIDS_LIMIT, parseDockerShape } from "./args.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
-const spec: SandboxSpec = { agent: "ag1", image: "img@sha256:abc", env: {}, mounts: [wsMount("/work")], cmd: ["echo"] };
+const spec: SandboxSpec = { host: "host-test", generation: 0, agent: "ag1", image: "img@sha256:abc", env: {}, mounts: [wsMount("/work")], cmd: ["echo"] };
 
 async function build(s: SandboxSpec, pidsLimit?: number): Promise<string[]> {
   const provider = stubMounts("/h");

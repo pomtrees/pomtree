@@ -104,7 +104,7 @@ test("adopt path: an exited container whose agent already reported success is no
   const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
   const sb = await t.fakes.hooks.raw.sandbox.start(
-    { agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
+    { host: "h1", generation: 0, agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
     "sb",
   );
   await reg.setSandbox(a.id, a.generation, sb.id, "sb-set");

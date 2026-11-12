@@ -16,7 +16,7 @@ const spec = (agent: string, labels: Record<string, string | undefined> = {}) =>
     if (v === undefined) delete l[k];
     else l[k] = v;
   }
-  return { agent, image: "img", env: {}, mounts: [], labels: l };
+  return { host: "h1", generation: 0, agent, image: "img", env: {}, mounts: [], labels: l };
 };
 const stamped = (sb: FakeSandbox) => {
   const list = sb.list.bind(sb);
@@ -224,13 +224,16 @@ for (const [why, labels] of foreign) {
   });
 }
 
-test("active-set: the selected backend keeps the Docker-era rule (an untagged, unstamped sandbox without store_id is still reclaimed)", async () => {
+test("active-set: the selected backend keeps the Docker-era rule (a stamped sandbox without store_id is still reclaimed)", async () => {
   const t = make();
   const main = t.fakes.hooks.raw.sandbox;
   const o = other();
   wire(t, { other: o });
   await holder(t, "mine", o, "other");
-  const ghost = await main.start({ agent: "ghost", image: "img", env: {}, mounts: [], labels: { daemon_epoch: "0" } }, "ghost-start");
+  const ghost = await main.start(
+    { host: "h1", generation: 0, agent: "ghost", image: "img", env: {}, mounts: [], labels: { daemon_epoch: "0" } },
+    "ghost-start",
+  );
   await reconcileSandboxes(t);
   assert.equal(alive(main, ghost.id), false);
 });

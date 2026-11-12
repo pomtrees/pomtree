@@ -56,7 +56,11 @@ export function sandboxModelRouteProbe(
 ): ModelRouteProbe {
   return async (baseUrl) => {
     const script = `fetch(${JSON.stringify(`${baseUrl}/chat/completions`)},{method:"POST",signal:AbortSignal.timeout(15000)}).then(r=>console.log("STATUS "+r.status)).catch(e=>console.log("ERR "+e.message))`;
-    const h = await sandbox.start({ ...spec, env: {}, cmd: ["node", "-e", script] }, `model-route-probe:${Date.now()}`);
+    // A throwaway probe belongs to no daemon host; the stamp keeps a leaked probe container from reading as a pre-stamp (legacy) one.
+    const h = await sandbox.start(
+      { host: "model-route-probe", generation: 0, ...spec, env: {}, cmd: ["node", "-e", script] },
+      `model-route-probe:${Date.now()}`,
+    );
     let out = "";
     try {
       for await (const part of h.output()) out += part.chunk;

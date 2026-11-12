@@ -51,7 +51,6 @@ function daemonLabelled(inner: Sandbox): Sandbox {
 const descriptor = (wrap: (s: Sandbox) => Sandbox = daemonLabelled): SandboxUnderTest => ({
   name: "e2b (provider stub)",
   capabilities: E2B_DECLARATION,
-  listingTags: "optional", // SandboxSpec carries no host or generation, so nothing stamps them (README)
   async make() {
     const w = await startE2BStub({ userAgent: UA });
     const api = new E2BApi({

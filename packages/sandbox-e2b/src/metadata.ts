@@ -8,7 +8,7 @@
 // Inferred, not documented: E2B's own limits on metadata key and value length and characters. E2B_TAG_LIMITS is a conservative guess
 // (listed under "Unverified" in the package README).
 
-import { SANDBOX_TAGS, type SandboxId } from "@pomtree/core";
+import { SANDBOX_TAGS, ownerStampTags, type OwnerStamp, type SandboxId } from "@pomtree/core";
 import { DEFAULT_ANNOTATION_PREFIX, decodeTags, encodeTags, type TagLimits } from "@pomtree/sandbox-kit";
 
 export const BACKEND_ID = "e2b";
@@ -31,9 +31,13 @@ export function checkLabels(labels: Readonly<Record<string, string>> | undefined
   }
 }
 
-// The metadata a new sandbox is created with: pomtree's tags (encoded) and their annotations, plus the caller's labels verbatim.
-export function sandboxMetadata(id: SandboxId, agent: string, labels: Readonly<Record<string, string>> | undefined): Record<string, string> {
-  const enc = encodeTags({ [SANDBOX_TAGS.sandbox]: id, [SANDBOX_TAGS.agent]: agent, [SANDBOX_TAGS.backend]: BACKEND_ID }, E2B_TAG_LIMITS);
+// The metadata a new sandbox is created with: pomtree's tags (encoded, owner stamp included) and their annotations, plus the caller's
+// labels verbatim. A host or generation that cannot be stamped throws before anything is created.
+export function sandboxMetadata(id: SandboxId, agent: string, stamp: OwnerStamp, labels: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const enc = encodeTags(
+    { [SANDBOX_TAGS.sandbox]: id, [SANDBOX_TAGS.agent]: agent, [SANDBOX_TAGS.backend]: BACKEND_ID, ...ownerStampTags(stamp) },
+    E2B_TAG_LIMITS,
+  );
   return { ...(labels ?? {}), ...enc.labels, ...enc.annotations };
 }
 
@@ -49,7 +53,7 @@ export function metadataQuery(selector: Readonly<Record<string, string>>): strin
 }
 
 export interface DecodedMetadata {
-  // Decoded pomtree tags (sandbox, agent, backend), keyed by the SANDBOX_TAGS names.
+  // Decoded pomtree tags (sandbox, agent, backend, host, generation), keyed by the SANDBOX_TAGS names.
   tags: Record<string, string>;
   // Tags whose hashed value had no matching annotation: the sandbox is damaged or foreign and is never adopted.
   unresolved: string[];

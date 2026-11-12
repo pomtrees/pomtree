@@ -10,6 +10,8 @@ import {
   admitBackend,
   checkProbe,
   need,
+  ownerStampTags,
+  readOwnerStamp,
   sandboxIdForKey,
   validateDeclaration,
 } from "./index.ts";
@@ -414,4 +416,25 @@ test("SandboxProbeError message is accurate for malformed results as well as wit
   assert.match(e.message, /malformed or widens/);
   assert.match(e.message, /withheld is not an array/);
   assert.match(e.message, /fix the adapter/);
+});
+
+test("ownerStampTags stamps the host and the generation under the reserved tag keys", () => {
+  assert.deepEqual(ownerStampTags({ host: "host-a", generation: 0 }), { "pomtree.host": "host-a", "pomtree.generation": "0" });
+  assert.deepEqual(ownerStampTags({ host: "h".repeat(300), generation: 12 })["pomtree.generation"], "12");
+});
+
+test("ownerStampTags refuses a host or generation no provider could hold, naming the cause and the action", () => {
+  for (const host of ["", "a\nb", "a\u0000b"]) assert.throws(() => ownerStampTags({ host, generation: 1 }), /host id .*non-empty.*pass the daemon's host id/s);
+  for (const generation of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => ownerStampTags({ host: "h", generation }), /non-negative integer.*pass the agent's generation/s);
+  }
+});
+
+test("readOwnerStamp reads a stamp back strictly: missing or damaged values read as null", () => {
+  assert.deepEqual(readOwnerStamp({ "pomtree.host": "host-a", "pomtree.generation": "7" }), { host: "host-a", generation: 7 });
+  assert.deepEqual(readOwnerStamp({}), { host: null, generation: null });
+  assert.deepEqual(readOwnerStamp({ "pomtree.host": "", "pomtree.generation": "" }), { host: null, generation: null });
+  for (const bad of [" 1", "1.5", "-1", "0x10", "1e3", "NaN", "99999999999999999999"]) {
+    assert.equal(readOwnerStamp({ "pomtree.host": "h", "pomtree.generation": bad }).generation, null, bad);
+  }
 });

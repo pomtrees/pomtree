@@ -28,7 +28,7 @@ test("recover ADOPTS a checkpointed running agent whose container is still alive
   const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
   const live = await t.fakes.hooks.raw.sandbox.start(
-    { agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
+    { host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
     "live",
   );
   await reg.setSandbox(a.id, a.generation, live.id, "live-set");
@@ -69,7 +69,7 @@ test("recover force-resumes a checkpointed running agent whose container is dead
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
   // Persist a still-running container as if the daemon crashed mid-run.
   const stale = await t.fakes.hooks.raw.sandbox.start(
-    { agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
+    { host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
     "stale",
   );
   await reg.setSandbox(a.id, a.generation, stale.id, "stale-set");
@@ -364,7 +364,7 @@ test("recover re-adopts a checkpoint-less running container instead of failing i
   const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
   const sb = await t.fakes.hooks.raw.sandbox.start(
-    { agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
+    { host: "h1", generation: 0, agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
     "sb",
   );
   await reg.setSandbox(a.id, a.generation, sb.id, "sb-set");
@@ -390,7 +390,10 @@ test("adopt finishes a checkpoint-less agent without touching its clone", async 
   const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
   await t.daemon.deps.workspace.create(a.id, {}); // the old daemon's folder survives the restart
-  const sb = await raw.sandbox.start({ agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] }, "sb");
+  const sb = await raw.sandbox.start(
+    { host: "h1", generation: 0, agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
+    "sb",
+  );
   await reg.setSandbox(a.id, a.generation, sb.id, "sb-set");
 
   await t.daemon.recover();

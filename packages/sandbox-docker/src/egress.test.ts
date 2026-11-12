@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { wsMount } from "./test-mounts.ts";
 import { EGRESS_PROXY_PORT, PROXY_ENV_NAMES } from "@pomtree/core";
 import { buildNetworkArgs, defaultDenyEgress, egressAllowCsv, egressSocketVolumeName, egressProxyName, proxyEnv } from "./egress.ts";
-const spec = { agent: "ag1", image: "img", env: {}, mounts: [wsMount("/w")] };
+const spec = { host: "host-test", generation: 0, agent: "ag1", image: "img", env: {}, mounts: [wsMount("/w")] };
 test("buildNetworkArgs: empty without resolved egress; DockerSandbox always resolves default-deny", () => {
   assert.deepEqual(buildNetworkArgs("sb-1", spec), []);
   const restricted = defaultDenyEgress(spec);

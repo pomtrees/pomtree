@@ -185,6 +185,8 @@ async function runIn(
 ): Promise<string> {
   const h = await sandbox.start(
     {
+      host: "host-test",
+      generation: 0,
       agent,
       image: image!,
       env: {},

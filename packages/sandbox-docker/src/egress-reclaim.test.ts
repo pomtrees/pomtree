@@ -9,7 +9,7 @@ import { egressProxyName, egressSocketVolumeName } from "./egress.ts";
 import { NetSandbox } from "./test-network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
-const egressSpec = { agent: "ag", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } };
+const egressSpec = { host: "host-test", generation: 0, agent: "ag", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } };
 
 // One host's Docker state: containers and volumes by name with their labels. `ps`/`volume ls` honour `--filter label=k=v` and
 // render `{{.Label "k"}}` formats, so the adapter's own queries decide what it sees. `gate` holds a sidecar's readiness probe

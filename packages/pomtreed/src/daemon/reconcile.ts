@@ -768,6 +768,9 @@ export class Reconcile {
     }
     for (const s of listed) {
       if (this.live.has(s.agent)) continue;
+      // Acts only on a sandbox whose own stamp names this host: an unstamped (null) or peer-host sandbox is reported by list but never
+      // killed, stopped or bound here. The selected backend's legacy unstamped containers are refused at boot, so none is stranded.
+      if (s.host !== this.ctx.deps.hostId) continue;
       // TODO(recon-adopt): revisit the unregistered-container kill. Current behavior: an owned container with no row is killed.
       // Safe only while spawn writes the registry row before sandbox.start; reordering would make this kill race spawn.
       const r = await this.ctx.deps.registry.get(s.agent);
@@ -778,13 +781,10 @@ export class Reconcile {
       if (r.state === "running" && r.host === this.ctx.deps.hostId) {
         if (r.sandbox === s.id) continue; // already adopted
         // The id start() recorded before its provider call is the key-derived one. An adapter whose ids are not derived names the
-        // sandbox otherwise: link the listed sandbox that reports this record's generation (and this host), and only that one; a
-        // lower-generation sandbox of the same agent is stale and falls through to the stop below.
-        if (
-          r.sandbox === sandboxIdForKey(`${r.id}:${r.generation}:start`) &&
-          s.generation === r.generation &&
-          (s.host === null || s.host === this.ctx.deps.hostId)
-        ) {
+        // sandbox otherwise: link the listed sandbox that reports this record's generation and this host (both stamped by the adapter;
+        // a sandbox reporting null for either is never linked), and only that one; a lower-generation sandbox of the same agent is
+        // stale and falls through to the stop below.
+        if (r.sandbox === sandboxIdForKey(`${r.id}:${r.generation}:start`) && s.generation === r.generation && s.host === this.ctx.deps.hostId) {
           await this.ctx.deps.registry
             .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`)
             .catch(journalFailed(this.ctx.record, r, "adopt-bind"));
@@ -793,8 +793,11 @@ export class Reconcile {
         if (r.sandbox !== null) {
           // A second container labelled for an already-adopted agent is superseded; keep the registry's sandbox.
           await sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
+        } else if (s.generation !== r.generation) {
+          // A lower generation is a stale leftover of an earlier run: stop it. A higher one means the record may be behind: leave it.
+          if (s.generation !== null && s.generation < r.generation) await sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
         } else {
-          // Links the live container's sandbox id into the registry; reconcile() then re-adopts it via
+          // Links the live container's sandbox id into the registry (this host, this generation); reconcile() then re-adopts it via
           // Sandbox.attach (see adoptRunning) so a checkpoint-less running agent survives the restart.
           await this.ctx.deps.registry
             .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`, backend)

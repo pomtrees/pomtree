@@ -67,6 +67,8 @@ test("scripted Pi browser_capture reads a real public article through the audite
   let timer: NodeJS.Timeout | undefined;
   const h = await sb.start(
     {
+      host: "host-test",
+      generation: 0,
       agent: "local-gate",
       image: IMAGE,
       mounts: [wsMount("/work"), offlineBrowserExtMount()],

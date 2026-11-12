@@ -13,7 +13,7 @@ const mk = () => setup(async (c) => void (await c.stopped), { escalationChannels
 
 // Starts a container straight on the fake sandbox, labelled as this daemon's own, for `agent`.
 async function container(t: T, agent: string, key: string) {
-  const h = await t.sandbox.start({ agent, image: "img", env: {}, mounts: [], labels: { daemon_epoch: t.daemon.epoch } }, key);
+  const h = await t.sandbox.start({ host: "h1", generation: 0, agent, image: "img", env: {}, mounts: [], labels: { daemon_epoch: t.daemon.epoch } }, key);
   return h.id;
 }
 
@@ -74,8 +74,11 @@ test("an exited, a foreign-epoch and an unlabelled container are not strays", as
   const t = mk();
   const exited = await container(t, "ghost", "k1");
   t.sandbox.exit(exited, 0);
-  await t.sandbox.start({ agent: "g2", image: "img", env: {}, mounts: [], labels: { daemon_epoch: String(Number(t.daemon.epoch) + 1) } }, "k2");
-  await t.sandbox.start({ agent: "g3", image: "img", env: {}, mounts: [] }, "k3");
+  await t.sandbox.start(
+    { host: "h1", generation: 0, agent: "g2", image: "img", env: {}, mounts: [], labels: { daemon_epoch: String(Number(t.daemon.epoch) + 1) } },
+    "k2",
+  );
+  await t.sandbox.start({ host: "h1", generation: 0, agent: "g3", image: "img", env: {}, mounts: [] }, "k3");
   await t.daemon.reconcile();
   await t.daemon.reconcile();
   await t.daemon.reconcile();

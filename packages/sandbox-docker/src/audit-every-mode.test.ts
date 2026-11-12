@@ -114,8 +114,16 @@ test("validateProxyConfig: auditedPublic must be exactly true and requires an id
 // startEgress / start() with a fake exec.
 const skipRoot = { skip: process.getuid?.() === 0 && "audit spool requires an unprivileged host uid" };
 const attributed = (attribution = { host: "host-1", generation: 4 }): SandboxSpec =>
-  ({ agent: "a", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [], attribution } }) as unknown as SandboxSpec;
-const plain: SandboxSpec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [] } };
+  ({
+    host: "host-test",
+    generation: 0,
+    agent: "a",
+    image: "i",
+    env: {},
+    mounts: [wsMount("/w")],
+    egress: { allow: [], attribution },
+  }) as unknown as SandboxSpec;
+const plain: SandboxSpec = { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [] } };
 
 function sandbox(root: string, calls: string[][], workspace = join(root, "work"), existing = false) {
   mkdirSync(workspace, { recursive: true });

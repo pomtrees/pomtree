@@ -11,7 +11,15 @@ import { API_KEY_PLACEHOLDER, type E2BStubWorld, startE2BStub } from "./stub-wor
 // listing on the pomtree.sandbox metadata tag (the kit's createOnce, tag-lookup mechanism).
 
 const UA = "pomtree-e2b-test/1";
-const spec = (agent: string, extra: Partial<SandboxSpec> = {}): SandboxSpec => ({ agent, image: "base", env: {}, mounts: [], ...extra });
+const spec = (agent: string, extra: Partial<SandboxSpec> = {}): SandboxSpec => ({
+  host: "host-test",
+  generation: 0,
+  agent,
+  image: "base",
+  env: {},
+  mounts: [],
+  ...extra,
+});
 
 async function world(): Promise<{ w: E2BStubWorld; sandbox: E2BSandbox }> {
   const w = await startE2BStub({ userAgent: UA });
@@ -59,7 +67,7 @@ test("a create answered with a 5xx after it was applied reconciles to the one sa
     assert.equal(h.id, sandboxIdForKey("key-2"));
     assert.equal(created(w), 1);
     assert.equal(creates(w), 1, "the uncertain create was not repeated");
-    assert.deepEqual(await sandbox.inspect(h.id), { running: true, exitCode: null, status: "running" });
+    assert.deepEqual(await sandbox.inspect(h.id), { running: true, exitCode: null, status: "running", host: "host-test", generation: 0 });
     w.stub.assertNoUnmatched();
   } finally {
     await w.close();
@@ -103,7 +111,7 @@ test("a sandbox E2B removed on its own (timeout) is reported expired, never as a
   try {
     const h = await sandbox.start(spec("agent-5"), "key-5");
     await w.vanish(h.id);
-    assert.deepEqual(await sandbox.inspect(h.id), { running: false, exitCode: null, status: "expired" });
+    assert.deepEqual(await sandbox.inspect(h.id), { running: false, exitCode: null, status: "expired", host: null, generation: null });
     await assert.rejects(() => h.wait(), /ended without pomtree stopping it.*timeout expired/);
     await sandbox.stop(h.id, 1000, "stop-5"); // already gone: success
   } finally {

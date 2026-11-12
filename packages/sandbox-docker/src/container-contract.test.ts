@@ -28,7 +28,7 @@ test("the in-image egress facts and the host's agree: bridge port, socket path a
   assert.equal(EGRESS_SOCKET_PATH, `${EGRESS_SOCKET_DIR}/${EGRESS_SOCKET_NAME}`);
   assert.deepEqual(shipped.PROXY_ENV_NAMES, PROXY_ENV_NAMES);
   // proxyEnv points the clients at the port the in-image byte bridge listens on.
-  const env = proxyEnv("sb-1", { agent: "a1", image: "img", env: {}, mounts: [wsMount("/w")], egress: { allow: [] } });
+  const env = proxyEnv("sb-1", { host: "host-test", generation: 0, agent: "a1", image: "img", env: {}, mounts: [wsMount("/w")], egress: { allow: [] } });
   assert.equal(env.HTTP_PROXY, `http://127.0.0.1:${shipped.EGRESS_PROXY_PORT}`);
 });
 

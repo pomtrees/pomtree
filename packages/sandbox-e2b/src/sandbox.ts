@@ -11,8 +11,8 @@
 // observation, not state: a restarted daemon sees a vanished sandbox as gone (inspect null), which the port treats as "no such
 // sandbox".
 //
-// Ownership. list(owner) fails closed: it returns only sandboxes labelled with the owner's store id. Enabling the backend is BLOCKED
-// on the owner-labels task (host and generation carried by the spec or owner and stamped by every adapter); admission refuses it today.
+// Ownership. list(owner) fails closed: it returns only sandboxes labelled with the owner's store id, and reports the host and
+// generation start() stamped from the spec. Admission still refuses this backend today (see the README).
 //
 // Output. The port has no declaration value for "no output", so `output` says "poll", the mode a REST-only adapter would use; in fact
 // output() yields nothing until envd is spoken (TODO(e2b-envd-exec)).
@@ -27,10 +27,13 @@ import {
   type SandboxDeclaration,
   type SandboxHandle,
   type SandboxId,
+  type SandboxInfo,
   type SandboxListing,
   type SandboxOwner,
   type SandboxSpec,
   SandboxUnavailableError,
+  ownerStampTags,
+  readOwnerStamp,
   sandboxIdForKey,
 } from "@pomtree/core";
 import { type CreateFailure, createOnce, type FoundSandbox, type ProbePolicy } from "@pomtree/sandbox-kit/dedup";
@@ -215,12 +218,12 @@ export class E2BSandbox implements Sandbox {
   async start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle> {
     const templateID = this.#refuse(spec);
     const id = sandboxIdForKey(idempotencyKey);
-    const metadata = sandboxMetadata(id, spec.agent, spec.labels);
+    const metadata = sandboxMetadata(id, spec.agent, spec, spec.labels);
     const result = await createOnce(
       {
         mechanism: "tag-lookup",
         key: idempotencyKey,
-        ownerTags: { [SANDBOX_TAGS.agent]: spec.agent, [SANDBOX_TAGS.backend]: BACKEND_ID },
+        ownerTags: { [SANDBOX_TAGS.agent]: spec.agent, [SANDBOX_TAGS.backend]: BACKEND_ID, ...ownerStampTags(spec) },
         lookupTags: { [SANDBOX_TAGS.sandbox]: id },
         ...(this.#probe === undefined ? {} : { probe: this.#probe }),
       },
@@ -371,24 +374,26 @@ export class E2BSandbox implements Sandbox {
     await this.#end(id, { exitCode: KILL_EXIT, reason: "killed" });
   }
 
-  async inspect(id: SandboxId): Promise<{ running: boolean; exitCode: number | null; oomKilled?: boolean; status?: string } | null> {
+  async inspect(id: SandboxId): Promise<SandboxInfo | null> {
     const ended = this.#ended.get(id);
-    if (ended !== undefined) return { running: false, exitCode: ended.exitCode, status: ended.reason === "expired" ? "expired" : "exited" };
+    if (ended !== undefined)
+      return { running: false, exitCode: ended.exitCode, status: ended.reason === "expired" ? "expired" : "exited", host: null, generation: null };
     const info = await this.#state(id);
     if (info === null) {
       if (!this.#tracked.has(id)) return null;
       this.#markEnded(id, { exitCode: null, reason: "expired" });
-      return { running: false, exitCode: null, status: "expired" };
+      return { running: false, exitCode: null, status: "expired", host: null, generation: null };
     }
-    return info.state === "running" ? { running: true, exitCode: null, status: "running" } : { running: false, exitCode: null, status: info.state };
+    const stamp = readOwnerStamp(decodeMetadata(info.metadata).tags);
+    return info.state === "running"
+      ? { running: true, exitCode: null, status: "running", ...stamp }
+      : { running: false, exitCode: null, status: info.state, ...stamp };
   }
 
   // Fail closed on ownership: only sandboxes whose store_id label equals owner.storeId (and whose daemon_epoch label, when present,
   // is not newer than the owner's). A sandbox with no store_id label is NOT returned at all, unlike the Docker adapter, because one E2B
-  // account may serve several daemons and reconcile kills what list returns. Host and generation are null: SandboxSpec carries
-  // neither, so nothing stamps them.
-  // TODO(sandbox-host-generation-labels): enabling this backend is blocked until host and generation reach the adapter and are
-  // stamped; current behavior: owner = store_id label only, host and generation listed as null, and admission refuses the backend.
+  // account may serve several daemons and reconcile kills what list returns. Host and generation are the stamp start() wrote from
+  // SandboxSpec.host and generation (null when absent or damaged, which reconcile never adopts).
   async list(owner: SandboxOwner): Promise<SandboxListing[]> {
     const out: SandboxListing[] = [];
     for (const info of await this.#api.list(backendSelector())) {
@@ -403,8 +408,7 @@ export class E2BSandbox implements Sandbox {
         id: found.id,
         agent: meta.tags[SANDBOX_TAGS.agent] ?? "",
         backend: BACKEND_ID,
-        host: null,
-        generation: null,
+        ...readOwnerStamp(meta.tags),
         state: info.state === "running" ? "running" : info.state === "paused" ? "paused" : "unknown",
         ...(Object.keys(meta.labels).length > 0 ? { labels: meta.labels } : {}),
       });

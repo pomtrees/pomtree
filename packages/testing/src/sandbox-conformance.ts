@@ -125,9 +125,6 @@ export interface SandboxUnderTest {
   // descriptor whose environment may legitimately be closed (no Docker on this machine) sets this to stay green; default false.
   // requireReal still fails a gated run whatever this says.
   acceptClosedEnvironment?: boolean;
-  // Whether list(owner) must stamp the host and generation tags on its listings. Default "required": the port's list(owner) exists so
-  // reconcile can fence by host and generation. "optional" is for a backend that cannot stamp them yet (the shared fake).
-  listingTags?: "required" | "optional";
   // Turn a capability skip into a failure for these capabilities (a lane that insists the adapter supports them).
   requireCapabilities?: readonly SandboxCapability[];
   // Deadline for waits that must end or throw (a dropped stream, a preempted wait); default 10 s times the test timeout scale.
@@ -145,6 +142,7 @@ export const CLAUSE_IDS = [
   "attach-existing",
   "resolve-digest",
   "label-rules",
+  "owner-stamp",
   "idempotent-start",
   "idempotency-conflict",
   "unknown-outcome-retry",
@@ -193,6 +191,8 @@ export interface Clause {
 }
 
 const DEFAULT_OWNER: SandboxOwner = { host: "host-contract", storeId: "store-contract", epoch: 1 };
+// The generation every conformance spec is started for: not 0, so a backend that stamps a default or drops the value is caught.
+const CONFORMANCE_GENERATION = 3;
 const GONE = "conformance-no-such-sandbox";
 const GATED = "conformance gated: ";
 const WITHHELD = "conformance withheld: ";
@@ -368,18 +368,52 @@ export const SANDBOX_CONFORMANCE_CLAUSES = [
       const listed = await s.list(ctx.owner);
       assert.equal(listed.find((l) => l.id === plain.id)?.labels, undefined, "a sandbox started without labels lists none");
       assert.deepEqual(listed.find((l) => l.id === tagged.id)?.labels, labels, "list echoes the labels the sandbox was started with");
-      for (const l of listed.filter((x) => x.id === plain.id || x.id === tagged.id)) {
-        if (ctx.sut.listingTags === "optional") {
-          assert.ok(l.host === null || l.host === ctx.owner.host, `a listed host tag must be the owner's host, got ${l.host}`);
-          assert.ok(l.generation === null || Number.isInteger(l.generation), `a listed generation must be an integer or null, got ${l.generation}`);
-        } else {
-          assert.equal(l.host, ctx.owner.host, `list(owner) must stamp the owner's host on ${l.id} (descriptor listingTags is required); got ${l.host}`);
-          assert.ok(
-            Number.isInteger(l.generation),
-            `list(owner) must stamp an integer generation on ${l.id} (descriptor listingTags is required); got ${l.generation}`,
-          );
-        }
+    },
+  },
+  {
+    id: "owner-stamp",
+    title: "the host and generation a sandbox is started with are stamped and reported unchanged by list(owner) and inspect",
+    needs: [],
+    targets: ["start", "list", "inspect"],
+    fix: "stamp SandboxSpec.host and SandboxSpec.generation as provider-side labels or metadata at create (hash a value the provider cannot hold and keep the full value), and read them back in list(owner) and inspect without defaulting, altering or dropping them",
+    async check(ctx) {
+      const s = ctx.sandbox;
+      const o = ctx.owner;
+      // A peer host's sandbox is listed with the peer's host (reconcile leaves it to that host), and a host the provider cannot hold
+      // verbatim (over-long, `&`, `=`) still reads back whole.
+      const cases = [
+        { label: "stamp-own", host: o.host, generation: 5 },
+        { label: "stamp-peer", host: `${o.host}-peer`, generation: 11 },
+        { label: "stamp-odd", host: `host-${"x&=".repeat(100)}`, generation: 0 },
+      ];
+      const started = [];
+      for (const c of cases) {
+        const h = await s.start(ctx.spec(c.label, { host: c.host, generation: c.generation }), ctx.key(c.label));
+        started.push({ ...c, id: h.id });
       }
+      const listed = await s.list(o);
+      for (const c of started) {
+        const l = listed.find((x) => x.id === c.id);
+        assert.ok(l !== undefined, `list(owner) must include ${c.label}`);
+        assert.equal(l.host, c.host, `list(owner) must report the host ${c.label} was started with; got ${String(l.host)}`);
+        assert.equal(l.generation, c.generation, `list(owner) must report the generation ${c.label} was started with; got ${String(l.generation)}`);
+        const info = await s.inspect(c.id);
+        assert.equal(info?.host, c.host, `inspect must report the host ${c.label} was started with; got ${String(info?.host)}`);
+        assert.equal(info?.generation, c.generation, `inspect must report the generation ${c.label} was started with; got ${String(info?.generation)}`);
+      }
+      const bad = ctx.agent("stamp-bad");
+      for (const [what, extra] of [
+        ["generation -1", { generation: -1 }],
+        ["generation 1.5", { generation: 1.5 }],
+        ["an empty host", { host: "" }],
+      ] as const) {
+        await assert.rejects(
+          () => s.start(ctx.spec("stamp-bad", extra), ctx.key(`stamp-bad-${what}`)),
+          (e: unknown) => isRealError(e) && !(e instanceof SandboxUnavailableError) && !(e instanceof SandboxOutcomeUnknownError),
+          `${what} cannot be stamped, so the start must be rejected`,
+        );
+      }
+      assert.ok(!(await s.list(o)).some((l) => l.agent === bad), "a start refused for its stamp must create nothing");
     },
   },
   {
@@ -838,6 +872,8 @@ export async function runClause(clause: Clause, sut: SandboxUnderTest, effective
         hooks: world.hooks ?? {},
         spec: (label, extra = {}) => ({
           agent: `conf-${run}-${label}`,
+          host: (world.owner ?? DEFAULT_OWNER).host,
+          generation: CONFORMANCE_GENERATION,
           image: world.imageRef ?? "i",
           env: {},
           mounts: [{ kind: "workspace", workspace: world.workspaceId ?? "ws-a", containerPath: "/w" }],
@@ -1028,8 +1064,6 @@ export interface FakeUnderTestOptions {
   // Hooks merged over the fake's own (add foreignRecord or engine here; the fake has neither).
   hooks?: SandboxConformanceHooks;
   requireCapabilities?: readonly SandboxCapability[];
-  // Default "optional": the shared fake lists host and generation as null (it cannot stamp the reserved pomtree labels). Set "required" on a wrapper that stamps them.
-  listingTags?: "required" | "optional";
   fake?: Omit<FakeSandboxOptions, "faults" | "remote" | "probe">;
 }
 type SandboxProbeShape = NonNullable<FakeSandboxOptions["probe"]>;
@@ -1048,7 +1082,6 @@ export function fakeSandboxUnderTest(o: FakeUnderTestOptions = {}): SandboxUnder
     ...(o.engineApiVersion !== undefined && { engineApiVersion: o.engineApiVersion }),
     ...(o.startConflict !== undefined && { startConflict: o.startConflict }),
     ...(o.requireCapabilities && { requireCapabilities: o.requireCapabilities }),
-    listingTags: o.listingTags ?? "optional",
     async make() {
       const plan = new FaultPlan();
       const fake = new FakeSandbox([], "graceful", options(plan));

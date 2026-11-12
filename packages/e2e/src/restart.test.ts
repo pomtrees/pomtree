@@ -24,6 +24,8 @@ const spec: SpawnSpec = {
 const kindsOf = (es: JournalEntry[]) => es.map((e) => e.payload.kind);
 const msgs = (es: JournalEntry[]) => es.map((e) => (e.payload as { message?: string }).message ?? "");
 const sbSpec = (a: AgentRecord, labels?: Record<string, string>): SandboxSpec => ({
+  host: "host-test",
+  generation: 0,
   agent: a.id,
   image: "img",
   env: {},

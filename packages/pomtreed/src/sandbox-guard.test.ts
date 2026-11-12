@@ -21,7 +21,7 @@ const terminalFacet = (calls: string[] = []) => ({
   },
 });
 
-const spec = (): SandboxSpec => ({ agent: "a1", image: "img@sha256:00", env: { TOKEN: SENTINEL }, mounts: [] });
+const spec = (): SandboxSpec => ({ host: "host-test", generation: 0, agent: "a1", image: "img@sha256:00", env: { TOKEN: SENTINEL }, mounts: [] });
 
 function logs() {
   const events: { event: string; fields: Record<string, unknown> }[] = [];

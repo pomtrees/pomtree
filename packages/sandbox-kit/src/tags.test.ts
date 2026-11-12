@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { ownerStampTags, readOwnerStamp } from "@pomtree/core";
 import {
   DEFAULT_ANNOTATION_PREFIX,
   FREEFORM_TAG_LIMITS,
@@ -124,4 +125,22 @@ test("tags: KUBERNETES_NAME_LIMITS allow 253 characters and a pomtree-<64 hex> n
   const hex = "a1".repeat(32);
   assert.doesNotThrow(() => encodeName(schema, { sandbox: hex }));
   assert.equal(encodeName(schema, { sandbox: "Z" }), `pomtree-${sha40("Z")}`, "uppercase is hashed against the lowercase-only pattern");
+});
+
+test("the owner stamp survives every provider's limits: a long or unsafe host is hashed on write and read back whole, a bad one is refused", () => {
+  for (const limits of [KUBERNETES_TAG_LIMITS, FREEFORM_TAG_LIMITS]) {
+    for (const host of ["host-a", "h".repeat(300), "host & a=b%", "h.looks-hashed"]) {
+      const enc = encodeTags(ownerStampTags({ host, generation: 12 }), limits);
+      for (const v of Object.values(enc.labels)) assert.ok(v.length <= limits.maxValueLength, `${host.slice(0, 12)}: ${v.length}`);
+      const dec = decodeTags(enc.labels, enc.annotations);
+      assert.deepEqual(dec.unresolved, []);
+      assert.deepEqual(readOwnerStamp(dec.tags), { host, generation: 12 });
+    }
+  }
+  // A hashed host whose annotation is lost does not decode: the stamp reads null, so the sandbox is never adopted.
+  const enc = encodeTags(ownerStampTags({ host: "h".repeat(300), generation: 1 }), KUBERNETES_TAG_LIMITS);
+  const lost = decodeTags(enc.labels, {});
+  assert.deepEqual(lost.unresolved, ["pomtree.host"]);
+  assert.deepEqual(readOwnerStamp(lost.tags), { host: null, generation: 1 });
+  assert.throws(() => encodeTags(ownerStampTags({ host: "", generation: 1 }), KUBERNETES_TAG_LIMITS), /host id/);
 });

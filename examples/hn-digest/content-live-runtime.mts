@@ -919,6 +919,8 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
               const sandbox = new DockerSandbox({ mounts, egressAuditRoot });
               const h = await sandbox.start(
                 {
+                  host: "host-test",
+                  generation: 0,
                   agent: "live-browser-image-pre" as AgentId,
                   image,
                   mounts: [{ kind: "workspace" as const, workspace: "image-probe", containerPath: "/work" }],

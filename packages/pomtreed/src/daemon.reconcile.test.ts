@@ -84,7 +84,7 @@ async function seed(
   if (o.folder) await t.daemon.deps.workspace.create(a.id, {});
   if (o.sandbox) {
     const h = await t.fakes.hooks.raw.sandbox.start(
-      { agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
+      { host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
       `${name}-sb`,
     );
     await reg.setSandbox(a.id, a.generation, h.id, `${name}-sb-set`);

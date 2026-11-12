@@ -174,6 +174,7 @@ import {
   FACET_OF,
   checkProbe,
   validateDeclaration,
+  ownerStampTags,
   STATE_LIMITS_DEFAULT,
   StaleGenerationError,
   sandboxBackendAfter,
@@ -1607,6 +1608,9 @@ export class FakeSandbox implements Sandbox {
     SandboxId,
     {
       agent: AgentId;
+      // The owner stamp start() recorded from SandboxSpec.host and generation; list and inspect report it back.
+      host: HostId;
+      generation: number;
       labels?: Record<string, string>;
       exitCode: number | null;
       oomKilled: boolean;
@@ -1741,6 +1745,7 @@ export class FakeSandbox implements Sandbox {
     if (prior) return prior;
     for (const k of Object.keys(spec.labels ?? {}))
       if (!/^[A-Za-z0-9_.-]+$/.test(k) || k.startsWith("pomtree")) throw new Error(`invalid sandbox label name: ${k}`);
+    ownerStampTags(spec); // a host or generation no real adapter could stamp is refused here too, before anything is created
     if (this.startErrors.length > 0) {
       const err = this.startErrors.shift();
       if (err) throw err;
@@ -1753,6 +1758,8 @@ export class FakeSandbox implements Sandbox {
     });
     const st = {
       agent: spec.agent,
+      host: spec.host,
+      generation: spec.generation,
       ...(spec.labels && Object.keys(spec.labels).length ? { labels: { ...spec.labels } } : {}),
       exitCode: null as number | null,
       oomKilled: false,
@@ -1848,7 +1855,14 @@ export class FakeSandbox implements Sandbox {
       : ["created", "exited", "dead"].includes(status ?? "")
         ? false
         : s.exitCode === null;
-    return { running, exitCode: running ? null : s.exitCode, ...(s.oomKilled ? { oomKilled: true } : {}), ...(status !== null ? { status } : {}) };
+    return {
+      running,
+      exitCode: running ? null : s.exitCode,
+      ...(s.oomKilled ? { oomKilled: true } : {}),
+      ...(status !== null ? { status } : {}),
+      host: s.host,
+      generation: s.generation,
+    };
   }
   // engineLocalId is the scripted value or `${ref}@sha256:fake`; configDigest is the sha256 of the ref; revision is null.
   async imageIdentity(ref: string): Promise<ImageIdentity> {
@@ -1858,8 +1872,8 @@ export class FakeSandbox implements Sandbox {
       engineLocalId: this.engineLocalIds.get(ref) ?? `${ref}@sha256:fake`,
     };
   }
-  // `docker ps -a` lists exited containers too, so the fake keeps self-exited sandboxes. The fake cannot stamp pomtree tags
-  // (reserved label names are refused), so host and generation are null, which a real daemon reads as foreign.
+  // `docker ps -a` lists exited containers too, so the fake keeps self-exited sandboxes. Host and generation are the stamp start()
+  // recorded from the spec, as every real adapter reports them.
   async list(owner: SandboxOwner): Promise<SandboxListing[]> {
     this.listOwners.push({ ...owner });
     const fault = this.fault("list", {});
@@ -1889,8 +1903,8 @@ export class FakeSandbox implements Sandbox {
           id,
           agent: s.agent,
           backend: this.declaration.backend,
-          host: null,
-          generation: null,
+          host: s.host,
+          generation: s.generation,
           state,
           ...(s.labels ? { labels: { ...s.labels } } : {}),
         };
@@ -3492,6 +3506,8 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
   const s = w.sandbox;
   const image = w.imageRef ?? "i";
   const spec: SandboxSpec = {
+    host: "host-test",
+    generation: 0,
     agent: "a",
     image,
     env: {},
@@ -3501,7 +3517,7 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
   const h = await s.start(spec, "sb-contract");
   assert.equal(typeof h.id, "string");
   // A started sandbox reports the runtime's running status (the memory gate counts it).
-  assert.deepEqual(await s.inspect(h.id), { running: true, exitCode: null, status: "running" });
+  assert.deepEqual(await s.inspect(h.id), { running: true, exitCode: null, status: "running", host: spec.host, generation: spec.generation });
   // Idempotent by key: a repeated start re-adopts the same sandbox instead of starting a second.
   assert.equal((await s.start(spec, "sb-contract")).id, h.id);
   assertFacetPresence(s);
@@ -3537,8 +3553,10 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
   }
   await s.kill(h.id, "sb-contract-kill");
   assert.deepEqual(await h.wait(), { exitCode: 137 });
-  // Exited (and, after an observed exit, removed) sandboxes report "exited", which the memory gate does not count.
-  assert.deepEqual(await s.inspect(h.id), { running: false, exitCode: 137, status: "exited" });
+  // Exited (and, after an observed exit, removed) sandboxes report "exited", which the memory gate does not count. The owner stamp is
+  // read back only while the sandbox still exists, so it is not part of the exited shape.
+  const { host: _host, generation: _generation, ...exited } = (await s.inspect(h.id)) ?? {};
+  assert.deepEqual(exited, { running: false, exitCode: 137, status: "exited" });
   assert.equal(await s.inspect("nope"), null);
 }
 

@@ -87,7 +87,6 @@ async function make(): Promise<SandboxConformanceWorld> {
 const sut: SandboxUnderTest = {
   name: "sail",
   capabilities: sailProvider.declaration,
-  listingTags: "required",
   // The stub is local, so the suite really runs: a closed environment is a failure here.
   acceptClosedEnvironment: false,
   requireCapabilities: ["connect"],

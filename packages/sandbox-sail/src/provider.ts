@@ -1,4 +1,3 @@
-import { hostname } from "node:os";
 import { SANDBOX_PORT_VERSION, type ExtParamDecl, type SandboxBackendDeps, type SandboxBackendProvider } from "@pomtree/core";
 import manifest from "../manifest.json" with { type: "json" };
 import { SAIL_BACKEND } from "./api.ts";
@@ -29,15 +28,12 @@ export const sailProvider: SandboxBackendProvider = {
       );
     }
     const baseUrl = deps.config[key("baseUrl")];
-    // The daemon's own rule for host.id (unset: os.hostname()), so the tags name the same host the daemon stamps on its records.
-    const host = deps.config["host.id"];
     return new SailSandbox({
       baseUrl: typeof baseUrl === "string" && baseUrl !== "" ? baseUrl : DEFAULT_BASE_URL,
       request: deps.request,
       credential: deps.credential,
       log: deps.log,
       now: deps.now,
-      host: typeof host === "string" && host !== "" ? host : hostname(),
     });
   },
 };

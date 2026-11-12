@@ -1683,6 +1683,8 @@ export class Lifecycle {
       if (d.terminal) rmSync(join(this.sessionHostDir(id), d.terminal.sinkFile), { force: true });
       const sandboxSpec: SandboxSpec = {
         agent: id,
+        host: d.hostId,
+        generation: gen,
         ...(d.terminal && { tty: d.terminal.size }),
         labels: this.ownerLabels(),
         image: prep.image,

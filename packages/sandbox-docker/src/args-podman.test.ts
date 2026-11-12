@@ -7,6 +7,8 @@ import { ICC_OPTION, EGRESS_NETWORK } from "./network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const base: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
   agent: "ag1",
   image: "img@sha256:abc",
   env: { A: "1" },

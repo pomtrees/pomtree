@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { SandboxCapabilityError, SandboxProbeError } from "./errors.ts";
 import type { ProbeResult, Sandbox, SandboxFacets } from "./ports.ts";
-import type { SandboxBackendId, SandboxId } from "./types.ts";
+import type { HostId, SandboxBackendId, SandboxId } from "./types.ts";
 
 // Pure, no I/O: the capability vocabulary, the declaration an adapter makes of it, and the boot-time decisions taken from that
 // declaration. This module imports only types from ports.ts (no runtime cycle).
@@ -103,6 +103,39 @@ export const SANDBOX_TAGS = {
   host: "pomtree.host",
   generation: "pomtree.generation",
 } as const;
+
+// The owner stamp every sandbox carries: the daemon host and the agent generation it was started for (SandboxSpec.host/generation).
+export interface OwnerStamp {
+  host: HostId;
+  generation: number;
+}
+
+const hasControlChar = (v: string): boolean => [...v].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+
+// The tag map for a stamp. Refuses a value no provider could hold safely, before anything is created: an empty or control-character
+// host (a newline would corrupt a label argument), or a generation that is not a non-negative safe integer.
+export function ownerStampTags(stamp: OwnerStamp): Record<string, string> {
+  if (typeof stamp.host !== "string" || stamp.host === "" || hasControlChar(stamp.host)) {
+    throw new Error(
+      `sandbox host id ${JSON.stringify(String(stamp.host).slice(0, 80))} must be a non-empty string without control characters, so it can be stamped on the sandbox; pass the daemon's host id in SandboxSpec.host`,
+    );
+  }
+  if (!Number.isSafeInteger(stamp.generation) || stamp.generation < 0) {
+    throw new Error(
+      `sandbox generation ${String(stamp.generation)} must be a non-negative integer, so it can be stamped on the sandbox; pass the agent's generation in SandboxSpec.generation`,
+    );
+  }
+  return { [SANDBOX_TAGS.host]: stamp.host, [SANDBOX_TAGS.generation]: String(stamp.generation) };
+}
+
+// Reads a stamp back from DECODED tags. A missing tag, a host with a control character (ownerStampTags never writes one), or a generation that is not plain digits naming a safe integer, reads as null
+// (untagged or damaged: reconcile reports it and never adopts it); Number("") and Number(" 1") would otherwise read as numbers.
+export function readOwnerStamp(tags: Readonly<Record<string, string | undefined>>): { host: HostId | null; generation: number | null } {
+  const host = tags[SANDBOX_TAGS.host];
+  const gen = tags[SANDBOX_TAGS.generation];
+  const generation = gen !== undefined && /^\d+$/.test(gen) && Number.isSafeInteger(Number(gen)) ? Number(gen) : null;
+  return { host: host === undefined || host === "" || hasControlChar(host) ? null : host, generation };
+}
 
 // Deterministic sandbox id for a caller's idempotency key (sha256 hex): repeating a start() key resolves to the same
 // resource name (pomtree-<id>) and the same handle without launching a second sandbox. The key must be unique per logical start.

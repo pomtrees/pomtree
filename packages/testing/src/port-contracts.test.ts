@@ -192,7 +192,7 @@ const harness = contract<HarnessContractWorld>("Harness", {
         ],
       },
     });
-    const sandbox = await f.sandbox.start({ agent: "hc-agent", image: "i", env: {}, mounts: [] }, "hc");
+    const sandbox = await f.sandbox.start({ host: "host-test", generation: 0, agent: "hc-agent", image: "i", env: {}, mounts: [] }, "hc");
     return { harness: f.harness, agent: "hc-agent", sandbox, steerSupported: true };
   },
 });

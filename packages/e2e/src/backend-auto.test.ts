@@ -7,7 +7,7 @@
 //
 // How the chosen engine is observed. Once the engine is resolved, the daemon runs the engine's own CLI with the resolved socket in the
 // environment (DOCKER_HOST for docker, CONTAINER_HOST for podman). PATH holds only two fake CLIs that append their name and that environment to a
-// log and exit 1, so the log names the engine chosen and the socket it was given, with no real docker or podman involved. Each engine's socket
+// log and fail as an unreachable daemon, so the log names the engine chosen and the socket it was given, with no real docker or podman involved. Each engine's socket
 // is set through its own env variable (an explicit source, trusted without an existence check), so the result never depends on the host's sockets.
 //
 // Red proof. AUTO_RESOLVER_BREAK=prefer-hosted makes this file's own selector ask for the pinned contributed backend instead of `auto`, in the
@@ -103,6 +103,13 @@ function writeContributedExtension(dir: string, marker: string): Record<string, 
   return { POMTREED_EXTENSIONS_DIR: extensionsDir, POMTREED_SANDBOX_REVIEWED_BACKENDS: `toybox=${tree.hash}` };
 }
 
+// What each stub prints on failure: the engines' own unreachable-daemon wording, which the legacy-container boot check reads as a skip (any
+// other failure of its `ps` call stops the start, and the case would never see the engine it came to observe).
+const UNREACHABLE: Record<string, string> = {
+  docker: 'echo "Cannot connect to the Docker daemon at unix:///absent.sock. Is the docker daemon running?" >&2',
+  podman: 'echo "Cannot connect to Podman. Is the podman socket running?" >&2',
+};
+
 // `withExtension` puts a pinned (reviewed) contributed backend on disk; the break mode always needs it, since it selects it.
 async function withScratch(withExtension: boolean, fn: (s: Scratch) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "pt-auto-"));
@@ -112,9 +119,13 @@ async function withScratch(withExtension: boolean, fn: (s: Scratch) => Promise<v
     mkdirSync(join(dir, "bin"));
     const cliLog = join(dir, "cli.log");
     for (const name of ["docker", "podman"]) {
-      writeFileSync(join(dir, "bin", name), `#!/bin/sh\necho "${name} DOCKER_HOST=$DOCKER_HOST CONTAINER_HOST=$CONTAINER_HOST $*" >> "${cliLog}"\nexit 1\n`, {
-        mode: 0o755,
-      });
+      writeFileSync(
+        join(dir, "bin", name),
+        `#!/bin/sh\necho "${name} DOCKER_HOST=$DOCKER_HOST CONTAINER_HOST=$CONTAINER_HOST $*" >> "${cliLog}"\n${UNREACHABLE[name]}\nexit 1\n`,
+        {
+          mode: 0o755,
+        },
+      );
     }
     const marker = join(dir, "toybox-imported");
     await fn({

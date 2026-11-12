@@ -800,7 +800,7 @@ for (const listed of [false, true]) {
     const a0 = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
     const a = await reg.transition(a0.id, a0.generation, "running", { idempotencyKey: "a-run" });
     await t.daemon.deps.workspace.create(a.id, {});
-    const sb = await t.fakes.hooks.raw.sandbox.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
+    const sb = await t.fakes.hooks.raw.sandbox.start({ host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
     await reg.setSandbox(a.id, a.generation, sb.id, "a-sb-set");
     await t.fakes.hooks.raw.sandbox.kill(sb.id, `test-kill:${sb.id}`); // the daemon died after the stop
     await t.daemon.deps.mailbox.send(a.id, { kind: "message", from: root.id, body: "hello" }, "m1");
@@ -868,7 +868,7 @@ for (const wakeAtYielded of [true, false]) {
     const a0 = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
     const a = await reg.transition(a0.id, a0.generation, "running", { idempotencyKey: "a-run" });
     await d.deps.workspace.create(a.id, {});
-    const sb = await t.fakes.hooks.raw.sandbox.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
+    const sb = await t.fakes.hooks.raw.sandbox.start({ host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
     await reg.setSandbox(a.id, a.generation, sb.id, "a-sb-set");
     await t.fakes.hooks.raw.sandbox.kill(sb.id, `test-kill:${sb.id}`); // the daemon died after the stop
     // The crashed run's key, staged credentials and slot, live at the crash: completing the pause must release them.

@@ -52,7 +52,7 @@ test("engineSocketPath: default, unix:// DOCKER_HOST, tcp rejected", () => {
 });
 
 test("buildRunArgs: tty adds -i -t; absent keeps the non-tty run; hardening stays", () => {
-  const spec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
+  const spec = { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
   const plain = buildRunArgs("id", spec, { mounts: [resolvedWs("/w")] });
   assert.ok(!plain.includes("-t") && !plain.includes("-i"));
   const tty = buildRunArgs("id", { ...spec, tty: { cols: 100, rows: 30 } }, { mounts: [resolvedWs("/w")] });
@@ -227,7 +227,7 @@ test("start with tty: runs -i -t and sizes the pty; a resize failure does not fa
     ran.push(args);
     return "";
   };
-  const spec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")], tty: { cols: 100, rows: 30 } };
+  const spec = { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [wsMount("/w")], tty: { cols: 100, rows: 30 } };
   await new NetSandbox({ mounts: stubMounts(), exec, engine: e.api }).start(spec, "k-tty");
   // ran[0] is the egress proxy sidecar's run; the sandbox run is the one that is not the proxy.
   const sandboxRun = ran.find((c) => c[0] === "run" && !String(c[3]).startsWith("pomtree-egress-proxy-"));

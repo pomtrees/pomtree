@@ -19,7 +19,7 @@
 // host or generation tag; the sweeper (which reclaims by owner selector) does not need them, so they are not added.
 
 import { createHash } from "node:crypto";
-import { SANDBOX_TAGS } from "@pomtree/core";
+import { SANDBOX_TAGS, ownerStampTags } from "@pomtree/core";
 import type { MountSpec, SandboxId, SandboxSpec } from "@pomtree/core";
 import { KUBERNETES_NAME_LIMITS, KUBERNETES_TAG_LIMITS, encodeTags } from "@pomtree/sandbox-kit";
 import { type KubernetesRuntimeBlock, parseRuntimeBlock } from "./runtime-block.ts";
@@ -51,8 +51,6 @@ export interface PodContext {
   namespace: string;
   // sandboxIdForKey(idempotencyKey): 64 hex, carried in full by the pod name.
   sandboxId: SandboxId;
-  host: string;
-  generation: number;
   // Becomes activeDeadlineSeconds, the dead-man switch.
   maxLifetimeSeconds: number;
   // RuntimeClass names the probe found, passed to the runtime block check.
@@ -293,8 +291,12 @@ function ownerTags(spec: SandboxSpec, ctx: PodContext): Record<string, string> {
   tags[SANDBOX_TAGS.sandbox] = ctx.sandboxId;
   tags[SANDBOX_TAGS.agent] = spec.agent;
   tags[SANDBOX_TAGS.backend] = BACKEND_ID;
-  tags[SANDBOX_TAGS.host] = ctx.host;
-  tags[SANDBOX_TAGS.generation] = String(ctx.generation);
+  // The owner stamp: validated here, so a bad host or generation is a PodBuildError before anything is created.
+  try {
+    Object.assign(tags, ownerStampTags(spec));
+  } catch (e) {
+    throw new PodBuildError(e instanceof Error ? e.message : String(e));
+  }
   return tags;
 }
 

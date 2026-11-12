@@ -372,6 +372,8 @@ test("parked-agent deadline: a yielded agent parked past its journaled deadline 
 
 test("orphan adoption: an empty registry beside live containers is not killed without adoptOrphans", async () => {
   const spec = (agent: string): SandboxSpec => ({
+    host: "h1",
+    generation: 0,
     agent,
     image: "img",
     mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/workspace" }],

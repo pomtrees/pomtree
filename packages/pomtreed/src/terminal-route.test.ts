@@ -124,7 +124,15 @@ async function fixture(terminal: TerminalRouteOpts = {}) {
   });
   const running = await t.daemon.deps.registry.transition(a.id, a.generation, "running", { idempotencyKey: "k-run" });
   const h = await t.sandbox.start(
-    { agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }], tty: { cols: 80, rows: 24 } },
+    {
+      host: "host-test",
+      generation: 0,
+      agent: a.id,
+      image: "i",
+      env: {},
+      mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }],
+      tty: { cols: 80, rows: 24 },
+    },
     "k-sb",
   );
   await t.daemon.deps.registry.setSandbox(a.id, running.generation, h.id, "k-set");

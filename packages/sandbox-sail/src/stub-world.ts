@@ -65,7 +65,6 @@ export async function stubWorld(o: StubWorldOptions = {}): Promise<StubWorld> {
     },
     log: (event, fields) => logs.push({ event, fields }),
     now: Date.now,
-    host: TEST_HOST,
     pollMs: 5,
     probe: { probes: 2, intervalMs: 0 },
     retry: { sleep: async () => {}, baseDelayMs: 0 },

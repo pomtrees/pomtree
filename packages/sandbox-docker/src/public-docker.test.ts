@@ -8,6 +8,8 @@ import { DiskEgressAudit, FileEgressAuditWriter, type EgressProxyConfig } from "
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const spec = {
+  host: "host-test",
+  generation: 0,
   agent: "worker",
   image: "pinned-agent-image",
   env: {},

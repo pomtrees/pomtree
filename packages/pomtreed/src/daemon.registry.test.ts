@@ -6,6 +6,8 @@ import type { Ctx } from "./test-setup.ts";
 
 const child = (c: Ctx, task: string, key = "c1", extra: object = {}) => c.api("POST", "/v1/agents", { task, idempotencyKey: key, ...extra });
 const spec = (agent: string): SandboxSpec => ({
+  host: "h1",
+  generation: 0,
   agent,
   image: "i",
   env: {},

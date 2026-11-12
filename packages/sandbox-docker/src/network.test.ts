@@ -158,7 +158,7 @@ test("remove: explicit helper removes ours, refuses a foreign one, and reports a
 });
 
 test("start: network is ensured before any per-sandbox resource; a wrong network fails the start with nothing created", async () => {
-  const spec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
+  const spec = { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
   const good = fakeNet({ inspect: undefined });
   const sb = new DockerSandbox({ mounts: stubMounts(), exec: good.exec, egressNetwork: EGRESS_NETWORK });
   const h = await sb.start(spec, "k-net-order");

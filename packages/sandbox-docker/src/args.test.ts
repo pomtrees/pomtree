@@ -16,6 +16,8 @@ import { DOCKER_PROFILE } from "./engine-profile.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const spec: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
   agent: "ag1",
   image: "alpine@sha256:abc",
   env: { A: "1" },
@@ -29,6 +31,19 @@ async function build(s: SandboxSpec, opts: { pidsLimit?: number } = {}): Promise
   const mounts = await Promise.all(s.mounts.map((m) => provider.resolve(s.agent, m)));
   return buildRunArgs("i", s, { ...opts, mounts });
 }
+
+test("owner stamp: pomtree.host and pomtree.generation come from the spec, and a spec that cannot be stamped is refused before argv is built", async () => {
+  const a = await build({ ...spec, host: "host with spaces,and=signs", generation: 7 });
+  const labels = a.flatMap((x, i) => (a[i - 1] === "--label" ? [x] : []));
+  assert.ok(labels.includes("pomtree.host=host with spaces,and=signs"), JSON.stringify(labels));
+  assert.ok(labels.includes("pomtree.generation=7"), JSON.stringify(labels));
+  await assert.rejects(build({ ...spec, host: "" }), /host id.*pass the daemon's host id/s);
+  await assert.rejects(build({ ...spec, host: "a\nb" }), /host id.*pass the daemon's host id/s);
+  await assert.rejects(build({ ...spec, generation: -1 }), /generation.*pass the agent's generation/s);
+  await assert.rejects(build({ ...spec, generation: 1.5 }), /generation.*pass the agent's generation/s);
+  // A caller label cannot forge the stamp (the reserved prefix is refused).
+  await assert.rejects(build({ ...spec, labels: { "pomtree.host": "forged" } }), /invalid sandbox label name/);
+});
 
 test("hardened defaults and labels", async () => {
   const a = await build(spec);
@@ -45,6 +60,8 @@ test("hardened defaults and labels", async () => {
 });
 
 const codeSpec: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
   agent: "ag1",
   image: "img@sha256:abc",
   env: { A: "1" },
@@ -67,6 +84,10 @@ const codeHead = [
   "pomtree.sandbox=i",
   "--label",
   "pomtree.agent=ag1",
+  "--label",
+  "pomtree.host=host-test",
+  "--label",
+  "pomtree.generation=0",
   "--user",
   "1000:1000",
 ];

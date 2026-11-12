@@ -24,6 +24,9 @@ export interface LoopbackRecord {
   state: "running" | "exited" | "preempted";
   exitCode: number | null;
   labels: Record<string, string>;
+  // The owner stamp the create body carried (SandboxSpec.host and generation); the provider stores and returns it untouched.
+  host: string;
+  generation: number;
   fingerprint: string; // sha256 of the create body the provider accepted
 }
 
@@ -52,6 +55,8 @@ export function createBody(name: string, spec: SandboxSpec): string {
     env: sorted(spec.env),
     cmd: spec.cmd ?? null,
     labels: sorted(spec.labels),
+    host: spec.host,
+    generation: spec.generation,
   });
 }
 
@@ -77,7 +82,9 @@ export function parseRecord(raw: unknown): LoopbackRecord {
     !(o.state === "running" || o.state === "exited" || o.state === "preempted") ||
     !(o.exitCode === null || typeof o.exitCode === "number") ||
     typeof o.labels !== "object" ||
-    o.labels === null
+    o.labels === null ||
+    typeof o.host !== "string" ||
+    typeof o.generation !== "number"
   ) {
     throw new Error(
       `the loopback provider returned a malformed sandbox record ${JSON.stringify(raw)}; check that sandbox.loopback.baseUrl points at a loopback sandbox API`,
@@ -86,15 +93,14 @@ export function parseRecord(raw: unknown): LoopbackRecord {
   return o as LoopbackRecord;
 }
 
-// A record as the port's listing. Host and generation are null: the backend is not told which daemon host or generation started a
-// sandbox, so it reports none rather than guess (reconcile then reports such sandboxes and never adopts them).
+// A record as the port's listing. Host and generation are the stamp the create body carried, read back by the rule core's readOwnerStamp applies (kept inline: this file imports nothing at runtime): an empty host or a generation that is not a non-negative integer reads null.
 export function toListing(r: LoopbackRecord): SandboxListing {
   return {
     id: r.name,
     agent: r.agent,
     backend: "loopback",
-    host: null,
-    generation: null,
+    host: r.host === "" ? null : r.host,
+    generation: Number.isSafeInteger(r.generation) && r.generation >= 0 ? r.generation : null,
     state: r.state === "preempted" ? "unknown" : r.state,
     ...(Object.keys(r.labels).length > 0 && { labels: r.labels }),
   };

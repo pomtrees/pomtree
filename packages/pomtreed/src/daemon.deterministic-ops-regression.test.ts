@@ -298,7 +298,7 @@ test("two overlapping recovery passes adopt one running container agent with exa
   });
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "adopt-overlap-run" });
   const sb = await t.fakes.hooks.raw.sandbox.start(
-    { agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
+    { host: "h1", generation: 0, agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
     "sb-overlap",
   );
   await reg.setSandbox(a.id, a.generation, sb.id, "sb-overlap-set");
@@ -447,7 +447,7 @@ test(
     });
     await reg.transition(a.id, a.generation, "running", { idempotencyKey: "adopt-cancel-run" });
     const sb = await t.fakes.hooks.raw.sandbox.start(
-      { agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
+      { host: "h1", generation: 0, agent: a.id, image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/w" }] },
       "sb-adopt-cancel",
     );
     await reg.setSandbox(a.id, a.generation, sb.id, "sb-adopt-cancel-set");

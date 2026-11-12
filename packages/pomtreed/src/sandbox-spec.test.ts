@@ -7,6 +7,8 @@ import { setup } from "./test-setup.ts";
 import { SANDBOX_LIFECYCLE_KIND } from "./daemon-util.ts";
 
 const spec: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
   agent: "a1" as never,
   image: "img@sha256:abc",
   cmd: ["pi", "SECRET PROMPT"],
@@ -39,7 +41,7 @@ test("describeSandboxSpec keeps names, kinds and counts, never values or host pa
 });
 
 test("no egress block and no resources are summarized as such", () => {
-  const s = describeSandboxSpec({ agent: "a" as never, image: "i", env: {}, mounts: [] });
+  const s = describeSandboxSpec({ host: "host-test", generation: 0, agent: "a" as never, image: "i", env: {}, mounts: [] });
   assert.deepEqual(s.egress, { mode: "none" });
   assert.equal("resources" in s, false);
 });
@@ -63,7 +65,10 @@ test("the daemon journals the requested spec on the started entry only", async (
 });
 
 test("the realized hardening is content-free and is network none with cap-drop ALL even without a requested egress block", () => {
-  for (const sp of [spec, { agent: "a" as never, image: "i", env: { K: "tok-secret-value" }, mounts: [], cmd: ["SECRET PROMPT"] } as SandboxSpec]) {
+  for (const sp of [
+    spec,
+    { host: "host-test", generation: 0, agent: "a" as never, image: "i", env: { K: "tok-secret-value" }, mounts: [], cmd: ["SECRET PROMPT"] } as SandboxSpec,
+  ]) {
     const h = describeRunHardening(defaultDenyEgress(sp));
     assert.equal(h.networkMode, "none");
     assert.ok(h.capDrop.includes("ALL"));

@@ -16,6 +16,8 @@ interface Sandbox {
   state: "running" | "exited" | "preempted";
   exitCode: number | null;
   labels: Record<string, string>;
+  host: string;
+  generation: number;
   fingerprint: string;
   logs: string[];
   ended: Promise<void>;
@@ -37,6 +39,8 @@ const record = (s: Sandbox) => ({
   state: s.state,
   exitCode: s.exitCode,
   labels: s.labels,
+  host: s.host,
+  generation: s.generation,
   fingerprint: s.fingerprint,
 });
 
@@ -79,7 +83,14 @@ export async function startLoopbackServer(opts: { token: string }): Promise<Loop
 
     if (parts[2] === undefined && req.method === "POST") {
       const raw = await readBody(req);
-      const body = JSON.parse(raw.toString("utf8")) as { name: string; agent: string; image: string; labels: Record<string, string> };
+      const body = JSON.parse(raw.toString("utf8")) as {
+        name: string;
+        agent: string;
+        image: string;
+        labels: Record<string, string>;
+        host: string;
+        generation: number;
+      };
       const lose = unknownOutcome;
       unknownOutcome = undefined;
       const existing = sandboxes.get(body.name);
@@ -96,6 +107,8 @@ export async function startLoopbackServer(opts: { token: string }): Promise<Loop
           state: "running",
           exitCode: null,
           labels: body.labels,
+          host: body.host,
+          generation: body.generation,
           fingerprint: createHash("sha256").update(raw).digest("hex"),
           logs: [`loopback sandbox ${body.name} started from ${body.image}`],
           ended,

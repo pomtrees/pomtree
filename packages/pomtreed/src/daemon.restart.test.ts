@@ -42,7 +42,15 @@ test("container ownership: containers of another store or a newer epoch and unla
     const a = await reg.create({ spec: spawnSpec, parent: root.id, name, task: "t", host: "h1", budgetMicros: 1, idempotencyKey: name });
     await reg.transition(a.id, a.generation, "exited", { exit: "succeeded", idempotencyKey: `${name}-x` }).catch(() => {});
     const h = await sb.start(
-      { agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }], ...(labels && { labels }) },
+      {
+        host: "h1",
+        generation: 0,
+        agent: a.id,
+        image: "img",
+        env: {},
+        mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }],
+        ...(labels && { labels }),
+      },
       name,
     );
     return h.id;
@@ -65,9 +73,12 @@ test("container ownership: a daemon with no store id leaves a container labelled
   const sb = t.fakes.hooks.raw.sandbox;
   // A registered agent besides the root, so reconcile is allowed to reclaim records-less containers at all.
   await reg.create({ spec: spawnSpec, parent: root.id, name: "bystander", task: "t", host: "h1", budgetMicros: 1, idempotencyKey: "bystander" });
-  const mine = await sb.start({ agent: "ghost-mine", image: "img", env: {}, mounts: [], labels: { daemon_epoch: "50" } }, "ghost-mine");
+  const mine = await sb.start(
+    { host: "h1", generation: 0, agent: "ghost-mine", image: "img", env: {}, mounts: [], labels: { daemon_epoch: "50" } },
+    "ghost-mine",
+  );
   const foreign = await sb.start(
-    { agent: "ghost-foreign", image: "img", env: {}, mounts: [], labels: { store_id: "other", daemon_epoch: "1" } },
+    { host: "h1", generation: 0, agent: "ghost-foreign", image: "img", env: {}, mounts: [], labels: { store_id: "other", daemon_epoch: "1" } },
     "ghost-foreign",
   );
   await t.daemon.recover();
@@ -191,7 +202,7 @@ async function runningWithCp(t: T, name: string, opts: { sandbox?: boolean } = {
   let sid = "";
   if (opts.sandbox) {
     const h = await t.fakes.hooks.raw.sandbox.start(
-      { agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
+      { host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
       `${name}-sb`,
     );
     await reg.setSandbox(a.id, a.generation, h.id, `${name}-set`);
@@ -387,27 +398,49 @@ test("sandbox-backend: restart after the create (before the real id was recorded
   const b = await reg.bumpGeneration(a.id, "h1", "a-bump"); // generation 1
   await reg.transition(b.id, b.generation, "running", { idempotencyKey: "a-run" });
   await reg.setSandbox(b.id, b.generation, sandboxIdForKey(`${b.id}:${b.generation}:start`), "intent", "fake");
+  // The stamps are the ones the adapter writes from the spec: only a sandbox of this host AND this generation is linked.
   const spec = { agent: b.id, image: "img", env: {}, mounts: [], labels: { daemon_epoch: "0" } };
-  const stale = await sb.start(spec, "stale-gen0"); // listed first: the previous generation's leftover
-  const right = await sb.start(spec, `${b.id}:1:start`);
-  const gens = new Map([
-    [stale.id, 0],
-    [right.id, 1],
-  ]);
-  const wrapped = new Proxy(sb, {
-    get(target, prop) {
-      if (prop === "list")
-        return async (o: Parameters<Sandbox["list"]>[0]): Promise<SandboxListing[]> =>
-          (await target.list(o)).map((l) => ({ ...l, generation: gens.get(l.id) ?? null }));
-      const v = Reflect.get(target, prop, target);
-      return typeof v === "function" ? v.bind(target) : v;
-    },
-  }) as Sandbox;
-  (t.daemon.deps as { sandbox: Sandbox }).sandbox = wrapped;
+  const stale = await sb.start({ ...spec, host: "h1", generation: 0 }, "stale-gen0"); // listed first: the previous generation's leftover
+  const otherHost = await sb.start({ ...spec, host: "h2", generation: 1 }, "other-host"); // right generation, another host's
+  const right = await sb.start({ ...spec, host: "h1", generation: 1 }, `${b.id}:1:start`);
   await t.daemon.recover();
   assert.equal((await get(t, b.id)).sandbox, right.id, "bound to the sandbox of this generation");
   assert.notEqual(sb.running.get(stale.id)!.exitCode, null, "the stale lower-generation sandbox was stopped");
   assert.equal(sb.running.get(right.id)!.exitCode, null, "the correct sandbox was kept running");
+  assert.equal((await get(t, b.id)).sandbox === otherHost.id, false, "another host's sandbox is never linked");
+});
+
+test("reconcile acts only on sandboxes stamped with this host: a peer-host or unstamped sandbox is never killed, stopped or bound (each branch)", async () => {
+  const t = setup(async () => {});
+  const sb = t.fakes.hooks.raw.sandbox;
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const labels = { daemon_epoch: "0" };
+  const base = { image: "img", env: {}, mounts: [], labels };
+  // No record: an own-host ghost is killed (control); a peer-host one is left.
+  const ghostOwn = await sb.start({ ...base, agent: "ghost-own", host: "h1", generation: 0 }, "g1");
+  const ghostPeer = await sb.start({ ...base, agent: "ghost-peer", host: "h2", generation: 0 }, "g2");
+  // Record on another host: an own-host-stamped sandbox is killed (control); a peer-stamped one is left.
+  const moved = await reg.create({ spec: spawnSpec, parent: root.id, name: "m", task: "t", host: "h2", budgetMicros: 100_000, idempotencyKey: "m" });
+  const movedOwn = await sb.start({ ...base, agent: moved.id, host: "h1", generation: 0 }, "m1");
+  const movedPeer = await sb.start({ ...base, agent: moved.id, host: "h2", generation: 0 }, "m2");
+  // Running record with no sandbox id yet and a non-derived id: only the same host AND generation is bound.
+  const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
+  const b = await reg.bumpGeneration(a.id, "h1", "a-bump");
+  await reg.transition(b.id, b.generation, "running", { idempotencyKey: "a-run" });
+  const stale = await sb.start({ ...base, agent: b.id, host: "h1", generation: 0 }, "s0");
+  const peerGen = await sb.start({ ...base, agent: b.id, host: "h2", generation: b.generation }, "s1");
+  await t.daemon.recover();
+  const alive = (id: string) => sb.running.get(id)!.exitCode === null;
+  assert.equal(alive(ghostOwn.id), false, "control: an own-host ghost is killed");
+  assert.equal(alive(ghostPeer.id), true, "a peer-host ghost is left");
+  assert.equal(alive(movedOwn.id), false, "control: an own-host sandbox of a record on another host is killed");
+  assert.equal(alive(movedPeer.id), true, "a peer-host sandbox is left");
+  const after = await get(t, b.id);
+  assert.notEqual(after.sandbox, peerGen.id, "a peer-host sandbox of the right generation is never bound");
+  assert.notEqual(after.sandbox, stale.id, "a stale-generation sandbox is never bound");
+  assert.equal(alive(stale.id), false, "the stale-generation sandbox of this host is stopped");
+  assert.equal(alive(peerGen.id), true, "the peer-host sandbox is left running");
 });
 
 test("sandbox-backend: a live sandbox recorded under another backend is held and the daemon boots with one journaled finding; nothing is killed", async () => {

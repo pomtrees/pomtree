@@ -73,6 +73,8 @@ test("hostAddressList lists every daemon-side interface address, scope id stripp
 });
 
 const spec = {
+  host: "host-test",
+  generation: 0,
   agent: "worker",
   image: "pinned-agent-image",
   env: {},

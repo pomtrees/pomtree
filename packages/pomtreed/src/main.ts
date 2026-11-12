@@ -511,8 +511,7 @@ const { node, sandbox, placement } = wireLocalHost({
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
 // Containers from before the host and generation labels refuse the start, before this host registers or anything adopts,
-// reclaims or lists them; pomtreed never removes them (the text names the ids, the missing labels and the cleanup command). Off until
-// the adapter stamps those labels (ADAPTER_STAMPS_SANDBOX_TAGS, TODO(sandbox-host-generation-labels)).
+// reclaims or lists them; pomtreed never removes them (the text names the ids, the missing labels and the cleanup command).
 if (!built.sandbox) throw new Error("wireLocalHost did not build the sandbox adapter; the legacy container check cannot run");
 {
   const legacy = await legacyContainerBootCheck(engine, built.sandbox);

@@ -9,7 +9,15 @@ import { pomtree, pomtreeEnv } from "../../agent-image/src/browser-capture.ts";
 // worker's scrubbed `pomtree` envs (report publish in browser-capture.ts, `pomtree result` in capture_finish) must keep every one of them,
 // or `pomtree` cannot reach the daemon. Expectations come from proxyEnv's actual output, never from a copy of the name list.
 
-const spec: SandboxSpec = { agent: "a1" as SandboxSpec["agent"], image: "img@sha256:0", env: {}, mounts: [], egress: { allow: [] } };
+const spec: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
+  agent: "a1" as SandboxSpec["agent"],
+  image: "img@sha256:0",
+  env: {},
+  mounts: [],
+  egress: { allow: [] },
+};
 const produced = proxyEnv("sb-1" as Parameters<typeof proxyEnv>[0], spec);
 const CANARY = "PTREE_CANARY_SECRET";
 // What the worker process holds: the proxy vars, POMTREE_* and secrets the scrubbed child must not see.

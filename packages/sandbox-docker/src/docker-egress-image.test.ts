@@ -14,7 +14,15 @@ import { stubMounts, wsMount } from "./test-mounts.ts";
 const HEX = "a".repeat(64);
 const PINNED = `registry.example:5000/pomtree/agent:dev@sha256:${HEX}`;
 const IMAGE_ID = `sha256:${"b".repeat(64)}`;
-const spec = { agent: "a", image: "worker-image", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } };
+const spec = {
+  host: "host-test",
+  generation: 0,
+  agent: "a",
+  image: "worker-image",
+  env: {},
+  mounts: [wsMount("/w")],
+  egress: { allow: [{ host: "pypi.org" }] },
+};
 
 // Fake exec: no existing container; `image inspect` answers from `images` (ref -> stdout), or fails like docker for a miss.
 function fakeExec(calls: string[][], images: Record<string, string>): Exec {

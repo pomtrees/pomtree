@@ -55,6 +55,8 @@ test("two sidecars on the shared ICC-off network: policy-path and direct outboun
     const start = (n: number) =>
       sb.start(
         {
+          host: "host-test",
+          generation: 0,
           agent: "net-gate",
           image: IMAGE,
           env: {},

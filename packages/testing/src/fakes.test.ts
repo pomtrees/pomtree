@@ -185,19 +185,22 @@ test("checkpoints: idempotent write, latest", async () => {
 
 test("sandbox + harness scripted", async () => {
   const f = createFakes({ sandboxExitCodes: [3], harnessEvents: { a: [{ kind: "error", message: "x" }] } });
-  const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] }, "sb1");
+  const h = await f.sandbox.start(
+    { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
+    "sb1",
+  );
   assert.deepEqual(
     (await f.sandbox.list(OWNER)).map(({ state: _state, ...rest }) => rest), // state races the scripted exit
-    [{ id: h.id, agent: "a", backend: "fake", host: null, generation: null }],
+    [{ id: h.id, agent: "a", backend: "fake", host: "host-test", generation: 0 }],
   );
   assert.deepEqual(await h.wait(), { exitCode: 3 });
   const h2 = await f.sandbox.start(
-    { agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
+    { host: "host-test", generation: 0, agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
     "sb2",
   );
   f.hooks.exitSandbox(h2.id, 5);
   assert.deepEqual(await h2.wait(), { exitCode: 5 });
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 3, status: "exited" });
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 3, status: "exited", host: "host-test", generation: 0 });
   const s = await f.harness.start({ agent: "a", sandbox: h, prompt: "p" });
   const got = [];
   for await (const e of s.events()) got.push(e);
@@ -290,12 +293,19 @@ test("replays and reads return copies; limit 0 returns none; falsy results are w
 
 test("sandbox: list keeps exited sandboxes (docker ps -a), inspect still works", async () => {
   const f = createFakes();
-  const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] };
+  const spec = {
+    host: "host-test",
+    generation: 0,
+    agent: "a",
+    image: "i",
+    env: {},
+    mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }],
+  };
   const h = await f.sandbox.start(spec, "sb1");
   f.hooks.exitSandbox(h.id, 1);
-  assert.deepEqual(await f.sandbox.list(OWNER), [{ id: h.id, agent: "a", backend: "fake", host: null, generation: null, state: "exited" }]);
+  assert.deepEqual(await f.sandbox.list(OWNER), [{ id: h.id, agent: "a", backend: "fake", host: "host-test", generation: 0, state: "exited" }]);
   assert.deepEqual(f.hooks.raw.sandbox.listOwners, [OWNER]);
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 1, status: "exited" });
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 1, status: "exited", host: "host-test", generation: 0 });
 });
 
 test("workspace: ids validated, existing create can't be reset", async () => {
@@ -653,8 +663,11 @@ test("templates: scripted resolve/list and call-logged", async () => {
 
 test("sandbox: inspect reports running/exited status and scripted runtime statuses without changing the lifecycle", async () => {
   const f = createFakes();
-  const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] }, "sb1");
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: true, exitCode: null, status: "running" });
+  const h = await f.sandbox.start(
+    { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
+    "sb1",
+  );
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: true, exitCode: null, status: "running", host: "host-test", generation: 0 });
   for (const [status, running] of [
     ["created", false],
     ["paused", true],
@@ -662,12 +675,16 @@ test("sandbox: inspect reports running/exited status and scripted runtime status
     ["dead", false],
   ] as const) {
     f.sandbox.statuses.set(h.id, status);
-    assert.deepEqual(await f.sandbox.inspect(h.id), { running, exitCode: null, status }, status);
+    assert.deepEqual(await f.sandbox.inspect(h.id), { running, exitCode: null, status, host: "host-test", generation: 0 }, status);
   }
   f.sandbox.statuses.set(h.id, "frobbing");
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: true, exitCode: null, status: "frobbing" }, "unrecognized: running follows the lifecycle");
+  assert.deepEqual(
+    await f.sandbox.inspect(h.id),
+    { running: true, exitCode: null, status: "frobbing", host: "host-test", generation: 0 },
+    "unrecognized: running follows the lifecycle",
+  );
   f.sandbox.statuses.set(h.id, null);
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: true, exitCode: null }, "null omits status");
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: true, exitCode: null, host: "host-test", generation: 0 }, "null omits status");
   f.sandbox.statuses.delete(h.id);
   await f.sandbox.attach(h.id, "a"); // a scripted status left the sandbox live (attach throws otherwise)
   f.sandbox.inspectErrors.set(h.id, new Error("engine timeout"));
@@ -676,10 +693,13 @@ test("sandbox: inspect reports running/exited status and scripted runtime status
 
 test("sandbox: wait/inspect surface oomKilled only when scripted", async () => {
   const f = createFakes();
-  const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] }, "sb1");
+  const h = await f.sandbox.start(
+    { host: "host-test", generation: 0, agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
+    "sb1",
+  );
   f.hooks.exitSandbox(h.id, 137, true);
   assert.deepEqual(await h.wait(), { exitCode: 137, oomKilled: true });
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 137, oomKilled: true, status: "exited" });
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 137, oomKilled: true, status: "exited", host: "host-test", generation: 0 });
 });
 
 test("registry: create replay returns the original snapshot, not the live record", async () => {
@@ -837,7 +857,14 @@ test("extension gateway: createFakes wires the fake into the call log", async ()
 });
 
 const OWNER = { host: "host-1", storeId: "store-1", epoch: 1 };
-const sbSpec = (agent = "a") => ({ agent, image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] });
+const sbSpec = (agent = "a") => ({
+  host: "host-test",
+  generation: 0,
+  agent,
+  image: "i",
+  env: {},
+  mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }],
+});
 
 test("escalations: id replay with a new key returns the live (stored) record, defensively", async () => {
   const f = createFakes();
@@ -876,7 +903,7 @@ test("sandbox: stop/kill never overwrite an already-scripted exit", async () => 
   f.hooks.exitSandbox(h.id, 143);
   await f.sandbox.stop(h.id, 10, "k4"); // already exited: no-op, like Docker
   assert.deepEqual(await h.wait(), { exitCode: 143 });
-  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 143, status: "exited" });
+  assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 143, status: "exited", host: "host-test", generation: 0 });
 });
 
 test("sandbox: attach throws SandboxUnavailableError for unknown and exited ids", async () => {
@@ -928,7 +955,14 @@ test("mailbox: strictMailboxTargets rejects an unknown or reaped target (mirrors
 test("FakeSandbox.startErrors scripts typed start failures; ModelGateway.issueKey replays by key", async () => {
   const f = createFakes();
   f.hooks.raw.sandbox.startErrors.push(new SandboxStartError("pull_failed", "net", true), null);
-  const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }] };
+  const spec = {
+    host: "host-test",
+    generation: 0,
+    agent: "a",
+    image: "i",
+    env: {},
+    mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }],
+  };
   await assert.rejects(f.sandbox.start(spec, "k"), (e: SandboxStartError) => e.kind === "pull_failed" && e.retryable);
   assert.ok(await f.sandbox.start(spec, "k"));
   // The fake gateway issues only for a registered container agent with a resolved model, as the real one does.
@@ -942,7 +976,14 @@ test("FakeSandbox.startErrors scripts typed start failures; ModelGateway.issueKe
 test("FakeSandbox.waitErrors scripts a failing wait() on start and attach handles; other sandboxes still resolve at exit", async () => {
   const f = createFakes();
   const raw = f.hooks.raw.sandbox;
-  const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }] };
+  const spec = {
+    host: "host-test",
+    generation: 0,
+    agent: "a",
+    image: "i",
+    env: {},
+    mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }],
+  };
   const h = await f.sandbox.start(spec, "k1");
   const other = await f.sandbox.start(spec, "k2");
   const attached = await f.sandbox.attach(h.id, "a");
@@ -958,7 +999,14 @@ test("FakeSandbox.waitErrors scripts a failing wait() on start and attach handle
 
 test("FakeSandbox.resultWork records every call with its opts, maxBytes included, even when the sandbox is gone", async () => {
   const f = createFakes();
-  const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }] };
+  const spec = {
+    host: "host-test",
+    generation: 0,
+    agent: "a",
+    image: "i",
+    env: {},
+    mounts: [{ kind: "workspace" as const, workspace: "ws-x", containerPath: "/w" }],
+  };
   const h = await f.sandbox.start(spec, "k");
   await f.sandbox.resultWork(h.id, { save: true, expectedFingerprint: "fp", maxBytes: 1024 });
   await f.sandbox.resultWork(h.id, { maxBytes: 2048 });

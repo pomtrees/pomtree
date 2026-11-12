@@ -71,7 +71,7 @@ test("restart-rollback: a failed sandbox start on a dead-container resume is ter
   const dir = r1.workspace.hostPath(ws.workspace);
   writeFileSync(join(dir, "kept.txt"), "checkpointed");
   await reg.transition(a.id, a.generation, "running", { idempotencyKey: "rb-run" });
-  const dead = await sb.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "rb-sb");
+  const dead = await sb.start({ host: "host-test", generation: 0, agent: a.id, image: "img", env: {}, mounts: [] }, "rb-sb");
   await reg.setSandbox(a.id, a.generation, dead.id, "rb-set", "fake");
   await sb.kill(dead.id, `${dead.id}:test-kill`);
   await seedCheckpoint(r1, a, "rb-cp", { workspace: ws.workspace });

@@ -349,6 +349,8 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
     const t0 = Date.now();
     const h = await sandbox.start(
       {
+        host: "host-test",
+        generation: 0,
         agent,
         image: o.image,
         mounts: [ws, ...live.credentials.stage(agent, key)],

@@ -286,6 +286,8 @@ test("Docker result collection uses the actual workspace and base environment", 
   writable(f.dir);
   const handle = await sandbox.start(
     {
+      host: "host-test",
+      generation: 0,
       agent: "result-work-live",
       image: IMAGE,
       env: { POMTREE_BASE_COMMIT: f.git("rev-parse", "HEAD") },

@@ -13,8 +13,6 @@ export default function conformance(ctx: { provider: SandboxBackendProvider; dep
   const servers = new Map<SandboxConformanceWorld, LoopbackServer>();
   return {
     ...base,
-    // The backend is not told which daemon host or generation started a sandbox, so its listings carry null for both (wire.mts).
-    listingTags: "optional",
     // The provider fingerprints each create body, so a key reused for a different spec is refused (enables idempotency-conflict).
     startConflict: true,
     async make() {

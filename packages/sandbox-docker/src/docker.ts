@@ -7,11 +7,14 @@ import { loadProxyConfig, markEgressSpoolClosed, prepareEgressSpool, type Egress
 import {
   DOCKER_GROUP_ACTION,
   IMAGE_REBUILD_ACTION,
+  SANDBOX_TAGS,
   SandboxStartError,
   SandboxUnavailableError,
+  readOwnerStamp,
   sandboxIdForKey,
   type AgentId,
   type ByteStream,
+  type HostId,
   type ImageIdentity,
   type LoopbackPort,
   type MountProvider,
@@ -20,6 +23,7 @@ import {
   type SandboxDeclaration,
   type SandboxHandle,
   type SandboxId,
+  type SandboxInfo,
   type SandboxListing,
   type SandboxOwner,
   type SandboxSpec,
@@ -886,20 +890,38 @@ export class DockerSandbox implements Sandbox {
   // Reads the container's terminal state in one `docker inspect` round-trip (Running, ExitCode,
   // OOMKilled). Returns null when the container is already gone; other failures propagate, so a
   // daemon-unreachable inspect surfaces SandboxUnavailableError rather than a stale cache hit.
-  private async readState(
-    id: SandboxId,
-  ): Promise<{ running: boolean; exitCode: number | null; oomKilled: boolean; networkMode: string | undefined; status: string | undefined } | null> {
+  private async readState(id: SandboxId): Promise<{
+    running: boolean;
+    exitCode: number | null;
+    oomKilled: boolean;
+    networkMode: string | undefined;
+    status: string | undefined;
+    stamp: { host: HostId | null; generation: number | null } | undefined;
+  } | null> {
     try {
-      // Status comes last so a line without it still parses; a missing or malformed one is dropped (callers treat absent as unknown).
+      // The state fields come first (space-separated, status last so a line without it still parses; a missing or malformed one is
+      // dropped, callers treat absent as unknown), then the owner stamp labels after tabs (a host cannot hold a tab: ownerStampTags
+      // refuses control characters). A line with no tab fields reports no stamp; an absent label (`<no value>` or empty) is null.
       const out = await this.exec([
         "inspect",
         "-f",
-        "{{.State.Running}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.HostConfig.NetworkMode}} {{.State.Status}}",
+        `{{.State.Running}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.HostConfig.NetworkMode}} {{.State.Status}}\t{{index .Config.Labels "${SANDBOX_TAGS.host}"}}\t{{index .Config.Labels "${SANDBOX_TAGS.generation}"}}`,
         name(id),
       ]);
-      const [running, code, oom, networkMode, rawStatus] = out.split(" ");
+      const fields = out.split("\t");
+      const [head = "", host, generation] = fields;
+      const [running, code, oom, networkMode, rawStatus] = head.split(" ");
       const status = rawStatus && /^[a-z]+$/.test(rawStatus) ? rawStatus : undefined;
-      return { running: running === "true", exitCode: running === "true" ? null : Number(code), oomKilled: oom === "true", networkMode, status };
+      const label = (v: string | undefined) => (v === undefined || v === "<no value>" ? undefined : v);
+      // No tab at all is a bare state line (no stamp to report). Any other field count means a label held a tab: fail closed, the
+      // stamp reads null for both (the same reading list gives, since readOwnerStamp refuses a control character in a host).
+      const stamp =
+        fields.length === 1
+          ? undefined
+          : fields.length !== 3 || host === undefined || generation === undefined
+            ? { host: null, generation: null }
+            : readOwnerStamp({ [SANDBOX_TAGS.host]: label(host), [SANDBOX_TAGS.generation]: label(generation) });
+      return { running: running === "true", exitCode: running === "true" ? null : Number(code), oomKilled: oom === "true", networkMode, status, stamp };
     } catch (e) {
       if (gone(e, this.profile)) return null;
       throw e;
@@ -969,13 +991,21 @@ export class DockerSandbox implements Sandbox {
     await this.finish(id);
   }
 
-  async inspect(id: SandboxId) {
+  async inspect(id: SandboxId): Promise<SandboxInfo | null> {
     const s = await this.readState(id);
     if (s)
-      return { running: s.running, exitCode: s.exitCode, ...(!s.running && s.oomKilled ? { oomKilled: true } : {}), ...(s.status ? { status: s.status } : {}) };
+      return {
+        running: s.running,
+        exitCode: s.exitCode,
+        ...(!s.running && s.oomKilled ? { oomKilled: true } : {}),
+        ...(s.status ? { status: s.status } : {}),
+        ...(s.stamp ?? {}),
+      };
     // Removed after an observed exit: the last state was exited.
     const cached = this.exited.get(id);
-    return cached === undefined ? null : { running: false, exitCode: cached.exitCode, ...(cached.oomKilled ? { oomKilled: true } : {}), status: "exited" };
+    return cached === undefined
+      ? null
+      : { running: false, exitCode: cached.exitCode, ...(cached.oomKilled ? { oomKilled: true } : {}), status: "exited", host: null, generation: null };
   }
 
   // Every labelled container with its raw labels, caller labels and Docker status; list and reclaim filter it.
@@ -1034,8 +1064,8 @@ export class DockerSandbox implements Sandbox {
   // The sandboxes `owner`'s daemon may have created: everything except containers positively owned by someone else, i.e. a
   // store_id label that differs from owner.storeId, or a daemon_epoch label newer than owner.epoch. Containers with no store_id
   // label (a daemon without a store id stamps none) are included, so a storeless daemon still lists its own. This is looser than
-  // reclaim's egressOwnedBy, which needs a matching store label because it deletes. Docker writes no host or generation label, so
-  // both are null.
+  // reclaim's egressOwnedBy, which needs a matching store label because it deletes. Host and generation come from the pomtree.host and
+  // pomtree.generation labels start() stamps; a container without them reads null (legacyContainerRefusal refuses those at boot).
   async list(owner: SandboxOwner): Promise<SandboxListing[]> {
     return (await this.scan())
       .filter((c) => {
@@ -1048,8 +1078,7 @@ export class DockerSandbox implements Sandbox {
         id: c.id,
         agent: c.agent,
         backend: "docker",
-        host: null,
-        generation: null,
+        ...readOwnerStamp(c.raw),
         state: listingState(c.status),
         ...(Object.keys(c.labels).length ? { labels: c.labels } : {}),
       }));

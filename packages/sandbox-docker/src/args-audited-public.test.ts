@@ -7,6 +7,8 @@ import { stubMounts, wsMount } from "./test-mounts.ts";
 // The audited-public minimum is the sandbox floor every egress mode meets (args-floor.test.ts covers each field and egress mode).
 
 const auditedSpec: SandboxSpec = {
+  host: "host-test",
+  generation: 0,
   agent: "ag1",
   image: "alpine@sha256:abc",
   env: {},

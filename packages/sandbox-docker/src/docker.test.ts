@@ -53,7 +53,7 @@ async function wait(handle: Awaited<ReturnType<DockerSandbox["start"]>>, ms = 30
   }
 }
 function spec(cmd: string[], env: Record<string, string> = {}) {
-  return { agent: "local-gate", image: IMAGE, env, mounts: [wsMount("/work")], cmd };
+  return { host: "host-test", generation: 0, agent: "local-gate", image: IMAGE, env, mounts: [wsMount("/work")], cmd };
 }
 
 test("Docker network-none worker lifecycle uses the packaged bridge and nonroot identity", { skip, timeout: 60000 }, async () => {

@@ -199,6 +199,8 @@ test("browser worker pomtree paths reach a fake daemon through the real egress p
   try {
     const h = await sandbox.start(
       {
+        host: "host-test",
+        generation: 0,
         agent: AGENT as AgentId,
         image: image!,
         mounts: [{ kind: "workspace", workspace: "ws-proxy-smoke", containerPath: "/work" }],

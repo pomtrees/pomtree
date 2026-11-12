@@ -201,24 +201,16 @@ export async function openLocalEngine(input: OpenLocalEngineInput): Promise<Loca
   }
 }
 
-// Whether the adapter stamps SANDBOX_TAGS.host and SANDBOX_TAGS.generation on every container it creates. It does not yet: the core
-// SandboxSpec carries neither value, and DockerSandbox.list reports both as null. Until it does, every container this pomtreed starts
-// would read as pre-upgrade, so the boot refusal below cannot be enforced.
-// TODO(sandbox-host-generation-labels): stamp pomtree.host and pomtree.generation on created containers (needs the values on the
-// start spec or the owner), then set this to true. Current behavior: the boot check runs no scan and refuses nothing.
-export const ADAPTER_STAMPS_SANDBOX_TAGS = false;
-
 export type LegacyBootCheck = { ok: true } | { refuse: string } | { skipped: string };
 
-// Boot check for containers created before the host and generation labels existed (design F6): when any container labelled
+// Boot check for containers created before the host and generation labels existed (the adapter stamps both on every
+// container it creates, so a pomtree container without them predates the stamp): when any container labelled
 // pomtree=1 on the selected engine lacks a required tag, the start is refused with the ids, the missing labels and the exact cleanup
 // command for this engine. Nothing is removed: the only engine calls are the sandbox's read-only scan (ps and inspect).
 export async function legacyContainerBootCheck(
   engine: Pick<LocalEngine, "id" | "binary">,
   sandbox: { legacyContainerRefusal(): Promise<string | undefined> },
-  enforce: boolean = ADAPTER_STAMPS_SANDBOX_TAGS,
 ): Promise<LegacyBootCheck> {
-  if (!enforce) return { ok: true };
   let refusal: string | undefined;
   try {
     refusal = await sandbox.legacyContainerRefusal();

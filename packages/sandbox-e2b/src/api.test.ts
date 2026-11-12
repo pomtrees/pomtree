@@ -33,17 +33,20 @@ test("the fixture's header says where its bytes came from (inferred from the doc
 test("start, inspect, list, kill replay the documented E2B wire exactly, with the configured User-Agent on every request", async () => {
   const { stub, identity, api, sandbox } = await replay(UA);
   try {
-    const h = await sandbox.start({ agent: "agent-a", image: "base", env: { GREETING: "hi" }, mounts: [], labels: { store_id: "store-1" } }, "fixture-start-1");
+    const h = await sandbox.start(
+      { host: "host-a", generation: 1, agent: "agent-a", image: "base", env: { GREETING: "hi" }, mounts: [], labels: { store_id: "store-1" } },
+      "fixture-start-1",
+    );
     assert.equal(h.id, DERIVED, "the pomtree id is derived from the idempotency key, not E2B's sandboxID");
-    assert.deepEqual(await sandbox.inspect(h.id), { running: true, exitCode: null, status: "running" });
+    assert.deepEqual(await sandbox.inspect(h.id), { running: true, exitCode: null, status: "running", host: "host-a", generation: 1 });
     const listed = await sandbox.list({ host: "host-1", storeId: "store-1", epoch: 1 });
     // The other store's sandbox is filtered out; the one whose hashed tag has no annotation is foreign and never listed.
     assert.deepEqual(listed, [
-      { id: DERIVED, agent: "agent-a", backend: "e2b", host: null, generation: null, state: "running", labels: { store_id: "store-1" } },
+      { id: DERIVED, agent: "agent-a", backend: "e2b", host: "host-a", generation: 1, state: "running", labels: { store_id: "store-1" } },
     ]);
     await sandbox.kill(h.id, "k1");
     assert.deepEqual(await h.wait(), { exitCode: 137 });
-    assert.deepEqual(await sandbox.inspect(h.id), { running: false, exitCode: 137, status: "exited" });
+    assert.deepEqual(await sandbox.inspect(h.id), { running: false, exitCode: 137, status: "exited", host: null, generation: null });
     await sandbox.kill(h.id, "k1"); // repeated: no second request
     await api.kill("sbxfixture01"); // a kill answered 404 is success
     stub.assertNoUnmatched();
@@ -57,7 +60,10 @@ test("start, inspect, list, kill replay the documented E2B wire exactly, with th
 test("negative control: a facade stamping another User-Agent fails the identity check", async () => {
   const { stub, identity, sandbox } = await replay("someone-else/2");
   try {
-    await sandbox.start({ agent: "agent-a", image: "base", env: { GREETING: "hi" }, mounts: [], labels: { store_id: "store-1" } }, "fixture-start-1");
+    await sandbox.start(
+      { host: "host-a", generation: 1, agent: "agent-a", image: "base", env: { GREETING: "hi" }, mounts: [], labels: { store_id: "store-1" } },
+      "fixture-start-1",
+    );
     assert.throws(() => assertAllRequestsCarry(identity, UA), /did not carry the configured User-Agent/);
   } finally {
     await stub.close();
@@ -93,7 +99,10 @@ test("the API key never appears in an error message or a log field, even when th
       probe: { probes: 1, intervalMs: 0 },
       log: (event, fields) => logs.push(`${event} ${JSON.stringify(fields)}`),
     });
-    for (const op of [() => api.get("sbx1"), () => sandbox.start({ agent: "a", image: "base", env: {}, mounts: [] }, `k-${status}`)]) {
+    for (const op of [
+      () => api.get("sbx1"),
+      () => sandbox.start({ host: "host-test", generation: 0, agent: "a", image: "base", env: {}, mounts: [] }, `k-${status}`),
+    ]) {
       const err = await op().then(
         () => null,
         (e: unknown) => e,
@@ -199,6 +208,6 @@ test("a paused sandbox inspects and lists as paused, distinct from an exit", asy
     apiKey: async () => "k",
   });
   const sandbox = new E2BSandbox({ api, template: "base", timeoutS: 60 });
-  assert.deepEqual(await sandbox.inspect("p1"), { running: false, exitCode: null, status: "paused" });
+  assert.deepEqual(await sandbox.inspect("p1"), { running: false, exitCode: null, status: "paused", host: null, generation: null });
   assert.equal((await sandbox.list({ host: "h", storeId: "s", epoch: 1 }))[0]?.state, "paused");
 });

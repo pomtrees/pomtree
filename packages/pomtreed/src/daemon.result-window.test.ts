@@ -100,7 +100,7 @@ test("recovery retains the remaining wrap-up window of a live reported sandbox",
     idempotencyKey: "live-done",
   });
   await t.daemon.deps.registry.transition(a.id, 0, "running", { idempotencyKey: "live-running" });
-  const sandbox = await t.sandbox.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "recovered-sandbox");
+  const sandbox = await t.sandbox.start({ host: "h1", generation: 0, agent: a.id, image: "img", env: {}, mounts: [] }, "recovered-sandbox");
   await t.daemon.deps.registry.setSandbox(a.id, 0, sandbox.id, "sandbox");
   await t.journal.append({
     agent: a.id,

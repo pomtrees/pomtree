@@ -7,7 +7,7 @@ import { FakeSandbox } from "./fakes.ts";
 import { FaultPlan, assertStartIdempotent } from "./sandbox-faults.ts";
 
 const OWNER: SandboxOwner = { host: "host-1", storeId: "store-1", epoch: 1 };
-const spec = (agent = "a1"): SandboxSpec => ({ agent, image: "img@sha256:x", env: {}, mounts: [] });
+const spec = (agent = "a1"): SandboxSpec => ({ host: "host-test", generation: 0, agent, image: "img@sha256:x", env: {}, mounts: [] });
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const bytes = (s: string) => new TextEncoder().encode(s);
 async function* body(...parts: Uint8Array[]) {
