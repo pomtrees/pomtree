@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { EXIT, describe, failureHint, run } from "./cli.ts";
 import type { Io } from "./cli.ts";
 import type { JournalEntry } from "@pomtree/core";
@@ -1046,13 +1046,25 @@ test("ask --wait --json prints the answered escalation", async () => {
 });
 
 test("ask --wait times out with exit 7 and notes the escalation is still open", async () => {
-  await withGeneration("1", async () => {
-    const h = harness((c) => (c.method === "POST" ? { status: 201, body: { escalation, delivered: true } } : { status: 200, body: escalation }));
-    assert.equal(await run(["ask", "approve?", "--wait", "1"], h.io), EXIT.timeout);
-    assert.match(h.out[0]!, /es-abc still open/);
-    assert.match(h.err[0]!, /late answer/);
-    assert.ok(h.calls.some((c) => c.method === "GET"));
-  });
+  // The CLI measures the wait against Date.now(). A real clock lets a stall between the POST and the loop check spend the whole
+  // wait before the first GET is issued, so the clock is faked and only the daemon's held poll (the GET handler) advances it.
+  mock.timers.enable({ apis: ["Date"] });
+  try {
+    await withGeneration("1", async () => {
+      const waitMs = 50;
+      const h = harness((c) => {
+        if (c.method === "POST") return { status: 201, body: { escalation, delivered: true } };
+        mock.timers.tick(waitMs);
+        return { status: 200, body: escalation };
+      });
+      assert.equal(await run(["ask", "approve?", "--wait", String(waitMs)], h.io), EXIT.timeout);
+      assert.match(h.out[0]!, /es-abc still open/);
+      assert.match(h.err[0]!, /late answer/);
+      assert.equal(h.calls.filter((c) => c.method === "GET").length, 1);
+    });
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("ask usage and generation errors", async () => {
