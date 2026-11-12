@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 
-// The locked provider-fixture format (docs of the sandbox-backends conformance design, "Locked fixture format"): one JSONL file per provider scenario.
-// Line 1 is the provenance header; every later line is one expected exchange. The loader REJECTS a fixture whose header is missing or incomplete, so a
+// The provider-fixture format: one JSONL file per provider scenario.
+// Line 1 is the provenance header {provenance, provider, source, date, apiVersion, placeholders}. Every later line is one expected exchange, a JSON
+// object {seq, method, path, status, ...} whose seq is an integer above the previous entry's, with optional query, requestBody, match, responseHeaders,
+// responseBody and, for an upgrade (status 101), a stream of in/out frames. The loader REJECTS a fixture whose header is missing or incomplete, so a
 // fixture never enters a test without saying where its bytes came from (a stub written from the adapter author's reading of the docs mirrors that
 // reading's mistakes, so the reader of a green test must be able to tell captured evidence from inference).
 
