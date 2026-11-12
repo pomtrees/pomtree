@@ -122,7 +122,7 @@ function harness(reviewed: (owner: string) => boolean) {
 
 function writeExtension(root: string, dir: string, manifest: object, entry: string | null): void {
   mkdirSync(join(root, dir), { recursive: true });
-  writeFileSync(join(root, dir, "manifest.json"), JSON.stringify({ apiVersion: 1, capabilities: {}, deps: [], ...manifest }));
+  writeFileSync(join(root, dir, "manifest.json"), JSON.stringify({ apiVersion: 2, capabilities: {}, deps: [], ...manifest }));
   if (entry !== null) writeFileSync(join(root, dir, "entry.mts"), entry);
 }
 

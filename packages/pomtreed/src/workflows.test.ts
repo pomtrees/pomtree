@@ -58,7 +58,7 @@ function extRoot(exts: Ext[]): string {
   return root;
 }
 
-const manifest = (name: string) => JSON.stringify({ apiVersion: 1, name, entry: "entry.mjs", capabilities: {}, deps: [] });
+const manifest = (name: string) => JSON.stringify({ apiVersion: 2, name, entry: "entry.mjs", capabilities: {}, deps: [] });
 
 // A daemon whose deterministic executors are the host's map, plus a file-loaded registry over the same fakes.
 function harness(reviewed: (ext: string) => boolean) {

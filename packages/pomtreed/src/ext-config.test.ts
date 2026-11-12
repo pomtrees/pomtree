@@ -33,7 +33,7 @@ const ENV = "POMTREED_EXT_FIXTURE_EXT_SIZE_BYTES";
 
 function writeManifest(extDir: string, sub: string, manifest: unknown) {
   mkdirSync(join(extDir, sub), { recursive: true });
-  writeFileSync(join(extDir, sub, "manifest.json"), JSON.stringify({ apiVersion: 1, capabilities: {}, deps: [], ...(manifest as object) }));
+  writeFileSync(join(extDir, sub, "manifest.json"), JSON.stringify({ apiVersion: 2, capabilities: {}, deps: [], ...(manifest as object) }));
 }
 
 // A temp root holding the upstream key and an extensions dir; `load` runs the real loader with the real manifest scan.
@@ -124,7 +124,7 @@ test("failure paths: bad values, relation to a core key, an old env name, undecl
 // The real examples/hn-digest manifest through the real loader: its keys, the refusal of its old core names and the inverted browser-text relation.
 test("the real hn-digest manifest: ext.hnDigest keys resolve, the old POMTREED_ARTICLE_* names are refused as unknown, and its browser-text relation holds", () => {
   const real = JSON.parse(readFileSync(new URL("../../../examples/hn-digest/manifest.json", import.meta.url), "utf8")) as unknown;
-  assert.equal((real as { apiVersion?: unknown }).apiVersion, 1, "the real manifest declares the extension API version");
+  assert.equal((real as { apiVersion?: unknown }).apiVersion, 2, "the real manifest declares the extension API version");
   const f = fixture({ "hn-digest": real });
   try {
     const d = f.load();
@@ -294,21 +294,21 @@ test("core-phase errors are reported before extensions are scanned, and ext inpu
 test("manifest scan reads JSON only, tolerates a missing dir, and parseManifest validates credentials", () => {
   assert.deepEqual(scanExtensionManifests(join(tmpdir(), "pomtreed-ext-config-absent")), { extensions: [], errors: [], unloaded: [] });
   assert.throws(
-    () => parseManifest(JSON.stringify({ apiVersion: 1, name: "a", entry: "e", capabilities: {}, deps: [], credentials: ["../x"] })),
+    () => parseManifest(JSON.stringify({ apiVersion: 2, name: "a", entry: "e", capabilities: {}, deps: [], credentials: ["../x"] })),
     /credentials must be an array of names/,
   );
-  assert.throws(() => parseManifest(JSON.stringify({ apiVersion: 1, name: "a", entry: "e", capabilities: {}, deps: [], credentials: ["x", "x"] })), /distinct/);
-  assert.equal(parseManifest(JSON.stringify({ apiVersion: 1, name: "a", entry: "e", capabilities: {}, deps: [], params: [], x: 1 })).params?.length, 0);
+  assert.throws(() => parseManifest(JSON.stringify({ apiVersion: 2, name: "a", entry: "e", capabilities: {}, deps: [], credentials: ["x", "x"] })), /distinct/);
+  assert.equal(parseManifest(JSON.stringify({ apiVersion: 2, name: "a", entry: "e", capabilities: {}, deps: [], params: [], x: 1 })).params?.length, 0);
   assert.throws(() => parseManifest(JSON.stringify({ capabilities: {}, deps: [], name: "a", entry: "e" })), /extension a: manifest\.json has no "apiVersion"/);
   assert.throws(
     () => parseManifest(JSON.stringify({ apiVersion: 3, capabilities: {}, deps: [], name: "a", entry: "e" })),
     /extension a: manifest apiVersion 3 is not supported/,
   );
   assert.throws(
-    () => parseManifest(JSON.stringify({ apiVersion: 2, capabilities: {}, deps: [], name: "a", entry: "e" })),
-    /^Error: extension a: manifest apiVersion 2 is not supported; this host speaks extension API 1$/,
+    () => parseManifest(JSON.stringify({ apiVersion: 1, capabilities: {}, deps: [], name: "a", entry: "e" })),
+    /^Error: extension a: manifest apiVersion 1 is not supported; this host speaks extension API 2$/,
   );
-  assert.equal(parseManifest(JSON.stringify({ apiVersion: 1, capabilities: {}, deps: [], name: "a", entry: "e" })).apiVersion, 1);
+  assert.equal(parseManifest(JSON.stringify({ apiVersion: 2, capabilities: {}, deps: [], name: "a", entry: "e" })).apiVersion, 2);
 });
 
 test("host.config is a frozen view of the extension's own keys plus non-sensitive core keys; host.deps.credential is declared-only", async () => {

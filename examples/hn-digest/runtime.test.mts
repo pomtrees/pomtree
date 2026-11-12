@@ -40,7 +40,7 @@ function fixtureExtensions(source = PROBE_JS): string {
   mkdirSync(sub);
   writeFileSync(
     join(sub, "manifest.json"),
-    JSON.stringify({ apiVersion: 1, name: "probe", entry: "index.mjs", capabilities: { journalKinds: true, hooks: { journal: true } }, deps: ["record"] }),
+    JSON.stringify({ apiVersion: 2, name: "probe", entry: "index.mjs", capabilities: { journalKinds: true, hooks: { journal: true } }, deps: ["record"] }),
   );
   writeFileSync(join(sub, "index.mjs"), source);
   return dir;
