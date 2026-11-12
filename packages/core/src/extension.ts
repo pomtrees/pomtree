@@ -49,6 +49,7 @@ export interface ExtensionManifest {
   // checks need no import of extension code. Only kind "sandbox" is accepted today (PROVIDES_KINDS); any other kind refuses the
   // extension at load. First-party backends are built into the host and declare nothing here.
   provides?: ExtensionProvides[];
+  // TODO(manifest-remote-unused): parsed but never read; current behavior: the field has no effect. Wire it or drop it before the contract version freezes.
   remote?: boolean;
 }
 

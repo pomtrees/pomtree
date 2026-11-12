@@ -1,5 +1,6 @@
 import type { Schema } from "../schema-check.ts";
 
+// TODO(provider-schemas-unverified): written from memory; check against the official Kubernetes and E2B references.
 // Provenance: inferred. Request-body subset for POST /api/v1/namespaces/{namespace}/pods (core/v1 Pod), written from memory; not fetched and not verified against the official reference.
 // Source to check against: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/
 // Strict (additionalProperties:false) because this is a REQUEST body we author: an unknown field is likely our bug, so check the official reference, then add the field here if it is real.

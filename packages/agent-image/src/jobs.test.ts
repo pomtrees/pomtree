@@ -29,6 +29,7 @@ const wrapperSkip: string | false = (() => {
   }
 })();
 
+// TODO(jobs-helper-linux-only): this helper is exercised only on Linux CI; current behavior: not run on macOS developer machines.
 function launch(cmdOf: string | ((dir: string) => string), t = 30) {
   const dir = mkdtempSync(join(tmpdir(), "job-"));
   const cmd = typeof cmdOf === "string" ? cmdOf : cmdOf(dir);
