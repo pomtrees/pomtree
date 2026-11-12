@@ -99,6 +99,17 @@ export interface ProviderStubOptions {
   readonly requireHeaderNames?: readonly string[];
   /** Cap on a request body and on a websocket message in bytes (default 16 MiB). */
   readonly maxBodyBytes?: number;
+  /**
+   * Called once per request or upgrade, before it is answered, with the method, path and the `user-agent` header VALUE (undefined when absent). The
+   * recorder keeps header names only so credentials cannot leak; this is the one narrow seam for the fetch-identity check (identity.ts) and hands out
+   * no other header value.
+   */
+  readonly observeUserAgent?: (seen: {
+    readonly method: string;
+    readonly path: string;
+    readonly upgrade: boolean;
+    readonly userAgent: string | undefined;
+  }) => void;
 }
 
 export class ProviderStub {
@@ -134,10 +145,19 @@ export class ProviderStub {
       stub.#sockets.add(s);
       s.on("close", () => stub.#sockets.delete(s));
     });
+    const observe = (req: IncomingMessage, upgrade: boolean) =>
+      opts.observeUserAgent?.({
+        method: (req.method ?? "GET").toUpperCase(),
+        path: new URL(req.url ?? "/", "http://127.0.0.1").pathname,
+        upgrade,
+        userAgent: req.headers["user-agent"],
+      });
     server.on("request", (req, res) => {
+      observe(req, false);
       stub.#onRequest(req, res).catch((e) => stub.#failed(req, res, e));
     });
     server.on("upgrade", (req, socket, head) => {
+      observe(req, true);
       try {
         stub.#onUpgrade(req, socket as Socket, head);
       } catch (e) {
