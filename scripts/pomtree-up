@@ -21,9 +21,9 @@ Usage: scripts/pomtree-up [PATH] [--state DIR] [--port N] [--keep|--fresh [--yes
   --init       create an empty initial commit if the repo has no commits
   --no-build   never build the agent image (dies if missing; a stale image is warned about, not rebuilt)
   --rebuild    force a rebuild even when the image exists (mutually exclusive with --no-build)
-  --show-token print a login link containing the operator token (sensitive; default prints the token file path only)
+  --show-token print a login link containing the operator token (sensitive; default prints the token file path only; independent of --open)
   --no-operator-token  accepted for compatibility (now the default)
-  --open       try to open the login link in the default browser (best effort)
+  --open       try to open the signed-in login link (carries the operator token in the URL fragment) in the default browser (best effort); the token is not printed unless --show-token
   --print-env  only print the exports for this repo/state and exit
 USAGE
 }
@@ -289,15 +289,22 @@ tokfile="$state/operator.token"
 tokline="Token file (0600, not printed): $tokfile"
 link="$url"
 loginline="Login:  open the URL and paste the operator token (from the token file) into the sign-in page (session cookie lasts 24h)."
-if [ "$show_token" = 1 ]; then
+openlink="$url"
+if [ "$show_token" = 1 ] || [ "$open_link" = 1 ]; then
   tok=""
   if [ -f "$tokfile" ] && [ -O "$tokfile" ] && [ "$(stat -c %a "$tokfile" 2>/dev/null || stat -f %Lp "$tokfile" 2>/dev/null)" = 600 ]; then
     tok="$(tr -d '\r\n' < "$tokfile" 2>/dev/null || true)"
   fi
   if [ -n "$tok" ]; then
-    link="$url#token=$tok"
-    tokline="Token file (0600): $tokfile"
-    loginline="Login:  open the link below (SENSITIVE: it signs in whoever opens it; valid while the operator token is, i.e. until the state's 'secret' file is regenerated, which a fresh start does; the token is in the fragment so it is not sent to the server)."
+    openlink="$url#token=$tok"
+    if [ "$show_token" = 1 ]; then
+      link="$openlink"
+      tokline="Token file (0600): $tokfile"
+      loginline="Login:  open the link below (SENSITIVE: it signs in whoever opens it; valid while the operator token is, i.e. until the state's 'secret' file is regenerated, which a fresh start does; the token is in the fragment so it is not sent to the server)."
+    fi
+    if [ "$open_link" = 1 ] && [ "$show_token" = 0 ]; then
+      loginline="Login:  --open launches the browser already signed in (the link carries the operator token, which is not printed); otherwise open the URL and paste the token from the token file."
+    fi
   else
     echo "pomtree-up: warning: could not read operator token (missing, not owned by you, or mode not 0600); read it from $tokfile" >&2
     tokline="Token file (0600, unreadable here): $tokfile"
@@ -322,9 +329,13 @@ MSG
 } >&2
 
 if [ "$open_link" = 1 ]; then
+  opened=0
   for opener in xdg-open open; do
-    if command -v "$opener" >/dev/null 2>&1; then "$opener" "$link" >/dev/null 2>&1 </dev/null & break; fi
+    if command -v "$opener" >/dev/null 2>&1; then "$opener" "$openlink" >/dev/null 2>&1 </dev/null & opened=1; break; fi
   done
+  if [ "$opened" = 0 ]; then
+    echo "pomtree-up: warning: --open: neither xdg-open nor open was found, so no browser was launched; open $url and paste the operator token from $tokfile" >&2
+  fi
 fi
 
 rc=0

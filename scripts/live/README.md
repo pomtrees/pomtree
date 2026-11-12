@@ -108,7 +108,7 @@ One retry only, and only after a pre-start refusal or an environmental failure t
 
 ### Key file
 
-The key file holds only the upstream provider key. It is owned by the operator, mode 0600, with no blank lines. It is never printed, echoed, logged, traced or written elsewhere, and agents never read it: drivers read it in-process through the path in `POMTREED_MODEL_KEY_FILE` and hand pomtreed the same path as `POMTREED_MODEL_UPSTREAM_KEY_FILE` (the digest entry reads `POMTREED_MODEL_UPSTREAM_KEY_FILE` with `POMTREED_PI_PROVIDER` and `POMTREED_MODEL_BASE_URL` set, and holds the key in memory). Do not pass `--show-token` or `--open` to `pomtree-up`: the login link carries the operator token and would land in logs.
+The key file holds only the upstream provider key. It is owned by the operator, mode 0600, with no blank lines. It is never printed, echoed, logged, traced or written elsewhere, and agents never read it: drivers read it in-process through the path in `POMTREED_MODEL_KEY_FILE` and hand pomtreed the same path as `POMTREED_MODEL_UPSTREAM_KEY_FILE` (the digest entry reads `POMTREED_MODEL_UPSTREAM_KEY_FILE` with `POMTREED_PI_PROVIDER` and `POMTREED_MODEL_BASE_URL` set, and holds the key in memory). Do not pass `--show-token` to `pomtree-up`: it prints the login link, which carries the operator token, into logs. `--open` prints no token: it hands that link only to the browser opener, so the token is still in the opener's and browser's process arguments, readable by other local users (see `docs/operating.md`).
 
 ### Credential wrapper
 

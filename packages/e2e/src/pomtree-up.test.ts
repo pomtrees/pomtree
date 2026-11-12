@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 const realScript = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/pomtree-up");
 const realImageSources = join(dirname(fileURLToPath(import.meta.url)), "../../../scripts/image-sources.sh");
 const SECRET = "sk-TESTSECRET-do-not-print";
+const OP_TOKEN = "optok-DUMMY-4f9a1c";
 const TOOLS = [
   "bash",
   "node",
@@ -71,7 +72,7 @@ interface Fixture {
   run: (args?: string[], env?: Record<string, string>) => { out: string; status: number | null };
 }
 
-function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?: boolean; checkoutGit?: boolean }): Fixture {
+function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?: boolean; checkoutGit?: boolean; opener?: boolean }): Fixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "pomtree-up-test-")));
   cleanup.push(dir);
   const root = join(dir, "checkout");
@@ -87,7 +88,7 @@ function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?
         "import { writeFileSync } from 'node:fs';",
         "import { createServer } from 'node:net';",
         "const state = process.env.POMTREED_STATE_DIR;",
-        "writeFileSync(state + '/operator.token', 'tok\\n', { mode: 0o600 });",
+        `writeFileSync(state + '/operator.token', ${JSON.stringify(`${OP_TOKEN}\n`)}, { mode: 0o600 });`,
         "writeFileSync(state + '/seen-env.json', JSON.stringify(process.env));",
         "createServer().listen(process.env.POMTREED_SOCKET_PATH ?? state + '/pomtreed.sock', () => setTimeout(() => process.exit(0), 1500));",
         "",
@@ -103,6 +104,10 @@ function fixture(opts: { docker: DockerMode; pomtreedStderr?: string; longState?
   for (const t of TOOLS) {
     const p = which(t);
     if (p) symlinkSync(p, join(bin, t));
+  }
+  if (opts.opener) {
+    // Fake `xdg-open`: records its argv (one line per call) so a test can see what the browser would be handed.
+    writeFileSync(join(bin, "xdg-open"), `#!/bin/sh\necho "$*" >> ${join(dir, "opened")}\n`, { mode: 0o755 });
   }
   if (opts.docker !== "none") {
     const info = opts.docker === "ok" ? "exit 0" : "exit 1";
@@ -467,4 +472,59 @@ test("image label that names no commit: stale", () => {
     [["--no-build"], []],
     (r, a) => assert.match(r.out, a.length ? STALE_WARN : BUILDING),
   );
+});
+
+// --open hands the signed-in link (token in the URL fragment) to the opener; --show-token alone controls whether it is printed.
+function openRun(args: string[]) {
+  const f = fixture({ docker: "ok", opener: true });
+  const r = f.run(["--no-build", ...args]);
+  const openedFile = join(f.dir, "opened");
+  return { r, opened: existsSync(openedFile) ? readFileSync(openedFile, "utf8") : "" };
+}
+
+test("--open: the opener gets the #token= link, but the token is not printed", () => {
+  const { r, opened } = openRun(["--open"]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(opened, /^http:\/\/127\.0\.0\.1:\d+\/ui#token=optok-DUMMY-4f9a1c$/m);
+  assert.ok(!r.out.includes(OP_TOKEN), "operator token printed without --show-token");
+  assert.doesNotMatch(r.out, /#token=/);
+  assert.match(r.out, /Token file \(0600, not printed\)/);
+});
+
+test("--open --show-token: the opener gets the link and the printed output carries it too", () => {
+  const { r, opened } = openRun(["--open", "--show-token"]);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(opened.includes(`#token=${OP_TOKEN}`));
+  assert.ok(r.out.includes(`#token=${OP_TOKEN}`));
+});
+
+test("--show-token alone prints the link and does not call the opener; no flags prints no token and opens nothing", () => {
+  const a = openRun(["--show-token"]);
+  assert.ok(a.r.out.includes(`#token=${OP_TOKEN}`));
+  assert.equal(a.opened, "");
+  const b = openRun([]);
+  assert.ok(!b.r.out.includes(OP_TOKEN));
+  assert.equal(b.opened, "");
+});
+
+test("--open with neither xdg-open nor open on PATH: warns with the cause and the action, token still unprinted", () => {
+  const f = fixture({ docker: "ok" });
+  const r = f.run(["--no-build", "--open"]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /warning: --open: neither xdg-open nor open was found/);
+  assert.match(r.out, /open http:\/\/127\.0\.0\.1:\d+\/ui and paste the operator token from \S+operator\.token/);
+  assert.ok(!r.out.includes(OP_TOKEN), "operator token printed without --show-token");
+  const ok = openRun(["--open"]);
+  assert.doesNotMatch(ok.r.out, /neither xdg-open nor open/);
+});
+
+test("negative control: the token-bearing opener link depends on --open (plain URL when the script's link logic is reverted)", () => {
+  const f = fixture({ docker: "ok", opener: true });
+  const sp = join(f.root, "scripts/pomtree-up");
+  const src = readFileSync(sp, "utf8");
+  const mutated = src.replace('"$opener" "$openlink"', '"$opener" "$link"');
+  assert.notEqual(mutated, src);
+  writeFileSync(sp, mutated);
+  f.run(["--no-build", "--open"]);
+  assert.ok(!readFileSync(join(f.dir, "opened"), "utf8").includes("#token="), "mutant should fail the assertion above");
 });
