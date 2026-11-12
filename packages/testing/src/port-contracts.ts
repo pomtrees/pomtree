@@ -1140,6 +1140,8 @@ export async function stateStoreContractBody(w: StateStoreContractWorld): Promis
   assert.equal((await st.export("ls")).length, 4);
 
   // remove by prefix, restricted by age.
+  // TODO(load-flakes): the real store measures age with Date.now(), so a runner stall longer than the 600 ms window makes old/y removable too.
+  // The exact fix is a clock seam on the store, openStateStore({ now }); until then the windows are sized at 10x the observed CI stall.
   for (const k of ["memo/a", "memo/b", "keep/c"]) await mustPut("rp", k, 1);
   assert.deepEqual(await rm({ owner: "rp", prefix: "memo/" }), { ok: true, removed: 2, keys: ["memo/a", "memo/b"] });
   assert.deepEqual(
@@ -1147,10 +1149,10 @@ export async function stateStoreContractBody(w: StateStoreContractWorld): Promis
     ["keep/c"],
   );
   await mustPut("ro", "old/x", 1);
-  await w.age(120);
+  await w.age(1200);
   await mustPut("ro", "old/y", 1);
   await mustPut("ro", "other", 1);
-  assert.deepEqual(await rm({ owner: "ro", prefix: "old/", olderThanMs: 60 }), { ok: true, removed: 1, keys: ["old/x"] });
+  assert.deepEqual(await rm({ owner: "ro", prefix: "old/", olderThanMs: 600 }), { ok: true, removed: 1, keys: ["old/x"] });
   assert.deepEqual(
     (await st.list("ro")).map((m) => m.key),
     ["old/y", "other"],
