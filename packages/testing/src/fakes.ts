@@ -3030,6 +3030,8 @@ export interface JournalContractWorld {
 // Journal retention + spend contract: pruneJournal keeps audit kinds, the newest keepPerAgent
 // rows and the tail since the latest checkpoint; seqs are not reused; spendFor survives pruning.
 export async function journalRetentionContractBody(w: JournalContractWorld): Promise<void> {
+  // TODO(load-flakes): the real store measures age with Date.now(), so a runner stall longer than the 1000 ms window makes the fresh row prunable.
+  // The exact fix is a clock seam on the store, openStore({ now }); until then the windows are sized at 10x the observed CI stall.
   const j = w.journal;
   const a = await w.registry.create({ parent: null, name: "a", task: "t", host: "h", budgetMicros: 1, idempotencyKey: "jr-a", spec: {} as SpawnSpec });
   const put = (kind: string, i: number, payload: any) =>
@@ -3040,22 +3042,22 @@ export async function journalRetentionContractBody(w: JournalContractWorld): Pro
   await put("usage", 1, { kind: "usage", inputTokens: 1, outputTokens: 1, costMicros: 7 });
   assert.deepEqual(await j.spendFor(a.id), { costMicros: 7, unpricedInputTokens: 10, unpricedOutputTokens: 5, events: 2 });
   assert.equal((await j.spendFor("nobody")).events, 0);
-  await w.age(200);
+  await w.age(2000);
   await put("message", 9, { kind: "message", role: "assistant", text: "fresh" });
   // Fresh row is inside the age window; the newest 2 rows are kept regardless.
-  const r = await j.pruneJournal({ olderThanMs: 100, keepPerAgent: 2 });
+  const r = await j.pruneJournal({ olderThanMs: 1000, keepPerAgent: 2 });
   assert.equal(r.deleted, 5); // m0..m3 and the old usage row; the newest two rows (usage, fresh) stay
   const left = (await j.read({ agent: a.id })).map((e) => e.payload.kind);
   assert.deepEqual(left, ["spawned", "usage", "message"]);
   assert.deepEqual(await j.spendFor(a.id), { costMicros: 7, unpricedInputTokens: 10, unpricedOutputTokens: 5, events: 2 });
   // protectKinds shields a normally prunable kind.
-  const r2 = await j.pruneJournal({ olderThanMs: 100, keepPerAgent: 0, protectKinds: ["usage"] });
+  const r2 = await j.pruneJournal({ olderThanMs: 1000, keepPerAgent: 0, protectKinds: ["usage"] });
   assert.equal(r2.deleted, 0); // the only old prunable rows are usage (protected); the message is fresh
   // Seqs are never reused after pruning.
   const n = await put("message", 10, { kind: "message", role: "user", text: "next" });
   assert.ok(n.seq > Math.max(...(await j.read({ agent: a.id })).filter((e) => e.seq !== n.seq).map((e) => e.seq)));
   // Entries since the latest checkpoint are kept.
-  await w.age(200);
+  await w.age(2000);
   await w.checkpoints.write(
     {
       agent: a.id,
@@ -3076,8 +3078,8 @@ export async function journalRetentionContractBody(w: JournalContractWorld): Pro
     "jr-cp",
   );
   await put("message", 11, { kind: "message", role: "user", text: "after-cp" });
-  await w.age(200);
-  await j.pruneJournal({ olderThanMs: 100, keepPerAgent: 0 });
+  await w.age(2000);
+  await j.pruneJournal({ olderThanMs: 1000, keepPerAgent: 0 });
   const texts = (await j.read({ agent: a.id })).filter((e) => e.payload.kind === "message").map((e) => (e.payload as any).text);
   assert.deepEqual(texts, ["after-cp"]);
   assert.equal((await j.read({ agent: a.id })).filter((e) => e.payload.kind === "spawned").length, 1);
