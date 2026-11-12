@@ -1,0 +1,29 @@
+# wiki-distill: distill a dense Wikipedia article with three templates
+
+Nothing in this directory has been run live; read [What is real and what is stubbed](#what-is-real-and-what-is-stubbed) before you spend anything.
+
+## What this is
+
+Three spawn templates for a four-stage pipeline. Readers (browser agents) each read a different slice of one Wikipedia article and write plain-text notes. An orchestrator agent spawns one summarizer per block of notes and returns condensed briefs. A distiller agent turns the briefs into a few tasteful paragraphs and publishes them as a static HTML report. The aim is a thesis, ordering by importance rather than page order, concrete specifics, no filler, and the source URL cited. The prompts in `prompts/` carry those demands and `templates/*.json` embed the same text.
+
+There is no driver script here: you spawn the readers and the distiller as root children with the plain `pomtree` CLI, and the orchestrator spawns its own summarizers.
+
+## Install the templates
+
+pomtreed reads templates from `templates.dir` (`POMTREED_TEMPLATES_DIR`, an absolute path; unset means `<state dir>/templates`, see [Configuration](../../docs/configuration.md)). Copy `templates/*.json` into that folder; the file stem is the template id. The stack needs `--provider openrouter`, `--model-base-url` and `--model-key-file` (see [First real-model agent](../../docs/operating.md)) and the model in `budgets.env`.
+
+## Design choices you should know
+
+- **Who spawns whom.** Agents cannot spawn templated children, so the readers and the distiller must be root children (their prompts and egress come from templates), and only the summarizers are children of the orchestrator.
+- **Readers are browser agents.** A `web_fetch`-only agent has no handoff path, so its output could not feed the next stage. A browser reader ends with `capture_finish`, whose summary is its handoff.
+- **Egress is audited, not confined.** Readers run with `audited-public` egress, which is not confined to Wikipedia hosts: only the reader prompt tells the agent to stay on `en.wikipedia.org`, and the audit log records every connection (tag `wiki-distill-fetch-reader`, marked in `templates.test.mts`).
+- **Slicing.** Readers use the MediaWiki API on the one host: they fetch the section list, then read sections by index. Reader `r` of `N` takes the top-level sections (the lead counts as position 0) whose position modulo `N` is `r`, unless the task lists explicit section indexes.
+- **Handoff text.** Stage outputs travel as handoff text, pasted into the next agent's task. Limits: reader notes 3500 bytes, each brief 1500 bytes.
+- **Shell safety in the orchestrator.** It writes each summarizer's instructions and block to a file, spawns with the file's contents as the task, and each summarizer reports its brief from a file, so quotes or `$` in the article's text cannot break a command.
+- **Budgets.** `budgets.env` holds the per-role `budgetMicros` the templates carry.
+
+## What is real and what is stubbed
+
+All validation so far is offline. `templates.test.mts` loads the three templates through the real template loader, checks that their prompts equal `prompts/*.md`, that `budgets.env` agrees with the template budgets, that the reader prompt names only the one Wikipedia host and the distiller prompt carries the publish command, with negative controls showing each check can fail. It runs in `pnpm test:examples`.
+
+Unverified, because nothing has run live (tag `wiki-distill-live-validation`, marked in `templates.test.mts`): the editorial quality of the distillation, whether a small model follows the 24-step reader plan, and that the slice URLs return what the reader prompt expects and fit the interactive browser's result cap.

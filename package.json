@@ -16,7 +16,7 @@
     "test:docker:e2e-scenarios": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-scenarios",
     "test:docker:e2e-custody": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-custody",
     "test:docker:e2e-lifecycle": "PTREE_DOCKER_TESTS=1 pnpm --filter @pomtree/e2e test:docker:e2e-lifecycle",
-    "test:examples": "export POMTREE_RUN_MEM=${POMTREE_RUN_MEM:-8G} POMTREE_RUN_TIMEOUT=${POMTREE_RUN_TIMEOUT:-10m}; scripts/run-capped.sh -- node --test --test-timeout=120000 'examples/hn-digest/*.test.mts'",
+    "test:examples": "export POMTREE_RUN_MEM=${POMTREE_RUN_MEM:-8G} POMTREE_RUN_TIMEOUT=${POMTREE_RUN_TIMEOUT:-10m}; scripts/run-capped.sh -- node --test --test-timeout=120000 'examples/hn-digest/*.test.mts' 'examples/wiki-distill/*.test.mts'",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:full",
     "check:lite": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:lite",
     "format": "biome format --write .",
