@@ -27,6 +27,7 @@ import {
   type ResolvedBackend,
   resolveBackend,
 } from "./sandbox-backends.ts";
+import { protectSandbox, rateLimitFailures } from "./sandbox-guard.ts";
 import { EgressAuditCollector, ingestEgressAuditSafely } from "./egress-audit.ts";
 import { nearCapTransition } from "./health.ts";
 import { openStateStore } from "@pomtree/store-sqlite";
@@ -492,7 +493,20 @@ const { node, sandbox, placement } = wireLocalHost({
       log: (event, fields) => console.error(stamp(`pomtreed: sandbox backend ${localBackend.id}: ${event} ${JSON.stringify(fields)}`)),
     });
     built.sandbox = createLocalSandbox(localBackend.provider, deps, { engine, docker });
-    return built.sandbox;
+    // The one place the port is guarded and traced: the declaration is enforced at runtime and each call is logged without its content.
+    return protectSandbox(built.sandbox, {
+      backend: localBackend.id,
+      log: (event, fields) => console.error(stamp(`pomtreed: sandbox backend ${localBackend.id}: ${event} ${JSON.stringify(fields)}`)),
+      // Successful read-only polls (inspect, list, imageIdentity, probe) are left out of the log; every other call is kept, and a failure
+      // that repeats (the same operation and error class) is logged at most once a minute, the first always.
+      sink: rateLimitFailures(
+        (record) => {
+          if (record.outcome === "ok" && ["inspect", "list", "imageIdentity", "probe"].includes(record.op)) return;
+          console.error(stamp(`pomtreed: sandbox call ${JSON.stringify(record)}`));
+        },
+        { windowMs: 60_000, now: Date.now },
+      ),
+    });
   },
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
