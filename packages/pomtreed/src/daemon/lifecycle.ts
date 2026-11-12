@@ -354,6 +354,8 @@ export class Lifecycle {
     if (template && templateProblem !== undefined) throw new LifecycleError(422, `${template.id}: ${templateProblem}`, { code: "template_error" });
     const dispositionProblem = template?.disposition !== undefined ? dispositionError(template.disposition) : null;
     if (template && dispositionProblem !== null) throw new LifecycleError(422, `template ${template.id}: ${dispositionProblem}`, { code: "template_error" });
+    const unadmitted = d.admitSpec?.(this.tree.resolvedSpec(template, undefined)) ?? [];
+    if (unadmitted.length > 0) throw new LifecycleError(422, `spawn refused: ${unadmitted.join("; ")}`, { code: "template_error" });
     if (fence && req.model !== undefined) {
       const pick = req.model;
       if (!pick || typeof pick.provider !== "string" || !pick.provider || typeof pick.id !== "string" || !pick.id)
@@ -1303,6 +1305,10 @@ export class Lifecycle {
     );
   }
 
+  // TODO(adopt-template-admission): admit the adopted agent's spec against the backend declaration. Current behavior: adopting a running
+  // sandbox after a daemon restart does not call admitSpec, so an agent started unadmitted before the check existed (an egress template on
+  // Podman) keeps running until its next yield or resume. Trigger: act when Podman is documented as supported, or when a restart shows an
+  // unadmitted adopted sandbox.
   // `entry` is the reservation adoptRunning installed before its registry read: it is reused, never replaced, so a stop or deadline
   // that landed during that read (cancelled, killTimer, timedOut) still governs this run.
   private adoptContainer(
@@ -1641,6 +1647,9 @@ export class Lifecycle {
         throw new LifecycleError(422, `refusing to start ${id}: template ${containerSpec(rec).template ?? CODE_TEMPLATE_ID}: ${specProblem}`, {
           code: "template_error",
         });
+      // The backend can have changed since the spawn (a restart on another engine), so the persisted spec is admitted again.
+      const unadmitted = d.admitSpec?.(containerSpec(rec)) ?? [];
+      if (unadmitted.length > 0) throw new LifecycleError(422, `refusing to start ${id}: ${unadmitted.join("; ")}`, { code: "template_error" });
       // TODO(core-drift): pass the idempotency key to gateway.issueKey. Current behavior: the spawn path calls it with the agent
       // id and budget only, though the port accepts an optional key.
       const model = await d.gateway.issueKey(id, prep.budgetMicros);

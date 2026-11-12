@@ -17,6 +17,7 @@ import {
 } from "@pomtree/sandbox-docker";
 import {
   admitAtBoot,
+  admitTemplateSpec,
   backendDeps,
   bootNeeds,
   createBackendRegistry,
@@ -198,8 +199,9 @@ try {
 if (!backend.localEngine) refuseStart(remoteBootRefusal(backend));
 // The local engines have no readiness probe: their static declaration is admitted here, before any state; the adapter is built later
 // by wireLocalHost, which needs the node's mount provider.
+const bootNeedsOfBackend = bootNeeds(backend, cfg["sandbox.secretsInEnv"]);
 {
-  const refusals = admitAtBoot(backend.provider.declaration, bootNeeds(backend, cfg["sandbox.secretsInEnv"]));
+  const refusals = admitAtBoot(backend.provider.declaration, bootNeedsOfBackend);
   for (const r of refusals) console.error(`pomtreed: refusing to start: ${r}`);
   if (refusals.length > 0) process.exit(1);
 }
@@ -816,6 +818,7 @@ daemon = new Daemon({
   // Canonical workflow launch (transports reach it through this dependency); admission stays default-deny via `reviewed`.
   launchWorkflow: (requester, req) => workflows.launch(requester, req),
   deterministicExecutors: workflows.executors,
+  admitSpec: (spec) => admitTemplateSpec(localBackend.provider.declaration, bootNeedsOfBackend, spec),
   publicEgressReady: () => egressAudit?.healthy() ?? false,
   mayUseTemplate: async (caller, template) =>
     caller === (await daemon.root()).id || workflowPolicy.allows(await stores.registry.get(caller), template.id, workflows.qualifiedNames()),

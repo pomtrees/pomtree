@@ -70,7 +70,7 @@ test("podman declaration omits egress.denyAll (and the egress allowlist and gVis
   }
 });
 
-// The daemon does not pass egress needs yet (bootNeeds hard-codes egress:false), see TODO(sandbox-template-admission).
+// The declaration-level rule; the daemon applies it to each template at spawn and start (pomtreed daemon.template-admission.test.ts).
 test("admitBackend refuses an egress template against the podman declaration; docker admits it", () => {
   const refused = admitBackend(PODMAN_DECLARATION, null, needs({ egress: true }));
   assert.equal(refused.ok, false);

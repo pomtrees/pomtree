@@ -10,7 +10,7 @@ export const API_ERROR_CODES = [
   "token_invalid", // 401: no credential, or one this daemon did not issue
   "token_revoked_or_expired", // 401: an agent credential this daemon issued whose expiry has passed
   "idempotency_conflict", // 409: the idempotency key is already bound to a different request or a finished run
-  "template_error", // 422: the named template file exists but fails validation
+  "template_error", // 422: the template fails validation, or the selected sandbox backend cannot honour it (egress or gVisor it does not declare)
   "unknown_template", // 404: no template of that name
   "unknown_model", // 400: the model is not in the host's catalog
   "budget_exceeds_parent", // 409: the requested child budget is more than the parent has left

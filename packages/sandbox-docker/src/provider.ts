@@ -27,17 +27,16 @@ export interface LocalBackendProvider extends SandboxBackendProvider {
 // Podman declares what its argv path implements and the design has verified. Left out against the Docker declaration:
 // - egress.denyAll: the Docker path enforces default-deny with a shared bridge network that has inter-container communication off;
 //   Podman has no equivalent (the rootless sidecar sits on a per-container pasta network, unverified), so it is not claimed.
-// - egress.allowHost: the sidecar allowlist only holds when denyAll does, so a template that sets egress still starts on Podman,
-//   and its egress isolation is not enforced (nothing refuses a template the backend cannot honour; bootNeeds hard-codes egress:false).
-// - isolation.gvisor: detection of `runsc` on Podman is inferred from documentation, not run, so Podman does not declare it (a gVisor template is not refused at boot either; see the sandbox-template-admission marker in pomtreed).
+// - egress.allowHost: the sidecar allowlist only holds when denyAll does, so the daemon refuses a template that sets egress
+//   on Podman (admitTemplateSpec in pomtreed).
+// - isolation.gvisor: detection of `runsc` on Podman is inferred from documentation, not run, so Podman does not declare it and the daemon refuses a template with a gVisor runtime block on Podman (admitTemplateSpec in pomtreed).
 // Everything else is the shared argv floor (terminal, host mounts, image pull and digest identity, tag listing, host alias, resource
 // limits, seccomp, ipv6 sysctl); resources.limits is narrowed at runtime by the engine probe on a rootless host without cgroup v2 delegation.
 // TODO(podman-inferred-details): Podman error patterns and the info and gateway-inspect formats come from documentation and fixtures, not a real Podman;
 // `firewallHint` and the onboarding steps stay Docker-only and the doctor payload carries no engine id. Run against a real Podman and fix.
-// TODO(podman-egress-isolation): security-relevant fail-open: Podman does not declare egress.denyAll or egress.allowHost, yet nothing refuses a
-// template that sets egress (see the sandbox-template-admission marker in pomtreed), so such a template still starts and its egress is not isolated.
-// Trigger: before Podman is documented as a supported backend or a template relies on egress isolation. Fix: declare both once the gated
-// Podman suites pass the rootless sidecar path.
+// TODO(podman-egress-isolation): Podman does not declare egress.denyAll or egress.allowHost, so the daemon refuses every template that sets egress
+// (fail closed); Podman therefore runs only egress-none templates. Trigger: before Podman is documented as a supported backend or a template
+// relies on egress isolation. Fix: declare both once the gated Podman suites pass the rootless sidecar path.
 export const PODMAN_DECLARATION: SandboxDeclaration = {
   ...DOCKER_DECLARATION,
   backend: "podman",
