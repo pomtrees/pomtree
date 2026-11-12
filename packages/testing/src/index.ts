@@ -18,3 +18,10 @@ export { kubernetesPodCreate } from "./provider-schemas/kubernetes-pod-create.ts
 export * from "./sandbox-conformance.ts";
 export * from "./sandbox-capability-coverage.ts";
 export * from "./sandbox-broken.ts";
+export * from "./sandbox-faults.ts";
+// The provider stub's fault plan shares a name with the fake sandbox's, so it is exported under a distinct one.
+export { FaultPlan as ProviderFaultPlan, FAULT_NAMES, BREAK_FAULTS, isFaultName } from "./provider-stub/faults.ts";
+export type { BreakFault, FaultArm, FaultName, FiredFault } from "./provider-stub/faults.ts";
+export * from "./provider-stub/fixture-loader.ts";
+export * from "./provider-stub/identity.ts";
+export * from "./provider-stub/server.ts";
