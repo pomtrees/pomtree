@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { IdempotencyConflictError, LOOPBACK_PORTS, SANDBOX_CAPABILITIES, SandboxOutcomeUnknownError, SandboxUnavailableError } from "@pomtree/core";
 import type { ByteChannel, ByteStream, ProbeResult, Sandbox, SandboxFacets, SandboxHandle, SandboxId, SandboxListing, SandboxSpec } from "@pomtree/core";
-import type { ClauseId, FakeUnderTestOptions } from "./sandbox-conformance.ts";
+import type { ClauseId, FakeUnderTestOptions, SandboxConformanceHooks } from "./sandbox-conformance.ts";
 
 // Negative controls for the Sandbox conformance suite. `brokenSandbox(inner, mode)` wraps a correct sandbox and violates exactly one
 // contract, so a test can show that each clause in `SANDBOX_CONFORMANCE_CLAUSES` is capable of failing. `BREAK_MODES` is keyed by
@@ -14,6 +14,7 @@ export type CollateralId = ClauseId | "declaration" | "probe";
 // State a mode needs from the test world that the Sandbox port cannot carry (the simulated engine behind the api-version pin).
 export interface BreakEnv {
   engine?: SimulatedEngine;
+  provider?: SimulatedProvider;
 }
 
 // How to run a clause whose descriptor opt-in the shared fake does not meet: a correct reference layer over the fake, and the
@@ -159,11 +160,96 @@ export function pinnedEngineSandbox(inner: Sandbox, engine: SimulatedEngine, ver
   });
 }
 
+// What a provider sees of an adapter, as the hooks `requests` and `secrets` report it: the User-Agent of each request and the
+// environment of each create. The provider stub plays this part for a real adapter; here the reference layer below feeds it.
+type ProviderHooks = Required<Pick<SandboxConformanceHooks, "requests" | "secrets">>;
+export const FETCH_USER_AGENT = "pomtree";
+export class SimulatedProvider {
+  // The User-Agent the reference layer stamps on the next request (a mode clears it for the calls it breaks).
+  userAgent: string | undefined = FETCH_USER_AGENT;
+  // Whether the reference layer records the create-time environment (a mode turns it off: the provider never saw one).
+  recordEnv = true;
+  // Whether the reference layer puts the planted secret in the create-time environment (the sandbox.secretsInEnv behavior).
+  secretsInEnv = false;
+  // A mode sets this to leak the planted secret into the environment although secretsInEnv is off.
+  leak = false;
+  // With leak on, the secret goes in an environment variable NAME instead of a value.
+  leakInKey = false;
+  planted: string | undefined;
+  readonly requests: (string | undefined)[] = [];
+  readonly createEnv = new Map<SandboxId, Record<string, string>>();
+  hooks(): ProviderHooks {
+    return providerHooks(() => this);
+  }
+}
+
+export function providerHooks(get: () => SimulatedProvider): ProviderHooks {
+  return {
+    requests: { expectedUserAgent: FETCH_USER_AGENT, observe: () => get().requests },
+    secrets: {
+      // Read when the clause runs, so each world reports the lane's setting.
+      get secretsInEnv() {
+        return get().secretsInEnv;
+      },
+      plant: (sentinel) => {
+        get().planted = sentinel;
+      },
+      createEnv: (id) => get().createEnv.get(id),
+    },
+  };
+}
+
+// A correct adapter as the provider sees it: every request carries the configured User-Agent; the planted secret stays out of the
+// create-time environment unless secretsInEnv is on; the create-time environment is the spec's.
+export function providerSandbox(inner: Sandbox, provider: SimulatedProvider): Sandbox {
+  const seen = <T>(call: () => Promise<T>) => {
+    provider.requests.push(provider.userAgent);
+    return call();
+  };
+  return decorate(inner, {
+    start: (spec, key) =>
+      seen(async () => {
+        const h = await inner.start(spec, key);
+        if (provider.recordEnv) {
+          const planted = provider.secretsInEnv || provider.leak ? provider.planted : undefined;
+          const secret = planted === undefined ? {} : provider.leakInKey ? { [`CONFORMANCE_${planted}`]: "x" } : { CONFORMANCE_SECRET: planted };
+          provider.createEnv.set(h.id, { ...spec.env, ...secret });
+        }
+        return h;
+      }),
+    attach: (id, agent) => seen(() => inner.attach(id, agent)),
+    list: (owner) => seen(() => inner.list(owner)),
+    stop: (id, graceMs, key) => seen(() => inner.stop(id, graceMs, key)),
+    kill: (id, key) => seen(() => inner.kill(id, key)),
+  });
+}
+
+// Runs `call` with one provider field changed, then restores it.
+async function withProvider<T>(
+  provider: SimulatedProvider,
+  change: Partial<Pick<SimulatedProvider, "userAgent" | "recordEnv" | "leak" | "leakInKey">>,
+  call: () => Promise<T>,
+) {
+  const prior = { ...provider };
+  Object.assign(provider, change);
+  try {
+    return await call();
+  } finally {
+    Object.assign(provider, { userAgent: prior.userAgent, recordEnv: prior.recordEnv, leak: prior.leak, leakInKey: prior.leakInKey });
+  }
+}
+
+const providerOf = (env: BreakEnv, mode: string): SimulatedProvider => {
+  if (env.provider === undefined)
+    throw new Error(`break mode ${mode} needs the simulated provider, but none was passed; pass newBreakEnv() as the third argument`);
+  return env.provider;
+};
+
 export const FOREIGN_RECORD = { id: "sandbox-of-another-backend", backend: "other-backend" } as const;
 const PINNED_VERSION = "1.41";
 
 export function newBreakEnv(): BreakEnv {
-  return { engine: new SimulatedEngine() };
+  return { engine: new SimulatedEngine(), provider: new SimulatedProvider() };
 }
 
 const engineOf = (env: BreakEnv, mode: string): SimulatedEngine => {
@@ -633,6 +719,61 @@ export const BREAK_MODES = {
         },
       });
     },
+  },
+  "user-agent-stamped": {
+    name: "drops-user-agent",
+    collateral: [],
+    fails: /without the configured User-Agent/,
+    // Only start stamps the User-Agent; list, stop and kill go out without one.
+    wrap: (inner, env) => {
+      const provider = providerOf(env, "drops-user-agent");
+      const bare =
+        <A extends unknown[], R>(call: (...a: A) => Promise<R>) =>
+        (...a: A) =>
+          withProvider(provider, { userAgent: undefined }, () => call(...a));
+      return decorate(inner, { list: bare(inner.list.bind(inner)), stop: bare(inner.stop.bind(inner)), kill: bare(inner.kill.bind(inner)) });
+    },
+    enable: {
+      reference: (inner, env) => providerSandbox(inner, providerOf(env, "drops-user-agent")),
+      // The hooks read the provider of the world being run when they are called.
+      descriptor: (env) => ({ hooks: providerHooks(() => providerOf(env, "drops-user-agent")) }),
+    },
+  },
+  "no-sentinel-in-env": {
+    name: "sentinel-in-env",
+    collateral: [],
+    fails: /appears in the create-time environment variable\(s\)/,
+    // The secret is put into the create-time environment although sandbox.secretsInEnv is off.
+    wrap: (inner, env) => {
+      const provider = providerOf(env, "sentinel-in-env");
+      return decorate(inner, { start: (spec, key) => withProvider(provider, { leak: true }, () => inner.start(spec, key)) });
+    },
+    enable: {
+      reference: (inner, env) => providerSandbox(inner, providerOf(env, "sentinel-in-env")),
+      descriptor: (env) => ({ hooks: providerHooks(() => providerOf(env, "sentinel-in-env")) }),
+    },
+    also: [
+      {
+        name: "sentinel-in-env-key",
+        collateral: [],
+        fails: /appears in the create-time environment variable\(s\) CONFORMANCE_<secret>/,
+        // The secret is in an environment variable's NAME, which a value-only scan would miss.
+        wrap: (inner, env) => {
+          const provider = providerOf(env, "sentinel-in-env-key");
+          return decorate(inner, { start: (spec, key) => withProvider(provider, { leak: true, leakInKey: true }, () => inner.start(spec, key)) });
+        },
+      },
+      {
+        name: "env-never-set",
+        collateral: [],
+        fails: /could not be observed/,
+        // The provider never sees a create-time environment, so a leak would be invisible: the clause must fail, not pass vacuously.
+        wrap: (inner, env) => {
+          const provider = providerOf(env, "env-never-set");
+          return decorate(inner, { start: (spec, key) => withProvider(provider, { recordEnv: false }, () => inner.start(spec, key)) });
+        },
+      },
+    ],
   },
 } as const satisfies Record<ClauseId, BreakMode>;
 

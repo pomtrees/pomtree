@@ -42,6 +42,9 @@ for (const clause of CLAUSE_IDS) {
           get engine() {
             return world.engine;
           },
+          get provider() {
+            return world.provider;
+          },
         };
         return fakeSandboxUnderTest({
           ...entry.enable?.descriptor(live),

@@ -31,6 +31,7 @@ import { FakeSandbox, assertFacetPresence } from "./fakes.ts";
 import type { FakeSandboxOptions } from "./fakes.ts";
 import { SANDBOX_CAPABILITY_COVERAGE, coverageCounts, coverageTableFindings, suiteFloorFindings } from "./sandbox-capability-coverage.ts";
 import type { CapabilityTable } from "./sandbox-capability-coverage.ts";
+import { EXTENDED_CONFORMANCE_CLAUSES, NOT_DECLARED, needsHook } from "./sandbox-conformance-extra.ts";
 import { FaultPlan, assertStartIdempotent } from "./sandbox-faults.ts";
 import { realSetTimeout, scaled } from "./timing.ts";
 
@@ -80,6 +81,17 @@ export interface SandboxConformanceHooks {
   foreignRecord?(): { id: SandboxId; backend: SandboxBackendId } | Promise<{ id: SandboxId; backend: SandboxBackendId }>;
   // Docker-API-family adapters: the engine API version the client pins, and a call only newer engines accept (must be refused).
   engine?: { apiVersion(): string | Promise<string>; newerOnlyCall(): Promise<void> };
+  // The requests the adapter made to the provider since this world was made, as the `user-agent` value of each (`undefined` when a
+  // request carried none), and the value `workflow.fetch.userAgent` was configured to. Enables `user-agent-stamped`.
+  requests?: { expectedUserAgent: string; observe(): readonly (string | undefined)[] | Promise<readonly (string | undefined)[]> };
+  // Enables `no-sentinel-in-env`. `plant` arms the adapter so the next start carries this fake secret value as its secret; `createEnv`
+  // returns the environment the adapter sent when it created that sandbox, or `undefined` when none was observed; `secretsInEnv` is
+  // whether the lane sets `sandbox.secretsInEnv`.
+  secrets?: {
+    secretsInEnv: boolean;
+    plant(sentinel: string): void | Promise<void>;
+    createEnv(id: SandboxId): Readonly<Record<string, string>> | undefined | Promise<Readonly<Record<string, string>> | undefined>;
+  };
 }
 
 export interface SandboxConformanceWorld {
@@ -149,6 +161,8 @@ export const CLAUSE_IDS = [
   "loopback-stream",
   "files-hash-mismatch",
   "files-partial-upload",
+  "user-agent-stamped",
+  "no-sentinel-in-env",
 ] as const;
 export type ClauseId = (typeof CLAUSE_IDS)[number];
 
@@ -181,7 +195,6 @@ export interface Clause {
 const DEFAULT_OWNER: SandboxOwner = { host: "host-contract", storeId: "store-contract", epoch: 1 };
 const GONE = "conformance-no-such-sandbox";
 const GATED = "conformance gated: ";
-const NOT_DECLARED = "conformance not declared: ";
 const WITHHELD = "conformance withheld: ";
 
 // A wait that must end or throw gets a deadline, so a backend that never ends the stream fails instead of hanging the run.
@@ -265,7 +278,6 @@ const unknownOutcome = async (ctx: ClauseContext, applied: boolean, label: strin
   return { spec, key, err };
 };
 const countFor = async (ctx: ClauseContext, agent: string) => (await ctx.sandbox.list(ctx.owner)).filter((l) => l.agent === agent).length;
-const needsHook = (name: string, present: boolean) => (present ? null : `descriptor provides no ${name} hook (the clause cannot make the backend misbehave)`);
 
 export const SANDBOX_CONFORMANCE_CLAUSES = [
   {
@@ -688,6 +700,7 @@ export const SANDBOX_CONFORMANCE_CLAUSES = [
       }
     },
   },
+  ...EXTENDED_CONFORMANCE_CLAUSES,
 ] as const satisfies readonly (Clause & { id: ClauseId })[];
 
 // ---- results, gating and the runner ----

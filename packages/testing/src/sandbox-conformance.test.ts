@@ -61,24 +61,35 @@ test("registry: every final clause id is registered once, with a rule and a fix"
   for (const c of SANDBOX_CONFORMANCE_CLAUSES) assert.ok(c.title.length > 0 && c.fix.length > 0, c.id);
 });
 
+// The checks one run reports (every clause plus the declaration and probe checks), and the skips the plain remote fake must show; the
+// hook skips all carry the one stable prefix.
+const CHECKS = SANDBOX_CONFORMANCE_CLAUSES.length + 2;
+const FAKE_SKIP_REASONS: Record<string, RegExp> = {
+  "idempotency-conflict": /startConflict/,
+  "foreign-backend-record": /^conformance not declared: descriptor provides no foreignRecord hook/,
+  "api-version-pin": /engineApiVersion/,
+  "user-agent-stamped": /^conformance not declared: descriptor provides no requests hook/,
+  "no-sentinel-in-env": /^conformance not declared: descriptor provides no secrets hook/,
+};
+const FAKE_SKIPS = Object.keys(FAKE_SKIP_REASONS);
+
 test("fake: the exact skip set of the remote fake, every other check passes", async () => {
   const r = await evaluateSandboxConformance(fakeSandboxUnderTest());
-  assertExactSkips(r, {
-    "idempotency-conflict": /startConflict/,
-    "foreign-backend-record": /foreignRecord hook/,
-    "api-version-pin": /engineApiVersion/,
-  });
+  assertExactSkips(r, FAKE_SKIP_REASONS);
   assert.equal(status(r, "declaration"), "passed");
   assert.equal(status(r, "probe"), "passed");
-  assert.match(r.summary, /^conformance: 19 passed, 0 failed, 3 skipped \(idempotency-conflict: .*; foreign-backend-record: .*; api-version-pin: .*\)$/);
+  assert.match(
+    r.summary,
+    new RegExp(
+      `^conformance: ${CHECKS - FAKE_SKIPS.length} passed, 0 failed, ${FAKE_SKIPS.length} skipped \\(${FAKE_SKIPS.map((id) => `${id}: .*`).join("; ")}\\)$`,
+    ),
+  );
 });
 
 test("fake: a fake that loses its remote capabilities skips exactly the connect and files clauses, each saying not declared", async () => {
   const r = await evaluateSandboxConformance(fakeSandboxUnderTest({ remote: false }));
   assertExactSkips(r, {
-    "idempotency-conflict": /startConflict/,
-    "foreign-backend-record": /foreignRecord hook/,
-    "api-version-pin": /engineApiVersion/,
+    ...FAKE_SKIP_REASONS,
     "channel-drop-throws": /^conformance not declared: capability connect not declared by fake$/,
     "files-hash-mismatch": /^conformance not declared: capability files\.put not declared by fake; capability files\.get not declared by fake$/,
     "files-partial-upload": /^conformance not declared: capability files\.put not declared by fake$/,
@@ -122,7 +133,7 @@ test("gating: a closed environment gates every check without building a sandbox"
   };
   const r = await evaluateSandboxConformance(sut);
   assert.ok(r.results.every((x) => x.status === "gated"));
-  assert.match(r.summary, /0 passed, 0 failed, 0 skipped, 22 gated \(conformance gated: no engine\)$/);
+  assert.match(r.summary, new RegExp(`0 passed, 0 failed, 0 skipped, ${CHECKS} gated \\(conformance gated: no engine\\)$`));
 });
 
 test("vacuity: a clause whose check never calls its targets fails", async () => {
@@ -385,8 +396,8 @@ runSandboxConformance(
 test("registration: runSandboxConformance registers a case per check, skips by reason and prints the summary", () => {
   const r = runRegistered("plain");
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /CONFORMANCE fake: conformance: 19 passed, 0 failed, 3 skipped \(/);
-  assert.match(r.out, /ℹ skipped 3/);
+  assert.match(r.out, new RegExp(`CONFORMANCE fake: conformance: ${CHECKS - FAKE_SKIPS.length} passed, 0 failed, ${FAKE_SKIPS.length} skipped \\(`));
+  assert.match(r.out, new RegExp(`ℹ skipped ${FAKE_SKIPS.length}`));
   assert.match(r.out, /fake conformance idempotent-start/);
 });
 
@@ -394,13 +405,13 @@ test("registration: a closed gate skips every check with the stable prefix and s
   const r = runRegistered("gated");
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /conformance gated: no engine/);
-  assert.match(r.out, /ℹ skipped 22/);
+  assert.match(r.out, new RegExp(`ℹ skipped ${CHECKS}`));
 });
 
 test("registration: requireReal turns gated checks into a failure that names the cause and the action", () => {
   const r = runRegistered("gated-require");
   assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /requireReal is set but 22 check\(s\) were gated/);
+  assert.match(r.out, new RegExp(`requireReal is set but ${CHECKS} check\\(s\\) were gated`));
   assert.match(r.out, /open the gate/);
 });
 
