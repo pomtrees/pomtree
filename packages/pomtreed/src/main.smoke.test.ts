@@ -144,7 +144,7 @@ test("extension-contributed keys: resolved and shown like core keys; a bad value
     const manifest = (params: unknown) =>
       writeFileSync(
         join(extDir, "fixture", "manifest.json"),
-        JSON.stringify({ apiVersion: 1, name: "fixture", entry: "entry.mjs", capabilities: {}, deps: [], credentials: ["token"], params }),
+        JSON.stringify({ apiVersion: 2, name: "fixture", entry: "entry.mjs", capabilities: {}, deps: [], credentials: ["token"], params }),
       );
     manifest([{ key: "sizeBytes", kind: "bytes", doc: "Size.", default: 100, min: 1 }]);
     const env = { POMTREED_EXTENSIONS_DIR: extDir };

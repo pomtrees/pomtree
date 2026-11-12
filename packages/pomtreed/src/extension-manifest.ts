@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
-import { EXTENSION_API_VERSION, EXT_CREDENTIAL_RE, parseExtensionParams } from "@pomtree/core";
-import type { ExtensionCapabilities, ExtensionConfigDecl, ExtensionDepName, ExtensionManifest } from "@pomtree/core";
+import { isAbsolute, join } from "node:path";
+import { EXTENSION_API_VERSION, EXT_CREDENTIAL_RE, PROVIDES_KINDS, parseExtensionParams } from "@pomtree/core";
+import type { ExtensionCapabilities, ExtensionConfigDecl, ExtensionDepName, ExtensionManifest, ExtensionProvides } from "@pomtree/core";
 
 // Extension names are token-safe, since they appear in `ext.<name>.<hmac>` tokens: no `.` (token separator), `/`, `..`, whitespace or control
 // characters, and they must start with a lowercase letter or digit. Mirrors auth.ts's EXT_NAME_RE.
@@ -78,6 +78,81 @@ export function parseDeps(name: string, v: unknown): ExtensionDepName[] {
   return v as ExtensionDepName[];
 }
 
+// A contributed sandbox backend id: lowercase, starts with a letter, at most 31 characters.
+const SANDBOX_ID_RE = /^[a-z][a-z0-9-]{0,30}$/;
+// Ids no extension may provide: `auto` (the selection keyword) and the built-in backends, first-party ones included.
+const RESERVED_SANDBOX_IDS: readonly string[] = ["auto", "docker", "podman", "kubernetes", "sail", "e2b"];
+const PROVIDES_ENTRY_KEYS = ["kind", "id", "entry", "portVersion", "params", "credentials", "deps"] as const;
+
+// `provides` is optional: an array of entries, each a closed object. Only the kinds in PROVIDES_KINDS are accepted. For a `sandbox`
+// entry the checks here are static (shape, id rules, `entry` written inside the extension directory); that the file exists and its
+// module speaks the same `portVersion` are checked when the provider is loaded.
+export function parseProvides(name: string, v: unknown): ExtensionProvides[] {
+  if (!Array.isArray(v)) throw new Error(`extension ${name}: provides must be an array of entries (use [] or omit it to provide nothing)`);
+  const out: ExtensionProvides[] = [];
+  const ids = new Set<string>();
+  v.forEach((item, i) => {
+    const at = `extension ${name}: provides[${i}]`;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error(`${at} must be an object`);
+    const o = item as Record<string, unknown>;
+    if (!(PROVIDES_KINDS as readonly unknown[]).includes(o.kind))
+      throw new Error(
+        `extension ${name}: provides kind ${JSON.stringify(o.kind)} is not supported by this host (supported: ${PROVIDES_KINDS.join(", ")}); remove the entry or use a supported kind`,
+      );
+    for (const k of Object.keys(o))
+      if (!(PROVIDES_ENTRY_KEYS as readonly string[]).includes(k))
+        throw new Error(`${at} has unknown key ${JSON.stringify(k)} (allowed: ${PROVIDES_ENTRY_KEYS.join(", ")}); remove it`);
+    const id = o.id;
+    if (typeof id !== "string" || !SANDBOX_ID_RE.test(id)) throw new Error(`${at}: id ${JSON.stringify(id)} must match ${SANDBOX_ID_RE}; rename the backend`);
+    const at2 = `${at} (${id})`;
+    if (RESERVED_SANDBOX_IDS.includes(id) || id.startsWith("pomtree"))
+      throw new Error(`${at2}: id is reserved (auto, a built-in backend, or starting with "pomtree"); choose another id`);
+    if (id !== name && !id.startsWith(`${name}-`))
+      throw new Error(`${at2}: id must equal the extension name ${JSON.stringify(name)} or start with "${name}-"; rename the id`);
+    if (ids.has(id)) throw new Error(`${at2}: id is provided twice; each backend id must be unique`);
+    ids.add(id);
+    const e = o.entry;
+    if (typeof e !== "string" || e === "") throw new Error(`${at2}: entry must be a non-empty path to the provider module; add it`);
+    // Lexical check only, valid on every platform: a relative `/`-separated path of real segments. Whether the file resolves inside
+    // the extension directory after symlinks (realpath containment) is left to the provider loader.
+    if (
+      isAbsolute(e) ||
+      /^[A-Za-z]:/.test(e) ||
+      e.includes("\\") ||
+      e.includes("\0") ||
+      e.startsWith("/") ||
+      e.endsWith("/") ||
+      e.split("/").some((seg) => seg === "" || /^\.+$/.test(seg))
+    )
+      throw new Error(
+        `${at2}: entry ${JSON.stringify(e)} must be a relative "/"-separated file path inside the extension directory (no absolute or drive path, backslash, NUL, empty, "." or ".." segment, trailing "/"); move the module there`,
+      );
+    const pv = o.portVersion;
+    if (typeof pv !== "number" || !Number.isSafeInteger(pv) || pv < 1)
+      throw new Error(`${at2}: portVersion must be a positive integer (the sandbox port version the provider speaks); set it`);
+    const entry: ExtensionProvides = { kind: "sandbox", id, entry: e, portVersion: pv };
+    if (o.params !== undefined) {
+      const r = parseExtensionParams(name, o.params);
+      if (!r.ok) throw new ManifestParamsError(r.errors.map((m) => m.replace(`extension ${name}: `, `${at2}: `)));
+      entry.params = r.params;
+    }
+    if (o.credentials !== undefined) {
+      if (!Array.isArray(o.credentials) || o.credentials.some((c) => typeof c !== "string" || !EXT_CREDENTIAL_RE.test(c)))
+        throw new Error(`${at2}: credentials must be an array of names matching ${EXT_CREDENTIAL_RE}`);
+      if (new Set(o.credentials).size !== o.credentials.length) throw new Error(`${at2}: credentials must be distinct`);
+      entry.credentials = o.credentials as string[];
+    }
+    if (o.deps !== undefined) {
+      if (!Array.isArray(o.deps) || o.deps.some((d) => typeof d !== "string" || !(KNOWN_DEPS as readonly string[]).includes(d)))
+        throw new Error(`${at2}: deps must be an array of known dep names (${KNOWN_DEPS.join(", ")})`);
+      if (new Set(o.deps).size !== o.deps.length) throw new Error(`${at2}: deps must be distinct`);
+      entry.deps = o.deps as ExtensionDepName[];
+    }
+    out.push(entry);
+  });
+  return out;
+}
+
 // Reads manifest.json without executing any extension code. `params` is validated here (shape only; the registry composition
 // checks values and relations), `credentials` must be names that are safe in an env name and a file name.
 export function parseManifest(raw: string): ExtensionManifest {
@@ -116,6 +191,7 @@ export function parseManifest(raw: string): ExtensionManifest {
     if (!r.ok) throw new ManifestParamsError(r.errors);
     params = r.params;
   }
+  const provides = o.provides !== undefined ? parseProvides(o.name, o.provides) : undefined;
   return {
     apiVersion: EXTENSION_API_VERSION,
     name: o.name,
@@ -125,6 +201,7 @@ export function parseManifest(raw: string): ExtensionManifest {
     deps,
     ...(o.credentials !== undefined && { credentials: o.credentials as string[] }),
     ...(params !== undefined && { params }),
+    ...(provides !== undefined && { provides }),
     ...(o.remote !== undefined && { remote: Boolean(o.remote) }),
   };
 }

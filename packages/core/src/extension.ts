@@ -21,10 +21,10 @@ export interface ExtensionJournalPayload {
 
 // The version of the extension contract: the manifest, `ExtensionHost`, `ExtensionDeps`, route/verb/journal-kind shapes and the
 // workflow definition and capability types in this file. It changes when one of them changes incompatibly (a member removed,
-// renamed, retyped or made required, or a semantic change a conforming extension would notice); adding an optional member does
-// not change it. A file-loaded extension must declare the exact value in manifest.json; the host refuses any other, or none, at
-// load. Separate from MESSAGING_API_VERSION (the adapter wire contract).
-export const EXTENSION_API_VERSION = 1 as const;
+// renamed, retyped or made required, or a semantic change a conforming extension would notice) and when an addition needs host
+// support to mean anything (a new manifest field the host must act on); adding an optional type member the host ignores does not. A file-loaded extension must declare the exact value in manifest.json; the host refuses any other, or none, at
+// load. Separate from MESSAGING_API_VERSION (the adapter wire contract). 2 added the manifest `provides` list.
+export const EXTENSION_API_VERSION = 2 as const;
 export type ExtensionApiVersion = typeof EXTENSION_API_VERSION;
 
 export interface ExtensionManifest {
@@ -45,8 +45,32 @@ export interface ExtensionManifest {
   // `ext.<segment>.<key>` before pomtreed starts, so they resolve with the same sources, origins and refusals as core keys.
   params?: ExtParamDecl[];
   store?: { name: ExtensionStoreName; dir?: string };
+  // The components this extension contributes to the host besides its own `entry`, declared statically so config composition and
+  // checks need no import of extension code. Only kind "sandbox" is accepted today (PROVIDES_KINDS); any other kind refuses the
+  // extension at load. First-party backends are built into the host and declare nothing here.
+  provides?: ExtensionProvides[];
   remote?: boolean;
 }
+
+export const PROVIDES_KINDS = ["sandbox"] as const;
+export type ProvidesKind = (typeof PROVIDES_KINDS)[number];
+
+// A sandbox backend contributed by the extension. `id` matches `^[a-z][a-z0-9-]{0,30}$`, equals the extension name or starts with
+// `<name>-`, and may not be `auto`, a built-in backend id or begin with `pomtree`. `entry` is the provider module, relative to the
+// extension directory and contained in it. `portVersion` is the sandbox port version the provider speaks (a positive integer).
+// `params` and `credentials` follow the extension-level fields of the same name; `deps` is the subset of ExtensionDepName it uses.
+export interface SandboxProvides {
+  kind: "sandbox";
+  id: string;
+  entry: string;
+  portVersion: number;
+  params?: ExtParamDecl[];
+  credentials?: string[];
+  deps?: ExtensionDepName[];
+}
+
+// One member per accepted kind; a later kind adds a member and its PROVIDES_KINDS name.
+export type ExtensionProvides = SandboxProvides;
 
 // Registration capabilities. `routes`: host.route and host.stream. `verbs`: host.verb. `journalKinds`: host.journalKind.
 // `hooks.journal`: host.onJournal. `hooks.spawn`: host.onSpawn and host.spawnSpec. `host.workflow` has no flag: it is gated by

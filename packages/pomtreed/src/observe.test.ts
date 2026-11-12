@@ -229,7 +229,7 @@ test("a file-loaded extension stream route streams SSE frames and enforces its s
   const dir = tmpDir("pomtreed-ext-");
   const sub = join(dir, "tick");
   mkdirSync(sub, { recursive: true });
-  writeFileSync(join(sub, "manifest.json"), JSON.stringify({ apiVersion: 1, name: "tick", entry: "entry.mjs", capabilities: { routes: true }, deps: [] }));
+  writeFileSync(join(sub, "manifest.json"), JSON.stringify({ apiVersion: 2, name: "tick", entry: "entry.mjs", capabilities: { routes: true }, deps: [] }));
   writeFileSync(
     join(sub, "entry.mjs"),
     `

@@ -320,18 +320,20 @@ test("a file manifest must declare apiVersion equal to EXTENSION_API_VERSION: mi
   writeExt(dir, "good", { name: "good", entry: "entry.mjs" }, entry);
   writeExt(dir, "missing", { name: "missing", entry: "entry.mjs", apiVersion: undefined }, entry);
   writeExt(dir, "future", { name: "future", entry: "entry.mjs", apiVersion: EXTENSION_API_VERSION + 1 }, entry);
+  writeExt(dir, "old", { name: "old", entry: "entry.mjs", apiVersion: 1 }, entry);
   writeExt(dir, "zero", { name: "zero", entry: "entry.mjs", apiVersion: 0 }, entry);
   writeExt(dir, "str", { name: "str", entry: "entry.mjs", apiVersion: "1" }, entry);
   writeExt(dir, "nul", { name: "nul", entry: "entry.mjs", apiVersion: null }, entry);
   const loaded = await t.extensions.load(dir);
   const by = (n: string) => loaded.find((l) => l.manifest.name === n);
   assert.equal(by("good")?.status, "ok");
-  assert.match(by("missing")?.error ?? "", /^extension missing: manifest\.json has no "apiVersion"; this host speaks extension API 1$/);
-  assert.match(by("future")?.error ?? "", /^extension future: manifest apiVersion 2 is not supported; this host speaks extension API 1$/);
+  assert.match(by("missing")?.error ?? "", /^extension missing: manifest\.json has no "apiVersion"; this host speaks extension API 2$/);
+  assert.match(by("future")?.error ?? "", /^extension future: manifest apiVersion 3 is not supported; this host speaks extension API 2$/);
+  assert.match(by("old")?.error ?? "", /^extension old: manifest apiVersion 1 is not supported; this host speaks extension API 2$/);
   assert.match(by("zero")?.error ?? "", /^extension zero: manifest apiVersion 0 is not supported/);
   assert.match(by("str")?.error ?? "", /^extension str: manifest apiVersion "1" is not supported/);
   assert.match(by("nul")?.error ?? "", /^extension nul: manifest apiVersion null is not supported/);
-  for (const n of ["missing", "future", "zero", "str", "nul"]) assert.equal(by(n)?.status, "failed");
+  for (const n of ["missing", "future", "old", "zero", "str", "nul"]) assert.equal(by(n)?.status, "failed");
   // A refused extension exposes nothing and its entry never ran (no routes, verbs or state owner).
   assert.deepEqual(
     t.extensions.names().filter((n) => n !== "good" && !["observe", "reports", "cron"].includes(n)),
@@ -346,9 +348,9 @@ test("a compiled-in extension may omit apiVersion (the build's) but a present di
   assert.throws(
     () =>
       t.extensions.registerBuiltin({
-        manifest: { name: "bi-bad", entry: "builtin", capabilities: ALL_CAPS, deps: ALL_DEPS, apiVersion: 2 as unknown as typeof EXTENSION_API_VERSION },
+        manifest: { name: "bi-bad", entry: "builtin", capabilities: ALL_CAPS, deps: ALL_DEPS, apiVersion: 1 as unknown as typeof EXTENSION_API_VERSION },
       }),
-    /^Error: extension bi-bad: manifest apiVersion 2 is not supported/,
+    /^Error: extension bi-bad: manifest apiVersion 1 is not supported/,
   );
   assert.ok(!t.extensions.names().includes("bi-bad"));
 });
@@ -715,4 +717,101 @@ test("parseManifest returns the declared blocks and keeps an empty block distinc
   assert.deepEqual([empty.capabilities, empty.deps], [{}, []]);
   assert.throws(() => parseManifest(JSON.stringify({ ...base, deps: [] })), /^Error: extension a: manifest has no "capabilities" block/);
   assert.throws(() => parseManifest(JSON.stringify({ ...base, capabilities: {} })), /^Error: extension a: manifest has no "deps" block/);
+});
+
+const PROVIDES_BASE = { apiVersion: EXTENSION_API_VERSION, name: "toybox", entry: "entry.mts", capabilities: {}, deps: [] };
+const sandboxEntry = { kind: "sandbox", id: "toybox", entry: "provider.mts", portVersion: 1 };
+const withProvides = (...provides: unknown[]) => JSON.stringify({ ...PROVIDES_BASE, provides });
+
+test("parseManifest accepts a sandbox provides entry and keeps its fields; no provides leaves the field absent", () => {
+  const full = {
+    ...sandboxEntry,
+    id: "toybox-eu",
+    params: [{ key: "baseUrl", kind: "string", doc: "API base URL.", default: "http://127.0.0.1:0" }],
+    credentials: ["apiKey"],
+    deps: ["credentials"],
+  };
+  const m = parseManifest(withProvides(sandboxEntry, full));
+  assert.deepEqual(m.provides, [sandboxEntry, full]);
+  assert.equal("provides" in parseManifest(JSON.stringify(PROVIDES_BASE)), false);
+  assert.deepEqual(parseManifest(withProvides()).provides, []);
+});
+
+test("parseManifest refuses each malformed provides entry with a message naming the cause and the action", () => {
+  const refused: [string, unknown, RegExp][] = [
+    ["entry not an object", "sandbox", /^Error: extension toybox: provides\[0\] must be an object/],
+    [
+      "unknown kind",
+      { ...sandboxEntry, kind: "channel" },
+      /^Error: extension toybox: provides kind "channel" is not supported by this host \(supported: sandbox\); remove the entry/,
+    ],
+    ["missing kind", { ...sandboxEntry, kind: undefined }, /provides kind undefined is not supported by this host \(supported: sandbox\)/],
+    [
+      "unknown key",
+      { ...sandboxEntry, extra: 1 },
+      /provides\[0\] has unknown key "extra" \(allowed: kind, id, entry, portVersion, params, credentials, deps\)/,
+    ],
+    ["bad id charset", { ...sandboxEntry, id: "Toybox" }, /id "Toybox" must match .*rename the backend/],
+    ["id too long", { ...sandboxEntry, id: `toybox-${"a".repeat(30)}` }, /must match/],
+    ["id without name prefix", { ...sandboxEntry, id: "other" }, /provides\[0\] \(other\): id must equal the extension name "toybox" or start with "toybox-"/],
+    ["id equals auto", { ...sandboxEntry, id: "auto" }, /\(auto\): id is reserved/],
+    ["id equals a built-in", { ...sandboxEntry, id: "docker" }, /\(docker\): id is reserved/],
+    ["id begins with pomtree", { ...sandboxEntry, id: "pomtree-x" }, /\(pomtree-x\): id is reserved/],
+    ["missing entry", { ...sandboxEntry, entry: undefined }, /\(toybox\): entry must be a non-empty path to the provider module/],
+    [
+      "entry escapes the directory",
+      { ...sandboxEntry, entry: "../provider.mts" },
+      /entry "\.\.\/provider\.mts" must be a relative "\/"-separated file path inside the extension directory/,
+    ],
+    ["entry nested escape", { ...sandboxEntry, entry: "a/../../p.mts" }, /inside the extension directory/],
+    ["entry empty", { ...sandboxEntry, entry: "" }, /\(toybox\): entry must be a non-empty path to the provider module/],
+    ["entry backslash", { ...sandboxEntry, entry: "a\\p.mts" }, /entry "a\\\\p\.mts" must be a relative "\/"-separated file path/],
+    ["entry drive path", { ...sandboxEntry, entry: "C:\\x.mts" }, /must be a relative "\/"-separated file path/],
+    ["entry drive relative", { ...sandboxEntry, entry: "C:x" }, /must be a relative "\/"-separated file path/],
+    ["entry dot", { ...sandboxEntry, entry: "." }, /must be a relative "\/"-separated file path/],
+    ["entry dots", { ...sandboxEntry, entry: "..." }, /must be a relative "\/"-separated file path/],
+    ["entry trailing slash", { ...sandboxEntry, entry: "a/" }, /must be a relative "\/"-separated file path/],
+    ["entry NUL", { ...sandboxEntry, entry: "a\0b.mts" }, /must be a relative "\/"-separated file path/],
+    ["portVersion float", { ...sandboxEntry, portVersion: 1.5 }, /portVersion must be a positive integer/],
+    ["portVersion unsafe", { ...sandboxEntry, portVersion: 2 ** 60 }, /portVersion must be a positive integer/],
+    ["__proto__ key", JSON.parse('{"kind":"sandbox","id":"toybox","entry":"p.mts","portVersion":1,"__proto__":{}}'), /unknown key "__proto__"/],
+    ["entry absolute", { ...sandboxEntry, entry: "/etc/p.mts" }, /inside the extension directory/],
+    ["missing portVersion", { ...sandboxEntry, portVersion: undefined }, /portVersion must be a positive integer/],
+    ["portVersion zero", { ...sandboxEntry, portVersion: 0 }, /portVersion must be a positive integer/],
+    ["portVersion string", { ...sandboxEntry, portVersion: "1" }, /portVersion must be a positive integer/],
+    ["bad credential", { ...sandboxEntry, credentials: ["../x"] }, /\(toybox\): credentials must be an array of names matching/],
+    ["duplicate credential", { ...sandboxEntry, credentials: ["x", "x"] }, /credentials must be distinct/],
+    ["unknown dep", { ...sandboxEntry, deps: ["network"] }, /\(toybox\): deps must be an array of known dep names/],
+    [
+      "bad params",
+      { ...sandboxEntry, params: [{ key: "k", kind: "path", doc: "d", default: "x" }] },
+      /provides\[0\] \(toybox\): params\[0\] \(k\): kind must be one of/,
+    ],
+  ];
+  for (const [why, entry, re] of refused) assert.throws(() => parseManifest(withProvides(entry)), re, why);
+  assert.throws(() => parseManifest(withProvides(sandboxEntry, sandboxEntry)), /\(toybox\): id is provided twice; each backend id must be unique/);
+  for (const bad of [null, "sandbox", {}])
+    assert.throws(() => parseManifest(JSON.stringify({ ...PROVIDES_BASE, provides: bad })), /^Error: extension toybox: provides must be an array of entries/);
+  // A kind refusal wins over later faults in the same entry, and over a later valid entry.
+  assert.throws(() => parseManifest(withProvides(sandboxEntry, { kind: "channel", id: "!" })), /provides kind "channel" is not supported/);
+});
+
+test("a manifest at apiVersion 1 with provides is refused by the version check, not parsed", () => {
+  assert.throws(
+    () => parseManifest(JSON.stringify({ ...PROVIDES_BASE, apiVersion: 1, provides: [sandboxEntry] })),
+    /^Error: extension toybox: manifest apiVersion 1 is not supported; this host speaks extension API 2$/,
+  );
+});
+
+test("the loader refuses a file extension whose provides names an unsupported kind, naming the kind", async () => {
+  const t = setup(async () => {});
+  const dir = tmpDir("pomtreed-ext-provides-");
+  const entry = 'export default { manifest: { name: "x", entry: "entry.mjs", capabilities: {}, deps: [] } };';
+  writeExt(dir, "good", { name: "good", entry: "entry.mjs", provides: [{ kind: "sandbox", id: "good", entry: "p.mjs", portVersion: 1 }] }, entry);
+  writeExt(dir, "chan", { name: "chan", entry: "entry.mjs", provides: [{ kind: "channel", id: "chan" }] }, entry);
+  const loaded = await t.extensions.load(dir);
+  const by = (n: string) => loaded.find((l) => l.manifest.name === n);
+  assert.equal(by("good")?.status, "ok");
+  assert.equal(by("chan")?.status, "failed");
+  assert.match(by("chan")?.error ?? "", /^extension chan: provides kind "channel" is not supported by this host \(supported: sandbox\)/);
 });

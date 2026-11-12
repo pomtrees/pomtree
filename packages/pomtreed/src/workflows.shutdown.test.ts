@@ -114,7 +114,7 @@ function harness(opts: { startOverride?: (requester: AgentId, req: never) => Pro
     ["kids", KIDS],
   ] as const) {
     mkdirSync(join(root, dir), { recursive: true });
-    writeFileSync(join(root, dir, "manifest.json"), JSON.stringify({ apiVersion: 1, name: dir, entry: "entry.mjs", capabilities: {}, deps: [] }));
+    writeFileSync(join(root, dir, "manifest.json"), JSON.stringify({ apiVersion: 2, name: dir, entry: "entry.mjs", capabilities: {}, deps: [] }));
     writeFileSync(join(root, dir, "entry.mjs"), body);
   }
   const registry = createExtensionRegistry({

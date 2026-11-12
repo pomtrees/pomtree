@@ -65,7 +65,7 @@ function writeFixtures(entries: Array<[string, string]>): string {
     mkdirSync(join(root, dir), { recursive: true });
     writeFileSync(
       join(root, dir, "manifest.json"),
-      JSON.stringify({ apiVersion: 1, name: dir, entry: "entry.mjs", capabilities: { routes: true, hooks: { journal: true } }, deps: [] }),
+      JSON.stringify({ apiVersion: 2, name: dir, entry: "entry.mjs", capabilities: { routes: true, hooks: { journal: true } }, deps: [] }),
     );
     writeFileSync(join(root, dir, "entry.mjs"), body);
   }
@@ -239,7 +239,7 @@ test("a refused commit (duplicate owning workflow) marks the later owner failed,
   // The duplicate claims the same extension name (writeFixtures would name it after its directory).
   writeFileSync(
     join(root, "zzz", "manifest.json"),
-    JSON.stringify({ apiVersion: 1, name: "aaa", entry: "entry.mjs", capabilities: { routes: true }, deps: [] }),
+    JSON.stringify({ apiVersion: 2, name: "aaa", entry: "entry.mjs", capabilities: { routes: true }, deps: [] }),
   );
   const { host, registry } = harness();
   const loaded = await registry.load(root);
