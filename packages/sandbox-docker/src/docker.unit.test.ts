@@ -3,8 +3,15 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { IMAGE_REBUILD_ACTION, SandboxStartError, SandboxUnavailableError, validateDeclaration, type Sandbox, type SandboxOwner } from "@pomtree/core";
-import { classifyDockerError, classifyStartError, egressProbeFailure, removalRace } from "./docker.ts";
-import { NetSandbox } from "./test-network.ts";
+import { classifyDockerError, classifyStartError, DockerSandbox, egressProbeFailure, makeExec, removalRace } from "./docker.ts";
+import type { ExecFileFn } from "./docker.ts";
+import { DOCKER_PROFILE, PODMAN_PROFILE } from "./engine-profile.ts";
+import { checkGateEngine, gateBackend, lookupEngineSync, optInSkip, type EngineLookup } from "./docker-gate.ts";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NetSandbox, OK_EGRESS_NETWORK as OK_NETWORK } from "./test-network.ts";
 import type { Exec, SpawnFn } from "./docker.ts";
 import { EGRESS_PROXY_MEMORY_BYTES, EGRESS_PROXY_PATH } from "./egress.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
@@ -258,7 +265,10 @@ test("imageIdentity: an unresolvable image or a non-digest id throws with cause 
   });
   await assert.rejects(missing.imageIdentity("nope:1"), /cannot read the image identity of nope:1: .*no such image; pull or build the image locally/);
   const odd = new NetSandbox({ mounts: stubMounts(), exec: async (args) => (args[0] === "info" ? CLASSIC : "garbage\t") });
-  await assert.rejects(odd.imageIdentity("x:1"), /not sha256:<64 hex>; use a Docker with the classic image store/);
+  await assert.rejects(
+    odd.imageIdentity("x:1"),
+    /docker reported the image id "garbage", which is not sha256:<64 hex>, so the image cannot be pinned; check that the reference names a local image with `docker image inspect --format '\{\{\.Id\}\}' x:1`/,
+  );
   const down = new NetSandbox({
     mounts: stubMounts(),
     exec: async () => {
@@ -1090,4 +1100,215 @@ test("list: includes own and store-unlabelled containers; excludes another store
     (await sb.list(OWNER)).map((l) => l.id),
     ["own", "unlabelled"],
   );
+});
+
+// ---- Engine profile threading ----
+
+test("classifyDockerError: a container-side 'no such file or directory' is not a daemon-unreachable signal", () => {
+  const containerSide = [
+    'docker exec failed: OCI runtime exec failed: exec failed: unable to start container process: exec: "/opt/missing": stat /opt/missing: no such file or directory',
+    "docker run failed: Error response from daemon: invalid mount config: no such file or directory",
+  ];
+  for (const msg of containerSide) {
+    const e = new Error(msg);
+    assert.equal(classifyDockerError(e), e, msg);
+    assert.equal(classifyDockerError(e, PODMAN_PROFILE), e, msg);
+  }
+  // The dial form that names a socket is still unreachable, under both dialects.
+  const dial = new Error("docker info failed: error during connect: dial unix /var/run/docker.sock: connect: no such file or directory");
+  assert.ok(classifyDockerError(dial) instanceof SandboxUnavailableError);
+  assert.ok(
+    classifyDockerError(new Error("podman info failed: Cannot connect to Podman. Please verify your connection"), PODMAN_PROFILE) instanceof
+      SandboxUnavailableError,
+  );
+});
+
+type Launch = { file: string; args: string[]; env: NodeJS.ProcessEnv | undefined };
+// execFile stand-in: records every launch and answers like an engine with nothing running (inspect finds nothing, the rest succeed).
+function recordingExecFile(launches: Launch[], answer: (args: string[]) => string = () => ""): ExecFileFn {
+  return (file, args, options, callback) => {
+    launches.push({ file, args, env: options.env });
+    if (args[0] === "inspect") callback(new Error("exit 1"), "", "Error: No such object: x");
+    else callback(null, answer(args), "");
+    return undefined;
+  };
+}
+
+test("makeExec: the docker profile runs docker with the unchanged message; podman runs podman and names it in failures", async () => {
+  const launches: Launch[] = [];
+  const failing: ExecFileFn = (file, args, options, callback) => {
+    launches.push({ file, args, env: options.env });
+    callback(new Error("exit 1"), "", "Error: boom");
+    return undefined;
+  };
+  await assert.rejects(makeExec(DOCKER_PROFILE, failing)(["ps"]), (e: Error) => e.message === "docker ps failed: Error: boom");
+  await assert.rejects(makeExec(PODMAN_PROFILE, failing)(["ps"]), (e: Error) => e.message === "podman ps failed: Error: boom");
+  assert.deepEqual(
+    launches.map((l) => l.file),
+    ["docker", "podman"],
+  );
+  assert.equal(launches[0]?.env, undefined, "no env override unless asked");
+});
+
+const PODMAN_SOCK = "/machine/podman-api.sock";
+const podmanEgressSpec = { ...spec, agent: "ag-pm", egress: { allow: [{ host: "pypi.org" }] } };
+const PIN = `sha256:${"b".repeat(64)}`;
+
+test("podman profile: start runs only podman, hands it the socket, uses the pasta sidecar and creates no shared network", async () => {
+  const launches: Launch[] = [];
+  const sb = new DockerSandbox({
+    mounts: stubMounts(),
+    profile: PODMAN_PROFILE,
+    socket: PODMAN_SOCK,
+    egressProxyImage: PIN,
+    execFile: recordingExecFile(launches, (args) => (args[0] === "image" ? PIN : "")),
+    warn: () => {},
+  });
+  await sb.start(podmanEgressSpec, "k-podman-start");
+  assert.ok(launches.length > 5, "the start issued its calls");
+  assert.deepEqual([...new Set(launches.map((l) => l.file))], ["podman"], "never spawns docker");
+  for (const l of launches) assert.equal(l.env?.CONTAINER_HOST, `unix://${PODMAN_SOCK}`, l.args.join(" "));
+  const flat = launches.map((l) => l.args.join(" ")).join("\n");
+  for (const dockerOnly of ["host-gateway", "enable_icc", "com.docker.network", "DOCKER_HOST"]) assert.ok(!flat.includes(dockerOnly), dockerOnly);
+  assert.ok(!launches.some((l) => l.args[0] === "network"), "no shared-network create/inspect for the pasta sidecar");
+  const sidecar = launches.find((l) => l.args[0] === "run" && l.args.includes("--entrypoint"));
+  assert.ok(sidecar, "sidecar run call");
+  assert.equal(sidecar.args[sidecar.args.indexOf("--network") + 1], "pasta");
+  assert.ok(sidecar.args.includes("--userns=keep-id:uid=1000,gid=1000"));
+  const volume = launches.find((l) => l.args[0] === "volume" && l.args[1] === "create");
+  assert.ok(volume?.args.includes("o=uid=1000,gid=1000,mode=0770,size=1m"), "socket volume owned by the keep-id container uid");
+});
+
+test("docker profile: the same start still validates the shared egress network and passes no socket variable", async () => {
+  const launches: Launch[] = [];
+  const sb = new DockerSandbox({
+    mounts: stubMounts(),
+    egressProxyImage: PIN,
+    execFile: recordingExecFile(launches, (args) => (args[0] === "image" ? PIN : args[0] === "network" && args[1] === "inspect" ? OK_NETWORK : "")),
+    warn: () => {},
+  });
+  await sb.start(podmanEgressSpec, "k-docker-start");
+  assert.deepEqual([...new Set(launches.map((l) => l.file))], ["docker"]);
+  assert.ok(
+    launches.some((l) => l.args[0] === "network" && l.args[1] === "inspect"),
+    "ensureEgressNetwork ran",
+  );
+  for (const l of launches) assert.ok(l.env === undefined || !("DOCKER_HOST" in l.env && l.env.DOCKER_HOST !== process.env.DOCKER_HOST), l.args.join(" "));
+  const sidecar = launches.find((l) => l.args[0] === "run" && l.args.includes("--entrypoint"));
+  assert.ok(sidecar?.args.includes("--add-host") && !sidecar.args.some((a) => a.startsWith("--userns")));
+});
+
+test("podman profile: logs and result collection spawn podman with the socket variable", async () => {
+  const spawned: { cmd: string; args: string[]; env: Record<string, string> | undefined }[] = [];
+  const spawn: SpawnFn = (cmd, args, env) => {
+    spawned.push({ cmd, args, env });
+    return fakeProc() as unknown as ReturnType<SpawnFn>;
+  };
+  const sb = new DockerSandbox({ mounts: stubMounts(), profile: PODMAN_PROFILE, socket: PODMAN_SOCK, spawn, exec: runOnlyExec });
+  const h = await sb.start(spec, "k-podman-spawn");
+  void h.output()[Symbol.asyncIterator]().next();
+  void sb.resultWork(h.id).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(
+    spawned.map((x) => x.cmd),
+    ["podman", "podman"],
+  );
+  assert.deepEqual(
+    spawned.map((x) => x.args[0]),
+    ["logs", "exec"],
+  );
+  for (const x of spawned) assert.equal(x.env?.CONTAINER_HOST, `unix://${PODMAN_SOCK}`);
+});
+
+test("terminal: a non-docker profile without a socket refuses with cause and action", async () => {
+  const exec: Exec = async (args) => (args[0] === "inspect" ? "true 0 false none running" : "");
+  const sb = new DockerSandbox({ mounts: stubMounts(), profile: PODMAN_PROFILE, exec });
+  await assert.rejects(
+    sb.terminal.open("t1"),
+    /podman engine has no default terminal socket; pass the socket resolved by detectLocalEngine \(config key sandbox\.podman\.socket\)/,
+  );
+});
+
+test("selinuxRelabel: refused at construction for docker, accepted for podman, and reaches the sidecar spool mounts", () => {
+  assert.throws(
+    () => new DockerSandbox({ mounts: stubMounts(), selinuxRelabel: true }),
+    /selinuxRelabel is a Podman mount option.*drop selinuxRelabel or select the podman engine/,
+  );
+  assert.doesNotThrow(() => new DockerSandbox({ mounts: stubMounts(), profile: PODMAN_PROFILE, selinuxRelabel: true }));
+});
+
+// ---- Test gate (docker-gate.ts) ----
+
+test("gateBackend: defaults to docker, accepts podman, and rejects a typo with the valid values", () => {
+  assert.equal(gateBackend({}), "docker");
+  assert.equal(gateBackend({ PTREE_SANDBOX_BACKEND: "" }), "docker");
+  assert.equal(gateBackend({ PTREE_SANDBOX_BACKEND: "podman" }), "podman");
+  assert.throws(() => gateBackend({ PTREE_SANDBOX_BACKEND: "podmna" }), /"podmna".*one of docker, podman/);
+});
+
+test("optInSkip: the skip reason names the resolved backend; opting in clears it", () => {
+  // The docker backend keeps the legacy reason verbatim: the shared contract helper in @pomtree/testing recognises it by regex.
+  assert.equal(optInSkip({}), "PTREE_DOCKER_TESTS not set (no Docker execution)");
+  assert.match(String(optInSkip({ PTREE_SANDBOX_BACKEND: "podman" })), /PTREE_DOCKER_TESTS not set.*Podman.*backend podman/);
+  assert.equal(optInSkip({ PTREE_DOCKER_TESTS: "1", PTREE_SANDBOX_BACKEND: "podman" }), false);
+});
+
+test("checkGateEngine: a mismatched engine identity throws instead of skipping; absent skips; a refusal throws", () => {
+  const sock = "/s/engine.sock";
+  assert.throws(
+    () => checkGateEngine("podman", { kind: "answered", id: "docker", socket: sock }),
+    /PTREE_SANDBOX_BACKEND=podman but the engine answering on \/s\/engine\.sock identifies itself as docker; point CONTAINER_HOST at a podman socket, or set PTREE_SANDBOX_BACKEND=docker/,
+  );
+  assert.throws(() => checkGateEngine("docker", { kind: "answered", id: "podman", socket: sock }), /identifies itself as podman/);
+  const ok = checkGateEngine("podman", { kind: "answered", id: "podman", socket: sock });
+  assert.ok(typeof ok === "object" && ok.profile.id === "podman" && ok.env?.CONTAINER_HOST === `unix://${sock}`);
+  const dockerOk = checkGateEngine("docker", { kind: "answered", id: "docker", socket: sock });
+  assert.ok(typeof dockerOk === "object" && dockerOk.env === undefined, "docker keeps the process environment");
+  assert.match(String(checkGateEngine("podman", { kind: "absent", message: "no socket" })), /^Podman unavailable \(backend podman\): no socket/);
+  assert.throws(() => checkGateEngine("docker", { kind: "refused", message: "remote host" }), /PTREE_SANDBOX_BACKEND=docker: remote host/);
+});
+
+// The real lookup path (a child node process running detectLocalEngine) against temporary unix servers that answer as each engine. The
+// lookup blocks this process, so the fake engine runs in its own process.
+async function withEngineServer<T>(headers: Record<string, string>, components: string[], body: (socket: string) => T | Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "pomtree-gate-test-"));
+  const socket = join(dir, "e.sock");
+  const script = `
+    const http = require('node:http');
+    const [socket, headers, components] = [process.argv[1], JSON.parse(process.argv[2]), JSON.parse(process.argv[3])];
+    http.createServer((req, res) => {
+      if (req.url === '/_ping') res.writeHead(200, headers).end('OK');
+      else res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ Components: components.map((Name) => ({ Name })) }));
+    }).listen(socket, () => process.stdout.write('ready'));`;
+  const server = spawn(process.execPath, ["-e", script, socket, JSON.stringify(headers), JSON.stringify(components)]);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.stdout.once("data", () => resolve());
+  });
+  try {
+    return await body(socket);
+  } finally {
+    server.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("lookupEngineSync + checkGateEngine: a Docker-answering socket under the podman backend throws; a Podman one passes", async () => {
+  await withEngineServer({ "Api-Version": "1.51" }, ["Engine"], (socket) => {
+    const lookup = lookupEngineSync("podman", { ...process.env, CONTAINER_HOST: `unix://${socket}` });
+    assert.deepEqual(lookup, { kind: "answered", id: "docker", socket });
+    assert.throws(() => checkGateEngine("podman", lookup), /identifies itself as docker/);
+  });
+  await withEngineServer({ "Libpod-Api-Version": "6.2.0" }, ["Podman Engine"], (socket) => {
+    const lookup = lookupEngineSync("podman", { ...process.env, CONTAINER_HOST: `unix://${socket}` });
+    assert.deepEqual(lookup, { kind: "answered", id: "podman", socket });
+    assert.ok(typeof checkGateEngine("podman", lookup) === "object");
+  });
+});
+
+test("lookupEngineSync: a socket nobody answers on is absent (a skip), and a remote host is a refusal", () => {
+  const absent: EngineLookup = lookupEngineSync("podman", { ...process.env, CONTAINER_HOST: "unix:///nonexistent/pomtree-gate-test.sock" });
+  assert.equal(absent.kind, "absent");
+  const refused: EngineLookup = lookupEngineSync("podman", { ...process.env, CONTAINER_HOST: "tcp://203.0.113.1:2375" });
+  assert.equal(refused.kind, "refused");
 });

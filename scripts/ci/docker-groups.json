@@ -3,6 +3,7 @@
   "exempt": {
     "packages/harness-pi/src/pi-ext-live.test.ts": "needs the agent image (PTREE_E2E_IMAGE) and POMTREED_PI_PROVIDER set to a provider name; it writes a throwaway placeholder credential and makes no model call, so it needs no live key. Exempt only because no CI group sets POMTREED_PI_PROVIDER yet; running it in a group is a ledgered follow-up",
     "packages/e2e/src/docker-pi.test.ts": "needs a live model key; runs in e2e-lifecycle, where it skips (counted in maxSkips)",
+    "packages/sandbox-docker/src/docker.unit.test.ts": "tests the gate's own logic and the engine-profile transport with scripted engine answers and recording stubs, so it needs no Docker or Podman and runs in the normal lite suite; it imports docker-gate.ts only for those pure functions, which is what makes the guard count it as Docker-gated",
     "packages/sandbox-docker/src/browser-real-article.test.ts": "its one test needs the public web (PTREE_NET_TESTS); runs in sandbox, where it skips (counted in maxSkips)"
   },
   "groups": {

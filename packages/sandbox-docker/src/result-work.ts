@@ -74,9 +74,15 @@ function git(args) {
 `;
 
 // `maxBytes` defaults to the registry default of push.maxBytes (for embedders that pass none); pomtreed passes its resolved value.
-export async function collectResultWork(spawn: SpawnFn, container: string, opts: { save?: boolean; expectedFingerprint?: string; maxBytes?: number } = {}) {
+// `binary` is the engine's CLI (the profile's binary); the default keeps the Docker call unchanged.
+export async function collectResultWork(
+  spawn: SpawnFn,
+  container: string,
+  opts: { save?: boolean; expectedFingerprint?: string; maxBytes?: number } = {},
+  binary = "docker",
+) {
   const args = { ...opts, maxBytes: opts.maxBytes ?? CONFIG_DEFAULTS["push.maxBytes"] };
-  const child = spawn("docker", ["exec", container, "node", "-e", RESULT_WORK_SCRIPT, JSON.stringify(args)]);
+  const child = spawn(binary, ["exec", container, "node", "-e", RESULT_WORK_SCRIPT, JSON.stringify(args)]);
   let stderr = "";
   child.stderr.on("data", (chunk) => {
     stderr = (stderr + chunk.toString()).slice(-4000);

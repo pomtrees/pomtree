@@ -8,6 +8,7 @@ import { DockerSandbox } from "./docker.ts";
 import { CONFIG_DEFAULTS } from "@pomtree/core";
 import { collectResultWork, RESULT_WORK_SCRIPT } from "./result-work.ts";
 import { IMAGE, gate, testEgressNetwork } from "./docker-gate.ts";
+import { PODMAN_PROFILE } from "./engine-profile.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 const egressNetwork = testEgressNetwork();
 
@@ -147,6 +148,19 @@ test("result work trusts only its own workspace directory when git refuses a dif
     rmSync(bin, { recursive: true, force: true });
     f.close();
   }
+});
+
+test("collectResultWork runs the given engine binary, docker by default, and the sandbox passes its profile's", async () => {
+  const launched: string[] = [];
+  const spawnOf = (cmd: string) => {
+    launched.push(cmd);
+    return spawn(process.execPath, ["-e", `process.stdout.write(JSON.stringify({dirty:false,fingerprint:'${"a".repeat(64)}'})+'\\n')`]);
+  };
+  await collectResultWork((cmd) => spawnOf(cmd), "sandbox");
+  await collectResultWork((cmd) => spawnOf(cmd), "sandbox", {}, "podman");
+  const sb = new DockerSandbox({ mounts: stubMounts(), profile: PODMAN_PROFILE, spawn: (cmd) => spawnOf(cmd) });
+  await sb.resultWork("sandbox");
+  assert.deepEqual(launched, ["docker", "podman", "podman"]);
 });
 
 test("disposing a bundle before reading cancels the collection process", { timeout: 2000 }, async () => {

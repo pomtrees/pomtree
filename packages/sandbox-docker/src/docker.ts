@@ -39,7 +39,8 @@ import {
 } from "./args.ts";
 import { LOOPBACK_BRIDGE_MAIN, LOOPBACK_PORTS, NODE_BIN } from "./container-contract.gen.ts";
 import { openExecStream } from "./exec-stream.ts";
-import { buildAttachRequest, buildResizeRequest, createTerminalSession, engineCall, realEngineApi, type EngineApi } from "./terminal.ts";
+import { buildAttachRequest, buildResizeRequest, createTerminalSession, engineCall, engineSocketPath, realEngineApi, type EngineApi } from "./terminal.ts";
+import { cliSocketEnv, DOCKER_PROFILE, type EngineProfile } from "./engine-profile.ts";
 import { collectResultWork } from "./result-work.ts";
 import {
   defaultDenyEgress,
@@ -56,13 +57,31 @@ import {
 import { EGRESS_NETWORK, ensureEgressNetwork } from "./network.ts";
 
 export type Exec = (args: string[], env?: Record<string, string>) => Promise<string>;
-export type SpawnFn = (cmd: string, args: string[]) => ChildProcessWithoutNullStreams;
+// `env` carries the variables that point the CLI at the resolved engine socket; absent for an engine run on the CLI's own defaults.
+export type SpawnFn = (cmd: string, args: string[], env?: Record<string, string>) => ChildProcessWithoutNullStreams;
+// The slice of node:child_process execFile the adapter uses; injectable so tests can record which binary each call runs.
+export type ExecFileFn = (
+  file: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv },
+  callback: (err: Error | null, stdout: string, stderr: string) => void,
+) => unknown;
 
 export interface DockerDeps {
   // Resolves spec.mounts to host realizations; host paths never leave this adapter.
   mounts: MountProvider;
   exec?: Exec;
   spawn?: SpawnFn;
+  // Test seam: the process launcher behind the default exec. Ignored when `exec` is given.
+  execFile?: ExecFileFn;
+  // The container engine this adapter runs against: its CLI binary, host alias and error dialect. Default: the Docker profile.
+  profile?: EngineProfile;
+  // The engine's resolved unix socket path (engine-detect.ts). It is used for terminals and handed to the CLI through the profile's
+  // socket variable, so the CLI and the HTTP API reach one engine. Unset: the CLI uses its own default, and terminals use DOCKER_HOST
+  // (docker profile only; any other profile must pass it).
+  socket?: string;
+  // Operator opt-in for SELinux relabeling of read-only shared bind mounts (Podman on a Linux SELinux host). Refused for other engines.
+  selinuxRelabel?: boolean;
   // Max buffered output bytes per output() stream; oldest chunks are dropped past this, with a visible marker.
   maxOutputBytes?: number;
   // Container pid limit (docker --pids-limit). Default 512.
@@ -98,29 +117,30 @@ export interface DockerDeps {
   warn?: (message: string) => void;
 }
 
-// Diagnostics the docker CLI emits when it cannot reach the daemon. These are the only docker
-// failures the daemon treats as retryable "sandbox unavailable" (SandboxUnavailableError); every
-// other docker failure stays a generic Error. The `no such file or directory` form is the CLI's
-// `dial unix ... connect` diagnostic when DOCKER_HOST points at a missing unix socket.
-const DAEMON_UNREACHABLE = /cannot connect to the docker daemon|is the docker daemon running|connection refused|no such file or directory/i;
-
-// Maps a docker CLI failure to SandboxUnavailableError when the daemon is unreachable, and returns
-// the original error otherwise.
-export function classifyDockerError(cause: Error): Error {
-  return DAEMON_UNREACHABLE.test(cause.message) ? new SandboxUnavailableError() : cause;
+// Maps a CLI failure to SandboxUnavailableError when the engine is unreachable, and returns the original error otherwise. These are
+// the only failures the daemon treats as retryable "sandbox unavailable"; every other failure stays a generic Error. What counts as
+// unreachable is the profile's data (engine-profile.ts): a bare "no such file or directory" is not enough, since a container-side
+// missing path says the same; the socket dial context is required.
+export function classifyDockerError(cause: Error, profile: EngineProfile = DOCKER_PROFILE): Error {
+  return profile.errors.daemonUnreachable.test(cause.message) ? new SandboxUnavailableError() : cause;
 }
 
-// TODO(container-cli): make the container runtime binary and socket location configurable. Current behavior: the docker binary
-// is hardcoded here and in the log spawn; terminal.ts defaults the socket to /var/run/docker.sock when DOCKER_HOST is unset.
-// `docker logs` replays the container's stderr on this process's stderr, so a successful logs call returns both streams.
-const realExec: Exec = (args, env) =>
-  new Promise((resolve, reject) => {
-    execFile("docker", args, env ? { env: { ...process.env, ...env } } : {}, (err, stdout, stderr) =>
-      err
-        ? reject(classifyDockerError(new Error(`docker ${args[0]} failed: ${stderr || err.message}`)))
-        : resolve((args[0] === "logs" ? `${stdout}${stderr}` : stdout).trim()),
-    );
-  });
+const defaultExecFile: ExecFileFn = (file, args, options, callback) => execFile(file, args, options, (err, stdout, stderr) => callback(err, stdout, stderr));
+
+// The real CLI call for a profile. `docker logs` replays the container's stderr on this process's stderr, so a successful logs call
+// returns both streams.
+export function makeExec(profile: EngineProfile = DOCKER_PROFILE, run: ExecFileFn = defaultExecFile): Exec {
+  return (args, env) =>
+    new Promise((resolve, reject) => {
+      run(profile.binary, args, env ? { env: { ...process.env, ...env } } : {}, (err, stdout, stderr) =>
+        err
+          ? reject(classifyDockerError(new Error(`${profile.binary} ${args[0]} failed: ${stderr || err.message}`), profile))
+          : resolve((args[0] === "logs" ? `${stdout}${stderr}` : stdout).trim()),
+      );
+    });
+}
+
+const defaultSpawn: SpawnFn = (cmd, args, env) => spawn(cmd, args, env ? { env: { ...process.env, ...env } } : {});
 
 // Every address on the daemon host's interfaces (scope ids stripped, deduplicated); evaluated per start, never stored.
 export function hostAddressList(ifaces: NodeJS.Dict<Pick<NetworkInterfaceInfo, "address">[]> = networkInterfaces()): string[] {
@@ -333,10 +353,13 @@ const egressOwner = (o: SandboxOwner): EgressOwner => ({ storeId: o.storeId, epo
 export class DockerSandbox implements Sandbox {
   readonly declaration: SandboxDeclaration = DOCKER_DECLARATION;
   resultWork(id: SandboxId, opts?: { save?: boolean; expectedFingerprint?: string; maxBytes?: number }) {
-    return collectResultWork(this.spawnFn, name(id), opts);
+    return collectResultWork(this.spawnFn, name(id), opts, this.profile.binary);
   }
   private readonly exec: Exec;
   private readonly spawnFn: SpawnFn;
+  private readonly profile: EngineProfile;
+  private readonly socket: string | undefined;
+  private readonly selinuxRelabel: boolean;
   private readonly maxOutputBytes: number;
   private readonly pidsLimit: number | undefined;
   private readonly mounts: MountProvider;
@@ -361,8 +384,17 @@ export class DockerSandbox implements Sandbox {
   private readonly exited = new Map<SandboxId, { exitCode: number; oomKilled: boolean }>();
 
   constructor(deps: DockerDeps) {
-    this.exec = deps.exec ?? realExec;
-    this.spawnFn = deps.spawn ?? ((cmd, args) => spawn(cmd, args));
+    this.profile = deps.profile ?? DOCKER_PROFILE;
+    this.socket = deps.socket;
+    this.selinuxRelabel = deps.selinuxRelabel === true;
+    if (this.selinuxRelabel && this.profile.id !== "podman")
+      throw new Error(`selinuxRelabel is a Podman mount option and the ${this.profile.id} engine rejects it; drop selinuxRelabel or select the podman engine`);
+    // The resolved socket reaches every CLI call (exec and spawn), so the CLI and the HTTP API talk to one engine.
+    const cliEnv = this.socket === undefined ? undefined : cliSocketEnv(this.profile, this.socket);
+    const rawExec = deps.exec ?? makeExec(this.profile, deps.execFile);
+    const rawSpawn = deps.spawn ?? defaultSpawn;
+    this.exec = cliEnv ? (args, env) => rawExec(args, { ...cliEnv, ...env }) : rawExec;
+    this.spawnFn = cliEnv ? (cmd, args, env) => rawSpawn(cmd, args, { ...cliEnv, ...env }) : rawSpawn;
     this.maxOutputBytes = deps.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.mounts = deps.mounts;
     this.pidsLimit = deps.pidsLimit; // unset: the runtime shape's limit applies
@@ -416,7 +448,7 @@ export class DockerSandbox implements Sandbox {
       }
       const restricted = defaultDenyEgress(spec);
       // Before any container (sidecar included) exists: a missing runtime must not leave half a sandbox.
-      await this.assertRuntime(describeRunHardening(restricted).ociRuntime);
+      await this.assertRuntime(describeRunHardening(restricted, {}, this.profile).ociRuntime);
       const mounts = await this.resolveMounts(restricted);
       // Checked before startEgress so a rejected start leaves no spool counting against the retention cap.
       if (egressAttribution(restricted) && this.egressAuditRoot) {
@@ -507,7 +539,13 @@ export class DockerSandbox implements Sandbox {
     let mountRetries = 0;
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.withTimeout(this.exec(buildRunArgs(id, spec, { pidsLimit: this.pidsLimit, mounts }), runEnv(spec)), id);
+        await this.withTimeout(
+          this.exec(
+            buildRunArgs(id, spec, { pidsLimit: this.pidsLimit, mounts, ...(this.selinuxRelabel ? { selinuxRelabel: true } : {}) }, this.profile),
+            runEnv(spec),
+          ),
+          id,
+        );
         return;
       } catch (e) {
         // TODO(sandbox-mount-race): Docker Desktop transiently reports `bind source path does not exist`
@@ -551,7 +589,13 @@ export class DockerSandbox implements Sandbox {
   }
 
   private engine(): EngineApi {
-    this.engineApi ??= realEngineApi();
+    if (this.engineApi) return this.engineApi;
+    // The docker profile keeps its DOCKER_HOST/default-socket lookup; another engine has no such default, so its socket must be passed.
+    if (this.socket === undefined && this.profile.id !== "docker")
+      throw new Error(
+        `the ${this.profile.id} engine has no default terminal socket; pass the socket resolved by detectLocalEngine (config key ${this.profile.socketConfigKey})`,
+      );
+    this.engineApi = realEngineApi(this.socket ?? engineSocketPath());
     return this.engineApi;
   }
 
@@ -589,7 +633,9 @@ export class DockerSandbox implements Sandbox {
   // throws BEFORE the sandbox container is created, and tears down whatever was already created.
   private async startEgress(id: SandboxId, spec: SandboxSpec): Promise<void> {
     const volume = egressSocketVolumeName(id);
-    const uid = process.getuid?.() || 1000;
+    // The numeric uid the sidecar and the socket volume use. Podman's keep-id maps the host user to container uid 1000, so there the
+    // container-side uid is 1000 whatever the host uid is (unverified on a real engine until the Podman gated run).
+    const uid = this.profile.id === "podman" ? 1000 : process.getuid?.() || 1000;
     const proxy = egressProxyName(id);
     let volumeCreated = false;
     let proxyRan = false;
@@ -610,7 +656,8 @@ export class DockerSandbox implements Sandbox {
     const image = await this.egressImage(spec);
     // The shared network is validated (ICC off, ours) or created before anything per-sandbox exists; a wrong
     // same-named network fails the start here. It is never removed by this sandbox's cleanup.
-    await ensureEgressNetwork(this.exec, this.egressNetwork);
+    // A sidecar on its own pasta network (rootless Podman) is isolated by construction: no shared network exists to validate.
+    if (describeRunHardening(spec, {}, this.profile).sidecarNetwork !== "pasta") await ensureEgressNetwork(this.exec, this.egressNetwork);
     const spool = audited ? prepareEgressSpool(this.egressAuditRoot!, id, config) : undefined;
     // A crash between startEgress and the worker run can leave this sandbox's exact-named proxy and socket volume;
     // reclaim them (names derive from the id, no worker exists) so start is idempotent. Audit spools are never touched.
@@ -638,14 +685,20 @@ export class DockerSandbox implements Sandbox {
       ]);
       volumeCreated = true;
       await this.exec(
-        buildEgressProxyArgs(id, spec, {
-          uid,
-          network: this.egressNetwork,
-          hostAddresses: this.hostAddresses(),
-          image,
-          config,
-          ...(spool ? { spool } : {}),
-        }),
+        buildEgressProxyArgs(
+          id,
+          spec,
+          {
+            uid,
+            network: this.egressNetwork,
+            hostAddresses: this.hostAddresses(),
+            image,
+            config,
+            ...(spool ? { spool } : {}),
+            ...(this.selinuxRelabel ? { selinuxRelabel: true } : {}),
+          },
+          this.profile,
+        ),
       );
       proxyRan = true;
       // Real socket readiness, not a Docker/config label. Failure prevents worker creation.
@@ -739,11 +792,16 @@ export class DockerSandbox implements Sandbox {
     let proxyGone = true;
     await this.exec(["rm", "-f", proxy]).catch((e) => {
       proxyGone = false;
-      if (!gone(e)) this.warn(`egress sidecar ${proxy} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run docker rm -f ${proxy}`);
+      if (!gone(e))
+        this.warn(
+          `egress sidecar ${proxy} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run ${this.profile.binary} rm -f ${proxy}`,
+        );
     });
     await this.exec(["volume", "rm", volume]).catch((e) => {
       if (!/no such volume/i.test(errmsg(e)))
-        this.warn(`egress socket volume ${volume} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run docker volume rm ${volume}`);
+        this.warn(
+          `egress socket volume ${volume} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run ${this.profile.binary} volume rm ${volume}`,
+        );
     });
     // Only once the proxy is confirmed gone can no row be appended, so only then is the spool marked closed (vacuumable after its
     // grace window, once acknowledged and journaled). A failure leaves the spool retained, as before.
@@ -757,7 +815,7 @@ export class DockerSandbox implements Sandbox {
   }
 
   private async *output(id: SandboxId): AsyncGenerator<{ stream: "stdout" | "stderr"; chunk: string }> {
-    const p = this.spawnFn("docker", ["logs", "-f", name(id)]);
+    const p = this.spawnFn(this.profile.binary, ["logs", "-f", name(id)]);
     const queue: { stream: "stdout" | "stderr"; chunk: string }[] = [];
     let queuedBytes = 0;
     let droppedBytes = 0;
@@ -1023,6 +1081,8 @@ export class DockerSandbox implements Sandbox {
   // `docker info` DriverStatus, read once per instance; a failure clears the memo so the next call retries.
   private imageStore: Promise<string> | undefined;
   private imageStoreInfo(ref: string): Promise<string> {
+    // Only the docker engine has a containerd image store; Podman's `info` has no DriverStatus, so the question does not arise.
+    if (this.profile.id !== "docker") return Promise.resolve("");
     this.imageStore ??= this.exec(["info", "--format", "{{json .DriverStatus}}"]).catch((e) => {
       this.imageStore = undefined;
       throw new Error(`cannot read the image identity of ${ref}: docker info failed (${errmsg(e)}); start the container engine and retry`);
@@ -1042,7 +1102,7 @@ export class DockerSandbox implements Sandbox {
     const [id = "", label = ""] = out.split("\t");
     if (!/^sha256:[0-9a-f]{64}$/.test(id)) {
       throw new Error(
-        `cannot read the image identity of ${ref}: docker reported the image id ${JSON.stringify(id)}, not sha256:<64 hex>; use a Docker with the classic image store`,
+        `cannot read the image identity of ${ref}: ${this.profile.binary} reported the image id ${JSON.stringify(id)}, which is not sha256:<64 hex>, so the image cannot be pinned; check that the reference names a local image with \`${this.profile.binary} image inspect --format '{{.Id}}' ${ref}\` (pull or build it if that fails), and report the output if it names an image`,
       );
     }
     const revision = label && label !== "<no value>" ? label : null;
