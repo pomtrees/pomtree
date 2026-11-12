@@ -2,7 +2,17 @@
 // definition time so a malformed table fails at module load, not at the first lookup. Pure: no env or fs access.
 // Every parameter is restart-only: a value is read once at process start and a change takes effect on the next start.
 import { isAbsolute } from "node:path";
-import { CONFIG_ENV_PREFIXES, CONFIG_FILE_ENV, EXT_NAMESPACE, camelHumps, deriveEnvName, extensionCredentialEnv, secretFileEnv } from "./env-name.ts";
+import {
+  CONFIG_ENV_PREFIXES,
+  CONFIG_FILE_ENV,
+  EXT_NAMESPACE,
+  SANDBOX_NAMESPACE,
+  camelHumps,
+  deriveEnvName,
+  extensionCredentialEnv,
+  sandboxCredentialEnv,
+  secretFileEnv,
+} from "./env-name.ts";
 
 // Integer kinds carry their unit, which the key name must also carry (`...Bytes`, `...Ms`, `...Micros`). Values are plain
 // non-negative integers in that unit: no suffix parsing. `micros` is micro-dollars (1_000_000 = $1), as in budgetMicros.
@@ -55,6 +65,9 @@ export interface StringParam extends ParamBase {
   readonly check?: (value: string) => string | null; // extra validation: the reason a value is refused, or null
   // An explicit "" from any layer (file, env, --set) resolves to the default, before `check` runs; for keys whose default is a real value.
   readonly blankIsDefault?: true;
+  // Extra JSON Schema keywords merged into this key's schema leaf (config.schema.json), for a shape the kind alone cannot say. Core
+  // keys only; a manifest may not carry it. `sandbox.backend` uses it to list the built-in ids while accepting any provider's id.
+  readonly schema?: Readonly<Record<string, unknown>>;
 }
 export interface PathParam extends ParamBase {
   readonly kind: "path";
@@ -99,7 +112,19 @@ export interface ConfigRegistry<D extends readonly ParamDef[] = readonly ParamDe
   readonly envNames: ReadonlySet<string>; // every owned name: each env name, plus `<ENV>_FILE` for sensitive keys
   readonly prefixes: readonly string[]; // distinct registered env prefixes
   readonly extensions: readonly RegistryExtension[]; // the extensions composed in by extendRegistry (empty for the core registry)
-  readonly credentialEnv: ReadonlyMap<string, string>; // a declared extension credential's env name -> "<extension> credential <name>"
+  readonly credentialEnv: ReadonlyMap<string, string>; // a declared credential's env name (the `_FILE` name for a sandbox backend's) -> "<owner> credential <name>"
+  readonly sandboxBackends: readonly RegistrySandboxBackend[]; // the sandbox backends composed in by composeRegistry (empty for the core registry)
+}
+
+// One sandbox backend composed into a registry: the camelCase `sandbox.<segment>.` namespace its keys live under, who declared it
+// (`owner`: a package name for a built-in, the extension name for a contributed one), its declared credentials and its key paths.
+export interface RegistrySandboxBackend {
+  readonly id: string;
+  readonly owner: string;
+  readonly builtin: boolean;
+  readonly segment: string;
+  readonly credentials: readonly string[];
+  readonly paths: readonly string[];
 }
 
 // One extension composed into a registry (extendRegistry): the camelCase `ext.<segment>.` namespace it owns, its declared credentials
@@ -115,6 +140,8 @@ export interface RegistryExtension {
 export interface ExtensionBuild {
   readonly extOf: ReadonlyMap<string, string>; // key path -> extension name
   readonly extensions: readonly Omit<RegistryExtension, "paths">[];
+  // The sandbox backends' keys (sandbox-manifest.ts): which paths belong to which backend id, and the backends themselves.
+  readonly sandbox?: { readonly backendOf: ReadonlyMap<string, string>; readonly backends: readonly Omit<RegistrySandboxBackend, "paths">[] };
 }
 
 export class ConfigRegistryError extends Error {
@@ -219,6 +246,8 @@ export function defineRegistry<const D extends readonly ParamDef[]>(
 }
 
 const EXT_PATH_RE = /^ext\.[a-z][a-zA-Z0-9]*\.[a-z][a-zA-Z0-9]*$/;
+// `sandbox.<segment>.<key>` or `sandbox.<segment>.<group>.<key>` (the standard rate group).
+const SANDBOX_BACKEND_PATH_RE = /^sandbox\.[a-z][a-zA-Z0-9]*\.[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)?$/;
 
 // The shared validator behind defineRegistry and extendRegistry; call those. With `ext`, the params under `ext.` are the
 // extensions' keys and are validated as such (flat `ext.<segment>.<key>`, relations only to core keys or the same extension's
@@ -228,12 +257,17 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
   const bad = (why: string) => void errors.push(why);
   const extOf = ext?.extOf ?? new Map<string, string>();
   const segmentOf = new Map((ext?.extensions ?? []).map((e) => [e.name, e.segment]));
-  // An error about an extension's key names the extension; a core key's stays bare.
+  const backendOf = ext?.sandbox?.backendOf ?? new Map<string, string>();
+  const backendInfo = new Map((ext?.sandbox?.backends ?? []).map((b) => [b.id, b]));
+  // The owner of a key: an extension or a sandbox backend (distinct namespaces, so the same name in both never compares equal).
+  const ownerOfPath = (path: string): string | undefined =>
+    extOf.has(path) ? `extension ${extOf.get(path)}` : backendOf.has(path) ? `sandbox backend ${backendOf.get(path)}` : undefined;
+  // An error about an extension's or backend's key names it; a core key's stays bare.
   const badFor = (p: ParamDef) => {
-    const owner = extOf.get(p.path);
-    return owner === undefined ? bad : (why: string) => bad(`extension ${owner}: ${why}`);
+    const owner = ownerOfPath(p.path);
+    return owner === undefined ? bad : (why: string) => bad(`${owner}: ${why}`);
   };
-  const labelOf = (p: ParamDef) => (extOf.has(p.path) ? `${p.path} (extension ${extOf.get(p.path)})` : p.path);
+  const labelOf = (p: ParamDef) => (ownerOfPath(p.path) === undefined ? p.path : `${p.path} (${ownerOfPath(p.path)})`);
   const byPath = new Map<string, ParamDef>();
   for (const p of params) {
     if (p.path.split(".")[0] === EXT_NAMESPACE) {
@@ -241,6 +275,10 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
       else if (!EXT_PATH_RE.test(p.path) || p.path.split(".")[1] !== segmentOf.get(extOf.get(p.path) as string))
         badFor(p)(`${p.path} must be ext.${segmentOf.get(extOf.get(p.path) as string)}.<key> with a flat lowerCamel key`);
       else if (!Object.hasOwn(prefixTable, EXT_NAMESPACE)) badFor(p)(`${p.path} is in a namespace with no env prefix`);
+    } else if (backendOf.has(p.path)) {
+      const info = backendInfo.get(backendOf.get(p.path) as string);
+      if (!SANDBOX_BACKEND_PATH_RE.test(p.path) || p.path.split(".")[1] !== info?.segment)
+        badFor(p)(`${p.path} must be ${SANDBOX_NAMESPACE}.${info?.segment}.<key> (or .<group>.<key>) with lowerCamel segments`);
     } else if (!PATH_RE.test(p.path)) bad(`invalid path ${JSON.stringify(p.path)}: expected dotted lowerCamel segments, at least two`);
     else if (!Object.hasOwn(prefixTable, p.path.split(".")[0] as string)) bad(`${p.path} is in a namespace with no env prefix`);
     if (byPath.has(p.path)) bad(`duplicate path ${p.path}`);
@@ -281,16 +319,18 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
       const c = byPath.get(p.ceiling);
       if (c !== undefined && c.scope !== "operator") bad(`${p.path} ceiling ${p.ceiling} must be an operator key`);
     }
-    const owned = extOf.get(p.path);
+    const owned = ownerOfPath(p.path);
     for (const r of paramEdges(p)) {
       const t = byPath.get(r.key);
-      const targetOwner = extOf.get(r.key);
+      const targetOwner = ownerOfPath(r.key);
       // Core resolves without extensions, so it may never depend on an extension's key; an extension may relate to core keys and
       // its own, never to another extension's (they load independently).
       if (owned === undefined && (targetOwner !== undefined || r.key.split(".")[0] === EXT_NAMESPACE))
-        bad(`${p.path} ${r.op} ${r.key}: core keys may not reference extension keys`);
+        bad(`${p.path} ${r.op} ${r.key}: core keys may not reference ${targetOwner?.startsWith("sandbox backend") ? "sandbox backend" : "extension"} keys`);
       else if (owned !== undefined && targetOwner !== undefined && targetOwner !== owned)
-        bad(`${p.path} ${r.op} ${r.key}: relates to a key of extension ${targetOwner}; extensions may relate only to core keys and their own`);
+        bad(
+          `${p.path} ${r.op} ${r.key}: relates to a key of ${targetOwner}; ${owned.startsWith("sandbox backend") ? "backends" : "extensions"} may relate only to core keys and their own`,
+        );
       else if (t === undefined) bad(`${p.path} ${r.key === p.ceiling ? "ceiling" : `relation ${r.op}`} names unknown key ${r.key}`);
       else if (!isNumericParam(t) || t.kind !== p.kind) bad(`${p.path} ${r.op} ${r.key} compares ${p.kind} with ${t.kind}`);
       else if (!relationHolds(r.op, p.default, t.default))
@@ -320,7 +360,14 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
   const owner = new Map<string, string>([[CONFIG_FILE_ENV, `the config file (${CONFIG_FILE_ENV})`]]);
   const claim = (name: string, by: string) => {
     const prior = owner.get(name);
-    if (prior !== undefined) bad(`env name ${name} is claimed by both ${prior} and ${by}`);
+    if (prior !== undefined)
+      bad(
+        `env name ${name} is claimed by both ${prior} and ${by}${
+          prior.includes("sandbox backend") || by.includes("sandbox backend")
+            ? "; two names derive to the same env variable, so rename the credential, the key or the backend id"
+            : ""
+        }`,
+      );
     else owner.set(name, by);
   };
   for (const p of byPath.values()) {
@@ -332,6 +379,15 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
   }
   // A declared extension credential owns its env name too, so a key can never shadow it (and the resolver recognizes it).
   const credentialEnv = new Map<string, string>();
+  // A sandbox backend's credential is supplied only as a path, in `<POMTREED_SANDBOX_<ID>_<CRED>>_FILE`; that name is owned (so the
+  // resolver recognizes it) and the bare name is not (a value in the environment is refused as an unknown name).
+  for (const b of ext?.sandbox?.backends ?? []) {
+    for (const c of b.credentials) {
+      const name = secretFileEnv(sandboxCredentialEnv(b.id, c));
+      credentialEnv.set(name, `sandbox backend ${b.id} credential ${c}`);
+      claim(name, `sandbox backend ${b.id} credential ${c}`);
+    }
+  }
   for (const e of ext?.extensions ?? []) {
     for (const c of e.credentials) {
       const name = extensionCredentialEnv(e.name, c);
@@ -343,5 +399,9 @@ export function buildRegistry(params: readonly ParamDef[], prefixTable: Readonly
   const prefixes = [...new Set(Object.values(prefixTable))];
   owner.delete(CONFIG_FILE_ENV);
   const extensions = (ext?.extensions ?? []).map((e) => ({ ...e, paths: params.filter((p) => extOf.get(p.path) === e.name).map((p) => p.path) }));
-  return { params, byPath, envOf, envNames: new Set(owner.keys()), prefixes, extensions, credentialEnv };
+  const sandboxBackends = (ext?.sandbox?.backends ?? []).map((b) => ({
+    ...b,
+    paths: params.filter((p) => backendOf.get(p.path) === b.id).map((p) => p.path),
+  }));
+  return { params, byPath, envOf, envNames: new Set(owner.keys()), prefixes, extensions, credentialEnv, sandboxBackends };
 }

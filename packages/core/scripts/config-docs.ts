@@ -4,15 +4,19 @@
 import {
   CONFIG_FILE_ENV,
   EXT_NAMESPACE,
+  composeRegistry,
   extendRegistry,
+  sandboxCredentialEnv,
+  sandboxEnvPrefix,
+  secretFileEnv,
   extensionCredentialEnv,
   isNumericParam,
   isSensitive,
   parseExtensionParams,
   relationSymbol,
-  secretFileEnv,
+  STANDARD_SANDBOX_KEYS,
 } from "../src/index.ts";
-import type { ConfigRegistry, EnvExclusion, ParamDef } from "../src/index.ts";
+import type { ConfigRegistry, EnvExclusion, ParamDef, SandboxBackendConfigDecl } from "../src/index.ts";
 
 export const CONFIG_DOCS_BEGIN = "<!-- BEGIN GENERATED: config-reference (pnpm gen:config; do not edit by hand) -->";
 export const CONFIG_DOCS_END = "<!-- END GENERATED: config-reference -->";
@@ -57,14 +61,49 @@ function tables(registry: ConfigRegistry, params: readonly ParamDef[], level: st
   return [...groups].map(([ns, ps]) => `${level} ${code(ns)}\n\n${HEAD}\n${ps.map((p) => row(registry, p)).join("\n")}`);
 }
 
+// The sandbox backend section: the standard key set once (rendered from a stand-in backend, so the rows are the real definitions with
+// `<id>` in place of the id), then each shipped backend's own keys and credentials, composed exactly as the daemon composes them.
+function sandboxBackendDocs(core: ConfigRegistry, backends: readonly SandboxBackendConfigDecl[]): string[] {
+  const registry = composeRegistry(core, {
+    sandboxBackends: [{ id: "id", owner: "template", builtin: false, params: [] }, ...backends],
+  });
+  const standard = new Set(STANDARD_SANDBOX_KEYS.map((k) => k.key));
+  const out: string[] = ["#### Sandbox backend keys"];
+  out.push(
+    "A backend's keys live under `sandbox.<id>.*`, where `<id>` is the backend id in camelCase (`my-box` is `myBox`), and its env names are `POMTREED_SANDBOX_<ID>_<KEY>`. Each backend declares its own keys in a manifest (a built-in adapter package ships `manifest.json`; an extension lists its backend in `provides`), and the daemon composes them at start with the standard keys below, which every backend gets with the same names. A built-in adapter may change the defaults; keys exist only while the backend is composed. A credential is a declared name, never a config key: it is supplied only as a path in `POMTREED_SANDBOX_<ID>_<CREDENTIAL>_FILE` to a file that is not group- or world-accessible (checked on the opened file; on Windows, which has no POSIX modes, the check is skipped).",
+  );
+  const template = registry.sandboxBackends.find((b) => b.id === "id");
+  const generic = (v: string) =>
+    v.replace("sandbox.id.", "sandbox.<id>.").replace(sandboxEnvPrefix("id"), `${sandboxEnvPrefix("id").replace("_ID_", "_")}<ID>_`);
+  const rows = (template?.paths ?? []).map((path) => row(registry, registry.byPath.get(path) as ParamDef));
+  out.push(`##### ${code("sandbox.<id>")} (every backend)\n\n${HEAD}\n${rows.map(generic).join("\n")}`);
+  for (const b of registry.sandboxBackends) {
+    if (b.id === "id") continue;
+    const own = b.paths.filter((path) => !standard.has(path.split(".").slice(2).join(".")));
+    if (own.length > 0)
+      out.push(
+        `##### ${code(`sandbox.${b.segment}`)} (${b.builtin ? "built-in" : "extension"} ${code(b.owner)}, backend ${code(b.id)})\n\n${HEAD}\n${own.map((path) => row(registry, registry.byPath.get(path) as ParamDef)).join("\n")}`,
+      );
+    for (const c of b.credentials) out.push(`Declared credential of ${code(b.id)}: ${code(secretFileEnv(sandboxCredentialEnv(b.id, c)))} (secret file).`);
+  }
+  return out;
+}
+
 // `core` is the unextended registry; `composed` is the same registry after extendRegistry with the loaded example extensions.
-export function configDocsText(core: ConfigRegistry, composed: ConfigRegistry, exclusions: readonly EnvExclusion[]): string {
+// `backends` are the shipped sandbox backend manifests, composed for the sandbox section.
+export function configDocsText(
+  core: ConfigRegistry,
+  composed: ConfigRegistry,
+  exclusions: readonly EnvExclusion[],
+  backends: readonly SandboxBackendConfigDecl[] = [],
+): string {
   const out: string[] = [];
   out.push("#### Core keys");
   out.push(
     "Generated from the registry. Kinds `bytes`, `count`, `ms` and `micros` are plain non-negative integers in that unit; `ratio` is a number from 0 to 1. A value above its ceiling or violating a relation is refused, never clamped. A secret key is supplied only through the `_FILE` variable shown. `container` marks a key delivered to agent containers.",
   );
   out.push(...tables(core, core.params, "#####", (p) => p.path.split(".")[0] as string));
+  out.push(...sandboxBackendDocs(core, backends));
   const extParams = composed.params.filter((p) => p.path.split(".")[0] === EXT_NAMESPACE);
   for (const e of composed.extensions) {
     out.push(`#### Extension keys: ${code(e.name)}`);

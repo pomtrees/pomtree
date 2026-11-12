@@ -27,8 +27,13 @@ test("the schema is draft 2020-12, closed at every object, and leaves sensitive 
     assert.equal(node.additionalProperties, false);
     for (const child of Object.values(node.properties)) closed(child);
   };
-  const { ext, ...core } = s.properties;
+  const { ext, sandbox, ...core } = s.properties;
   closed({ ...s, properties: core });
+  // Likewise `sandbox.<id>.*`: a backend's keys exist only while its manifest is composed, so the sandbox object admits one object per
+  // backend id beside core's own sandbox keys, which stay closed leaves.
+  assert.equal(sandbox?.type, "object");
+  assert.equal((sandbox?.additionalProperties as { type?: string } | undefined)?.type, "object");
+  for (const leaf of Object.values(sandbox?.properties ?? {})) assert.notEqual(leaf.type, "object", "core's sandbox keys are leaves");
   // The checked-in schema cannot know which extensions load, so the ext subtree is open at the extension level.
   assert.equal(ext?.type, "object");
   assert.deepEqual(ext?.additionalProperties, { type: "object", description: "One extension's keys." });

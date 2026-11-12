@@ -90,6 +90,21 @@ export function extensionEnvPrefix(extension: string): string {
 // The env name of a declared extension credential: POMTREED_EXT_<NAME>_<CRED> (non-alphanumerics become `_`).
 export const extensionCredentialEnv = (extension: string, credential: string): string => `${extensionEnvPrefix(extension)}${envPart(credential)}`;
 
+// The root of sandbox keys: core's own `sandbox.<key>` and each backend's `sandbox.<id as camelCase>.<key>` (sandbox-manifest.ts).
+export const SANDBOX_NAMESPACE = "sandbox";
+export const SANDBOX_ENV_PREFIX = "POMTREED_SANDBOX_";
+
+// The env prefix of a sandbox backend's names, derived from its id's camelCase segment exactly as a key path is (`my-box` is
+// the MY_BOX family under the sandbox prefix). Backend ids start with a lowercase letter, so a segment always results.
+export function sandboxEnvPrefix(id: string): string {
+  const segment = extensionSegment(id) ?? id;
+  return `${SANDBOX_ENV_PREFIX}${camelHumps(segment).join("_").toUpperCase()}_`;
+}
+
+// The env name a backend credential's FILE variable carries, `<this>_FILE` (secretFileEnv): POMTREED_SANDBOX_<ID>_<CRED>. The value is
+// never read from the bare name; only the path of a mode-checked file is accepted.
+export const sandboxCredentialEnv = (id: string, credential: string): string => `${sandboxEnvPrefix(id)}${envPart(credential)}`;
+
 // The env var naming the JSON config file. Reserved: no parameter may derive it.
 export const CONFIG_FILE_ENV = "POMTREED_CONFIG";
 

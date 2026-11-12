@@ -2,8 +2,19 @@
 // injects the parsed file, the env and a file reader for `<ENV>_FILE` secrets. Fails closed: every error is collected and no
 // values are returned when there is any. A sensitive value never appears in an error, an origin or a description.
 import { isAbsolute } from "node:path";
-import { CONFIG_FILE_ENV, EXT_ENV_PREFIX, EXT_NAMESPACE, didYouMean, extensionCredentialEnv, extensionEnvPrefix, secretFileEnv } from "./env-name.ts";
+import {
+  CONFIG_FILE_ENV,
+  EXT_ENV_PREFIX,
+  EXT_NAMESPACE,
+  didYouMean,
+  extensionCredentialEnv,
+  extensionEnvPrefix,
+  SANDBOX_NAMESPACE,
+  sandboxCredentialEnv,
+  secretFileEnv,
+} from "./env-name.ts";
 import type { ConfigRegistry, ConfigValues, ParamDef, ParamKind, ParamScope } from "./registry.ts";
+import { secretFileModeReason } from "./secret-file.ts";
 import { checkReason, isIntegerKind, isNumericParam, isSensitive, paramEdges, relationHolds, relationSymbol } from "./registry.ts";
 
 export type ConfigOrigin = "default" | "file" | "set" | `env:${string}` | `file-secret:${string}`;
@@ -16,6 +27,8 @@ export interface ResolveInput {
   readFile?: (path: string) => string; // reads a `<ENV>_FILE` secret
   // The permission bits of a `<ENV>_FILE` secret; a file with any group/other bit is refused. Absent where the platform has no
   // POSIX modes (no check then). A throwing reader is reported like a failed read.
+  // Absent where the platform has no POSIX modes (Windows): the check is then skipped, which is acceptable there because a mode bit
+  // carries no meaning to enforce; docs/configuration.md says so. A caller on a POSIX platform always passes it.
   fileMode?: (path: string) => number;
   // `<ENV>_FILE` names are recognized (never refused as unknown) but not read, and the sensitive keys keep their "" default: for
   // a process that shares the operator's env but must never open their secrets (the digest host).
@@ -132,6 +145,13 @@ export function resolveConfig<D extends readonly ParamDef[]>(registry: ConfigReg
   const extBySegment = new Map(registry.extensions.map((e) => [e.segment, e]));
   const unknownKey = (path: string): string => {
     const [root, segment = ""] = path.split(".");
+    if (
+      root === SANDBOX_NAMESPACE &&
+      registry.sandboxBackends.length > 0 &&
+      segment !== "" &&
+      !paths.some((q) => q.startsWith(`${SANDBOX_NAMESPACE}.${segment}.`))
+    )
+      return `unknown key ${path}: no composed sandbox backend owns ${SANDBOX_NAMESPACE}.${segment}. (composed: ${registry.sandboxBackends.map((b) => b.id).join(", ")}); a backend's keys are valid only while its manifest is composed${didYouMean(path, paths)}`;
     if (root !== EXT_NAMESPACE) return `unknown key ${path}${didYouMean(path, paths)}`;
     const e = extBySegment.get(segment);
     if (e === undefined)
@@ -219,14 +239,15 @@ export function resolveConfig<D extends readonly ParamDef[]>(registry: ConfigReg
       errors.push(`${fileName}: ${why}`);
       failed.add(p.path);
     };
-    if (!isAbsolute(file)) fail(`expected an absolute path, got ${JSON.stringify(file)}`);
+    if (!isAbsolute(file)) fail("expected an absolute path (the value is not shown)");
     else if (input.readFile === undefined) fail("set, but no file reader was supplied");
     else {
       let text: string;
       try {
         const mode = input.fileMode?.(file);
-        if (mode !== undefined && (mode & 0o077) !== 0) {
-          fail(`${file} is readable by group/other; run chmod 600 ${file}`);
+        const refusal = mode === undefined ? null : secretFileModeReason(file, { mode });
+        if (refusal !== null) {
+          fail(refusal);
           continue;
         }
         text = input.readFile(file);
@@ -293,7 +314,7 @@ export interface ConfigRow {
   value: unknown; // REDACTED for a sensitive key that is set
   origin: ConfigOrigin;
   default: unknown;
-  kind: ParamKind;
+  kind: ParamKind | "credential";
   scope: ParamScope;
   env: string;
   ceiling?: string;
@@ -303,7 +324,7 @@ export interface ConfigRow {
 export function describeConfig<D extends readonly ParamDef[]>(
   registry: ConfigRegistry<D>,
   resolved: ResolvedConfig<D>,
-  opts: { changedOnly?: boolean } = {},
+  opts: { changedOnly?: boolean; env?: Readonly<Record<string, string | undefined>> } = {},
 ): ConfigRow[] {
   const values = resolved.values as Readonly<Record<string, unknown>>;
   const origins = resolved.origins as Readonly<Record<string, ConfigOrigin>>;
@@ -321,6 +342,25 @@ export function describeConfig<D extends readonly ParamDef[]>(
       env: registry.envOf.get(p.path) as string,
       ...(isNumericParam(p) && p.ceiling !== undefined && { ceiling: p.ceiling }),
     });
+  }
+  // Declared sandbox backend credentials (not config keys): with `opts.env`, one row per credential whose `_FILE` variable is set,
+  // showing the file's path and never its contents (core never reads them; the backend's credential reader does, mode-checked).
+  for (const b of registry.sandboxBackends) {
+    for (const c of b.credentials) {
+      const envName = secretFileEnv(sandboxCredentialEnv(b.id, c));
+      const file = opts.env?.[envName];
+      if (file === undefined) continue;
+      rows.push({
+        path: `${SANDBOX_NAMESPACE}.${b.segment}.credential.${c}`,
+        // A value that is not an absolute path may be a pasted secret, so it is never echoed.
+        value: `${REDACTED} (file: ${isAbsolute(file) ? file : "<not an absolute path>"})`,
+        origin: `env:${envName}`,
+        default: "",
+        kind: "credential",
+        scope: "operator",
+        env: envName,
+      });
+    }
   }
   return rows;
 }

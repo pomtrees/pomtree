@@ -1,7 +1,7 @@
 // JSON Schema (draft 2020-12) for the config file, generated from a registry. Pure. The checked-in copy
 // (packages/core/config.schema.json, written by packages/core/scripts/gen-config.ts) is guarded by a test that
 // regenerates it and compares. Sensitive keys are left out: the file may not carry them.
-import { EXT_NAMESPACE, secretFileEnv } from "./env-name.ts";
+import { EXT_NAMESPACE, SANDBOX_NAMESPACE, secretFileEnv } from "./env-name.ts";
 import type { ConfigRegistry, ParamDef } from "./registry.ts";
 import { isIntegerKind, isNumericParam, isSensitive, relationSymbol } from "./registry.ts";
 
@@ -30,6 +30,11 @@ function leaf(registry: ConfigRegistry, p: ParamDef): Schema {
   else if (p.kind === "json") s.type = ["object", "array"];
   else s.type = "string";
   if (p.kind === "list") s.items = { type: "string", minLength: 1 };
+  if (p.kind === "string" && p.schema !== undefined) {
+    // A fragment that carries `type` and `enum`-style keywords replaces the plain string type (anyOf cannot sit beside it usefully).
+    delete s.type;
+    Object.assign(s, p.schema);
+  }
   s.default = p.default;
   return s;
 }
@@ -63,6 +68,15 @@ export function configJsonSchema(registry: ConfigRegistry): Schema {
     description: `Extension-contributed keys, ${EXT_NAMESPACE}.<segment>.<key>, where <segment> is the camelCase of the extension's name. Declared by each extension's manifest and validated at startup against the loaded extensions; unknown or unloaded keys are refused.`,
     additionalProperties: { type: "object", description: "One extension's keys." },
   };
+  // The same for `sandbox.<id>.*`: a backend's keys exist only while its manifest is composed, and a contributed backend's manifest is
+  // not known to the checked-in schema. A schema generated from a composed registry has the exact subtrees instead.
+  if (registry.sandboxBackends.length === 0) {
+    const sandbox = (root.properties as Schema)[SANDBOX_NAMESPACE] as Schema;
+    sandbox.additionalProperties = {
+      type: "object",
+      description: `One sandbox backend's keys, sandbox.<id>.<key>, where <id> is the camelCase of the backend id. Declared by the adapter's or extension's manifest and validated at startup against the composed backends; unknown ids are refused.`,
+    };
+  }
   return root;
 }
 

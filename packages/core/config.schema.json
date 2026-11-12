@@ -222,12 +222,48 @@
     },
     "sandbox": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": {
+        "type": "object",
+        "description": "One sandbox backend's keys, sandbox.<id>.<key>, where <id> is the camelCase of the backend id. Declared by the adapter's or extension's manifest and validated at startup against the composed backends; unknown ids are refused."
+      },
       "properties": {
         "socket": {
           "description": "The daemon socket's path inside an agent container. Env: POMTREED_SANDBOX_SOCKET. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
           "type": "string",
           "default": "/run/pomtreed.sock"
+        },
+        "backend": {
+          "description": "Which sandbox backend runs agents: auto, docker, podman, kubernetes, sail, e2b, or the id an installed extension provides (that one also needs a pin in sandbox.reviewedBackends). auto picks an installed local engine (docker, then podman) and never a hosted or contributed backend. The backend's own keys are sandbox.<id>.*. Env: POMTREED_SANDBOX_BACKEND. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "anyOf": [
+            {
+              "enum": ["auto", "docker", "podman", "kubernetes", "sail", "e2b"]
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,30}$"
+            }
+          ],
+          "default": "docker"
+        },
+        "secretsInEnv": {
+          "description": "Allow a backend with no better channel to receive the daemon token in the sandbox's create-time environment, which the provider console and engine inspect output can show. Off: such a backend is refused for agents that need a token. Env: POMTREED_SANDBOX_SECRETS_IN_ENV. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "boolean",
+          "default": false
+        },
+        "reviewedBackends": {
+          "description": "Content-hash pins of reviewed extension-provided backends, entries <id>=sha256:<hex>. A contributed backend is constructed only when sandbox.backend names it and its directory hashes to its pin here; a changed byte refuses boot and prints the new hash. Env: POMTREED_SANDBOX_REVIEWED_BACKENDS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "maxDayMicros": {
+          "description": "Daily runtime spend ceiling across all backends together, in micro-dollars. 0 = a billed backend admits nothing until the operator sets it; local backends that bill nothing ignore it. Unit: micro-dollars (1000000 = $1). Env: POMTREED_SANDBOX_MAX_DAY_MICROS. Scope: operator. Restart-only. Consumers: @pomtree/pomtreed.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       }
     },

@@ -290,7 +290,7 @@ test("a sensitive key is refused via the file, the env and --set, and its value 
 
 test("<ENV>_FILE failures: relative path, no reader, read error, empty file", () => {
   assert.deepEqual(errs({ env: { POMTREED_MODEL_API_KEY_FILE: "key.txt" }, readFile: () => SECRET }), [
-    'POMTREED_MODEL_API_KEY_FILE: expected an absolute path, got "key.txt"',
+    "POMTREED_MODEL_API_KEY_FILE: expected an absolute path (the value is not shown)",
   ]);
   assert.deepEqual(errs({ env: { POMTREED_MODEL_API_KEY_FILE: "/k" } }), ["POMTREED_MODEL_API_KEY_FILE: set, but no file reader was supplied"]);
   const enoent = () => {

@@ -7,6 +7,13 @@ import { denylistReason, freshnessRulesReason } from "../capture.ts";
 import { DEFAULT_DENIED_PATHS } from "../merge.ts";
 import { parseStateLimits } from "../state.ts";
 import type { ParamDef } from "./registry.ts";
+import {
+  BUILTIN_SANDBOX_BACKEND_IDS,
+  SANDBOX_BACKEND_AUTO,
+  SANDBOX_BACKEND_ID_RE,
+  reviewedBackendsReason,
+  sandboxBackendShapeReason,
+} from "./sandbox-manifest.ts";
 
 const POMTREED = "@pomtree/pomtreed";
 const POMTREE = "@pomtree/pomtree";
@@ -163,6 +170,43 @@ export const DAEMON_PARAMS = [
     kind: "path",
     default: "/run/pomtreed.sock",
     doc: "The daemon socket's path inside an agent container.",
+    scope: "operator",
+    consumers: [POMTREED],
+  },
+  {
+    // Core accepts any well-formed id because a provider's id is unknown until its manifest is composed; composeRegistry (extend.ts)
+    // closes the set to auto, the built-in ids and the composed backends' ids. The schema lists the built-ins and stays open.
+    path: "sandbox.backend",
+    kind: "string",
+    default: "docker",
+    check: sandboxBackendShapeReason,
+    schema: { anyOf: [{ enum: [SANDBOX_BACKEND_AUTO, ...BUILTIN_SANDBOX_BACKEND_IDS] }, { type: "string", pattern: SANDBOX_BACKEND_ID_RE.source }] },
+    doc: `Which sandbox backend runs agents: ${SANDBOX_BACKEND_AUTO}, ${BUILTIN_SANDBOX_BACKEND_IDS.join(", ")}, or the id an installed extension provides (that one also needs a pin in sandbox.reviewedBackends). auto picks an installed local engine (docker, then podman) and never a hosted or contributed backend. The backend's own keys are sandbox.<id>.*.`,
+    scope: "operator",
+    consumers: [POMTREED],
+  },
+  {
+    path: "sandbox.secretsInEnv",
+    kind: "bool",
+    default: false,
+    doc: "Allow a backend with no better channel to receive the daemon token in the sandbox's create-time environment, which the provider console and engine inspect output can show. Off: such a backend is refused for agents that need a token.",
+    scope: "operator",
+    consumers: [POMTREED],
+  },
+  {
+    path: "sandbox.reviewedBackends",
+    kind: "list",
+    default: [],
+    check: reviewedBackendsReason,
+    doc: "Content-hash pins of reviewed extension-provided backends, entries <id>=sha256:<hex>. A contributed backend is constructed only when sandbox.backend names it and its directory hashes to its pin here; a changed byte refuses boot and prints the new hash.",
+    scope: "operator",
+    consumers: [POMTREED],
+  },
+  {
+    path: "sandbox.maxDayMicros",
+    kind: "micros",
+    default: 0,
+    doc: "Daily runtime spend ceiling across all backends together, in micro-dollars. 0 = a billed backend admits nothing until the operator sets it; local backends that bill nothing ignore it.",
     scope: "operator",
     consumers: [POMTREED],
   },

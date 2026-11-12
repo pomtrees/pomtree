@@ -3,6 +3,8 @@
 // by the same checks as the core table. Pure: no env or fs access. Core never imports or names an extension key; it resolves
 // without extensions, and the composed registry is a superset resolved in one pass (uniform origins, ceilings and relations).
 import { CONFIG_ENV_PREFIXES, EXT_NAMESPACE, extensionCredentialEnv, extensionSegment } from "./env-name.ts";
+import type { SandboxBackendConfigDecl } from "./sandbox-manifest.ts";
+import { composeSandboxKeys, sandboxBackendClosedCheck } from "./sandbox-manifest.ts";
 import type { BoolParam, ConfigRegistry, EnumParam, ListParam, NumericParam, ParamDef, ParamRelation, StringParam } from "./registry.ts";
 import { buildRegistry, ConfigRegistryError } from "./registry.ts";
 
@@ -11,7 +13,7 @@ import { buildRegistry, ConfigRegistryError } from "./registry.ts";
 // `key` is flat lowerCamel under the extension's segment. `ceiling` and relation `key`s name the extension's own keys bare
 // (`textMaxBytes`) and core keys by path (`report.maxBytes`).
 type Decl<P extends ParamDef> = P extends unknown
-  ? Omit<P, "path" | "scope" | "consumers" | "env" | "container" | "check" | "sensitive"> & { readonly key: string }
+  ? Omit<P, "path" | "scope" | "consumers" | "env" | "container" | "check" | "sensitive" | "schema"> & { readonly key: string }
   : never;
 export type ExtParamDecl = Decl<NumericParam | BoolParam | EnumParam | StringParam | ListParam>;
 
@@ -34,6 +36,7 @@ const FORBIDDEN: Readonly<Record<string, string>> = {
   container: "extension keys are host-side only and never delivered to containers",
   sensitive: "secrets go through manifest credentials, not config keys",
   check: "a manifest is JSON and carries no functions",
+  schema: "schema fragments are for core keys only",
 };
 export const EXT_CREDENTIAL_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -93,7 +96,26 @@ export function extendRegistry(
   extensions: readonly ExtensionConfigDecl[],
   prefixTable: Readonly<Record<string, string>> = CONFIG_ENV_PREFIXES,
 ): ConfigRegistry {
+  return composeRegistry(core, { extensions }, prefixTable);
+}
+
+export interface RegistryComposition {
+  readonly extensions?: readonly ExtensionConfigDecl[];
+  // Every sandbox backend to compose under `sandbox.<id>.*`: the built-ins' shipped manifests and the extensions' `provides` entries.
+  readonly sandboxBackends?: readonly SandboxBackendConfigDecl[];
+}
+
+// The core registry plus every extension's keys (`ext.<segment>.*`) and every sandbox backend's keys (`sandbox.<id>.*`), validated as
+// one table; extendRegistry is the extensions-only case. Composing also closes `sandbox.backend` to `auto`, the built-in ids and the
+// composed backends' ids. Throws ConfigRegistryError listing every problem; each names its extension or backend.
+export function composeRegistry(
+  core: ConfigRegistry,
+  { extensions = [], sandboxBackends = [] }: RegistryComposition,
+  prefixTable: Readonly<Record<string, string>> = CONFIG_ENV_PREFIXES,
+): ConfigRegistry {
   if (core.extensions.length > 0) throw new ConfigRegistryError(["the registry is already extended; compose all extensions in one extendRegistry call"]);
+  if (core.sandboxBackends.length > 0)
+    throw new ConfigRegistryError(["the registry already has sandbox backends; compose all backends in one composeRegistry call"]);
   const errors: string[] = [];
   const extOf = new Map<string, string>();
   const params: ParamDef[] = [];
@@ -142,9 +164,16 @@ export function extendRegistry(
       params.push(def as unknown as ParamDef);
     }
   }
+  const sandbox = composeSandboxKeys(core.byPath.keys(), sandboxBackends, (why) => void errors.push(why));
+  const closeBackend = sandboxBackendClosedCheck(sandbox.backends);
+  const coreParams = core.params.map((p) => (p.path === "sandbox.backend" ? ({ ...p, check: closeBackend } as ParamDef) : p));
   let registry: ConfigRegistry | undefined;
   try {
-    registry = buildRegistry([...core.params, ...params], prefixTable, { extOf, extensions: composed });
+    registry = buildRegistry([...coreParams, ...params, ...sandbox.params], prefixTable, {
+      extOf,
+      extensions: composed,
+      sandbox: { backendOf: sandbox.backendOf, backends: sandbox.backends },
+    });
   } catch (e) {
     if (!(e instanceof ConfigRegistryError)) throw e;
     errors.push(...e.errors);

@@ -162,6 +162,10 @@ Generated from the registry. Kinds `bytes`, `count`, `ms` and `micros` are plain
 | Key | Environment variable | Kind | Default | Limits | Scope | Description |
 | --- | --- | --- | --- | --- | --- | --- |
 | `sandbox.socket` | `POMTREED_SANDBOX_SOCKET` | path | `/run/pomtreed.sock` | absolute | operator | The daemon socket's path inside an agent container. |
+| `sandbox.backend` | `POMTREED_SANDBOX_BACKEND` | string | `docker` |  | operator | Which sandbox backend runs agents: auto, docker, podman, kubernetes, sail, e2b, or the id an installed extension provides (that one also needs a pin in sandbox.reviewedBackends). auto picks an installed local engine (docker, then podman) and never a hosted or contributed backend. The backend's own keys are sandbox.<id>.*. |
+| `sandbox.secretsInEnv` | `POMTREED_SANDBOX_SECRETS_IN_ENV` | bool | `false` |  | operator | Allow a backend with no better channel to receive the daemon token in the sandbox's create-time environment, which the provider console and engine inspect output can show. Off: such a backend is refused for agents that need a token. |
+| `sandbox.reviewedBackends` | `POMTREED_SANDBOX_REVIEWED_BACKENDS` | list | none |  | operator | Content-hash pins of reviewed extension-provided backends, entries <id>=sha256:<hex>. A contributed backend is constructed only when sandbox.backend names it and its directory hashes to its pin here; a changed byte refuses boot and prints the new hash. |
+| `sandbox.maxDayMicros` | `POMTREED_SANDBOX_MAX_DAY_MICROS` | micros | `0` |  | operator | Daily runtime spend ceiling across all backends together, in micro-dollars. 0 = a billed backend admits nothing until the operator sets it; local backends that bill nothing ignore it. |
 
 ##### `agent`
 
@@ -411,6 +415,26 @@ Generated from the registry. Kinds `bytes`, `count`, `ms` and `micros` are plain
 | Key | Environment variable | Kind | Default | Limits | Scope | Description |
 | --- | --- | --- | --- | --- | --- | --- |
 | `client.debug` | `POMTREE_CLIENT_DEBUG` | bool | `false` |  | operator | Rethrow unexpected CLI failures with their stack instead of one line. |
+
+#### Sandbox backend keys
+
+A backend's keys live under `sandbox.<id>.*`, where `<id>` is the backend id in camelCase (`my-box` is `myBox`), and its env names are `POMTREED_SANDBOX_<ID>_<KEY>`. Each backend declares its own keys in a manifest (a built-in adapter package ships `manifest.json`; an extension lists its backend in `provides`), and the daemon composes them at start with the standard keys below, which every backend gets with the same names. A built-in adapter may change the defaults; keys exist only while the backend is composed. A credential is a declared name, never a config key: it is supplied only as a path in `POMTREED_SANDBOX_<ID>_<CREDENTIAL>_FILE` to a file that is not group- or world-accessible (checked on the opened file; on Windows, which has no POSIX modes, the check is skipped).
+
+##### `sandbox.<id>` (every backend)
+
+| Key | Environment variable | Kind | Default | Limits | Scope | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sandbox.<id>.maxSandboxes` | `POMTREED_SANDBOX_<ID>_MAX_SANDBOXES` | count | `0` |  | operator | Concurrent sandboxes on this backend; admission holds beyond it. 0 = no daemon-side ceiling (the provider's own limit applies). |
+| `sandbox.<id>.leaseMs` | `POMTREED_SANDBOX_<ID>_LEASE_MS` | ms | `900000` | min 1 | operator | Lease length that budget reserve-and-settle charges against; a backend that cannot extend its deadline also rotates the sandbox at 80% of it. |
+| `sandbox.<id>.region` | `POMTREED_SANDBOX_<ID>_REGION` | string | unset |  | operator | The provider region sandboxes are created in. Unset: the backend has no regions, or the probe reports the problem and the action. |
+| `sandbox.<id>.rate.cpuHourMicros` | `POMTREED_SANDBOX_<ID>_RATE_CPU_HOUR_MICROS` | micros | `0` |  | operator | Operator-stated price of one vCPU-hour in micro-dollars. 0 = unset; a billed backend with unset rates refuses boot. |
+| `sandbox.<id>.rate.memoryGibHourMicros` | `POMTREED_SANDBOX_<ID>_RATE_MEMORY_GIB_HOUR_MICROS` | micros | `0` |  | operator | Operator-stated price of one GiB-hour of memory in micro-dollars. 0 = unset. |
+| `sandbox.<id>.rate.storedGibHourMicros` | `POMTREED_SANDBOX_<ID>_RATE_STORED_GIB_HOUR_MICROS` | micros | `0` |  | operator | Operator-stated price of one GiB-hour of state kept while a sandbox is stopped or paused. 0 = unset or free. |
+| `sandbox.<id>.rate.createMicros` | `POMTREED_SANDBOX_<ID>_RATE_CREATE_MICROS` | micros | `0` |  | operator | Operator-stated fee for creating one sandbox, in micro-dollars. 0 = none. |
+| `sandbox.<id>.rate.minBilledMs` | `POMTREED_SANDBOX_<ID>_RATE_MIN_BILLED_MS` | ms | `0` |  | operator | Shortest lifetime the provider bills for, in milliseconds. 0 = none. |
+| `sandbox.<id>.rate.asOf` | `POMTREED_SANDBOX_<ID>_RATE_AS_OF` | string | unset |  | operator | ISO date (YYYY-MM-DD) the rates above were read from the provider's price page, so stale prices are visible. Unset: no date. |
+| `sandbox.<id>.maxDayMicros` | `POMTREED_SANDBOX_<ID>_MAX_DAY_MICROS` | micros | `0` |  | operator | Daily runtime spend ceiling for this backend, in micro-dollars. 0 = a billed backend admits nothing until the operator sets it; unbilled local backends ignore it. |
+| `sandbox.<id>.maxRunMicros` | `POMTREED_SANDBOX_<ID>_MAX_RUN_MICROS` | micros | `0` |  | operator | Most one agent may spend on this backend over all its generations, in micro-dollars. 0 = unset. |
 
 #### Extension keys: `hn-digest`
 

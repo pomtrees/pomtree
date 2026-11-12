@@ -3,6 +3,8 @@ export * from "./registry.ts";
 export * from "./extend.ts";
 export * from "./resolve.ts";
 export * from "./schema.ts";
+export * from "./secret-file.ts";
+export * from "./sandbox-manifest.ts";
 export * from "./params.ts";
 export * from "./params-daemon.ts";
 export * from "./params-client.ts";
