@@ -58,8 +58,8 @@ export function engineDisplayName(profile: EngineProfile): string {
 }
 
 // `<binary> network inspect <default network> -f <gateway>` (pomtreed's agent-net.ts runs and parses it): Docker's default network is `bridge` with the gateway under IPAM; Podman's
-// is `podman` with it under Subnets. Rootless Podman on pasta has no host-side gateway at all, so there the read yields nothing
-// (Linux pasta is unverified here).
+// is `podman` with it under Subnets. Run against rootless Podman 5.7.0 (pasta): the read prints the network definition's gateway, but a pasta
+// container does not use it, so it is no host-side address (engine-samples/podman.json).
 export function gatewayInspectArgs(profile: EngineProfile): string[] {
   return profile.id === "podman"
     ? ["network", "inspect", "podman", "-f", "{{(index .Subnets 0).Gateway}}"]
@@ -67,7 +67,7 @@ export function gatewayInspectArgs(profile: EngineProfile): string[] {
 }
 
 // The argv that prints the engine's server version, so it fails when the daemon or service does not answer. Podman's info has no
-// ServerVersion; its version is .Version.Version (from Podman's documented info JSON; not run against a live Podman here).
+// ServerVersion; its version is .Version.Version (run against rootless Podman 5.7.0, which prints `5.7.0`).
 export function engineInfoArgs(profile: EngineProfile): string[] {
   return ["info", "--format", profile.id === "podman" ? "{{.Version.Version}}" : "{{.ServerVersion}}"];
 }
