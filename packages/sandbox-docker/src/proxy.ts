@@ -95,6 +95,12 @@ export interface ProxyOptions {
 // The controller may explicitly grant this endpoint as a relay. The name itself confers no privilege;
 // only an exact relay host/port may reach private/host-owned addresses (never hard-deny classes).
 export const RELAY_HOSTNAME = "host.docker.internal";
+// Rootless Podman on pasta (run with --map-host-loopback) resolves host.docker.internal to this link-local address, which pasta
+// forwards to the daemon host's 127.0.0.1. It is hard-class (169.254.0.0/16) like cloud metadata, so no allowlist or public policy can
+// reach it. Only a relay request whose host name is exactly RELAY_HOSTNAME may dial it, and only when the answer is the alias itself or
+// its IPv4-mapped spelling (::ffff:169.254.1.2). Other relay names resolving to it, the 6to4, NAT64 and IPv4-compatible spellings that
+// addressKey folds onto the same IPv4, and every other hard-class address stay denied.
+export const PASTA_HOST_LOOPBACK_ALIAS = "169.254.1.2";
 
 type AddrClass = "public" | "private" | "hard";
 
@@ -170,6 +176,14 @@ export function classifyAddress(ip: string): AddrClass {
   return "public";
 }
 
+function isPastaAlias(ip: string): boolean {
+  if (ip.includes("%")) return false; // addressKey drops a zone id, so a scoped address must never read as the alias
+  const v4 = parseV4(ip);
+  if (v4) return v4.join(".") === PASTA_HOST_LOOPBACK_ALIAS;
+  const v6 = parseV6(ip);
+  return !!v6 && v6.slice(0, 10).every((n) => n === 0) && v6[10] === 255 && v6[11] === 255 && v6.slice(12).join(".") === PASTA_HOST_LOOPBACK_ALIAS;
+}
+
 function addressKey(ip: string): string {
   const v4 = parseV4(ip);
   if (v4) return v4.join(".");
@@ -209,6 +223,7 @@ export async function resolveVerdict(
   if (addrs.length === 0) return { deny: "dns" };
   for (const a of addrs) {
     const c = classifyAddress(a);
+    if (relay && bare === RELAY_HOSTNAME && isPastaAlias(a)) continue;
     if ([...hostAddresses].some((owned) => addressKey(owned) === addressKey(a)) && !relay) return { deny: "private" };
     if (c === "public") continue;
     if (c === "private" && exemptPrivate) continue;
