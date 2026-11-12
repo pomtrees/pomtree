@@ -263,6 +263,7 @@ const GATED_SUITES = [
   "src/capture-worker-wacz.test.ts",
   "src/browser-real-article.test.ts",
   "src/network-docker.test.ts",
+  "src/network-podman.test.ts",
   "src/args-runtime.test.ts",
   "../e2e/src/docker-fanout.test.ts",
   "../e2e/src/docker-pi.test.ts",

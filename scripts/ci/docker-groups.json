@@ -5,6 +5,7 @@
     "packages/e2e/src/docker-pi.test.ts": "needs a live model key; runs in e2e-lifecycle, where it skips (counted in maxSkips)",
     "packages/sandbox-docker/src/docker.unit.test.ts": "tests the gate's own logic and the engine-profile transport with scripted engine answers and recording stubs, so it needs no Docker or Podman and runs in the normal lite suite; it imports docker-gate.ts only for those pure functions, which is what makes the guard count it as Docker-gated",
     "packages/sandbox-docker/src/docker-gate.test.ts": "tests the gate helpers (runtimeSkip, the engine-threading CLI wrappers, the recorded engine samples and the gated-suite drift guard) with scripted engines and recording stubs, so it needs no Docker or Podman and runs in the normal lite suite; it imports docker-gate.ts only for those pure functions, which is what makes the guard count it as Docker-gated",
+    "packages/sandbox-docker/src/network-podman.test.ts": "needs rootless Podman with pasta (PTREE_SANDBOX_BACKEND=podman), and CI has no Podman job, so it skips on the Docker backend; run it on a rootless Podman host. Its own file header gives the command",
     "packages/sandbox-docker/src/browser-real-article.test.ts": "its one test needs the public web (PTREE_NET_TESTS); runs in sandbox, where it skips (counted in maxSkips)"
   },
   "groups": {
