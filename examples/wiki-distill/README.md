@@ -21,6 +21,7 @@ pomtreed reads templates from `templates.dir` (`POMTREED_TEMPLATES_DIR`, an abso
 - **Handoff text.** Stage outputs travel as handoff text, pasted into the next agent's task. Limits: reader notes 3500 bytes, each brief 1500 bytes.
 - **Shell safety in the orchestrator.** It writes each summarizer's instructions and block to a file, spawns with the file's contents as the task, and each summarizer reports its brief from a file, so quotes or `$` in the article's text cannot break a command.
 - **Budgets.** `budgets.env` holds the per-role `budgetMicros` the templates carry.
+- **robots.txt.** The capture broker evaluates it; the browser capture path does not consult it today (`TODO(robots)` in `packages/agent-image/src/browser-capture.ts`), so the readers' pages are not robots-checked.
 
 ## What is real and what is stubbed
 
@@ -47,3 +48,53 @@ The rehearsal swaps the real model for the scripted model stub and costs nothing
 One command does all of this: `examples/wiki-distill/rehearse.sh` (flags `--target DIR`, `--port N`, `--keep`, `--no-wait`, `--open`) starts the stub and `scripts/pomtree-up` against a scratch directory with a dummy key file, prints the UI URL and the token file's path (never its contents), waits for you to open the UI (or opens it with `--open`, already signed in), runs `drive.sh --readers 4 --yes` against the stub, and stops what it started on Enter or Ctrl-C. It needs Docker, a built agent image (`POMTREED_AGENT_IMAGE`, else the newest local `pomtree/agent:*`; it never builds one) and node, uses no real key and unsets real-upstream settings for what it starts.
 
 By hand: copy `stub/templates/*.json` into the templates folder, start the stub with `node packages/testing/bin/model-stub.ts --script examples/wiki-distill/stub/wiki-distill.json --port 0`, and point `scripts/pomtree-up` at the `baseUrl` it prints as in [Zero-spend first agent](../../docs/operating.md). The pool must cover the budgets and the daemon refuses to start unless `POMTREED_BUDGET_TOP_LEVEL_MICROS` is at most `POMTREED_BUDGET_ROOT_MICROS`, so set both to the same value (2600000 covers four readers).
+
+## Real run, in order
+
+The key file is created by you, mode 0600, as in [First real-model agent](../../docs/operating.md); no step below shows or passes a key. Use a fresh shell, or unset `POMTREED_PI_CATALOG_DIR`, if you rehearsed first (a real provider prices its own usage), and a different target repository or `--state` so the stub run's state is not reused. Copy `templates/*.json` (not the stub ones) into the state directory's `templates` folder first, as in [Install the templates](#install-the-templates).
+
+```sh
+POMTREED_BUDGET_ROOT_MICROS=2600000 POMTREED_BUDGET_TOP_LEVEL_MICROS=2600000 scripts/pomtree-up ~/target-real --init --provider openrouter --model-base-url https://openrouter.ai/api --model-key-file ~/.config/pomtreed/model.key
+# open the printed /ui URL in a browser, then in a second terminal:
+eval "$(scripts/pomtree-up ~/target-real --print-env)"
+pomtree doctor
+examples/wiki-distill/drive.sh --title "<article>" --readers 4 --oldid <revision, optional> --dry-run
+examples/wiki-distill/drive.sh --title "<article>" --readers 4 --oldid <revision, optional> --yes
+```
+
+Before the first real run, set a spend limit on the OpenRouter key itself (in OpenRouter's key settings; recommended, not enforced by this repo), at or just above the pool. `--dry-run` prints every command and calls nothing. Without `--yes` the script prints the plan, ceiling and pool and exits 2.
+
+## Cost ceiling
+
+Per-role budgets come from `budgets.env`: 400000 micros (0.40 USD) per reader, 600000 (0.60 USD) for the orchestrator, from which its summarizers are carved at 60000 each, and 300000 (0.30 USD) for the distiller. With the formula and pool rule from [Drive it](#drive-it), the pool for each reader count N is:
+
+| Readers N | Ceiling | Pool |
+| --- | --- | --- |
+| 2 | 1.70 USD | 1800000 |
+| 3 | 2.10 USD | 2200000 |
+| 4 | 2.50 USD | 2600000 |
+| 5 | 2.90 USD | 3000000 |
+| 6 | 3.30 USD | 3400000 |
+
+An agent that runs out of budget parks behind a `budget_raise` approval, and nothing is spent unless you grant it; mechanics are in [economy](../../docs/economy.md). No run of this demo has been measured, so the ceiling is a cap, not a forecast.
+
+## What needs your explicit go
+
+- Spend, up to the ceiling above, on OpenRouter.
+- A public fetch of the named Wikipedia article (and of `example.com` in the rehearsal).
+- Sending the page text to OpenRouter as model input.
+
+## Stop and clean up
+
+Cancelling agents, turning UI follow off and removing the report are covered in [Drive it](#drive-it). Beyond that:
+
+- Check what is left: `pomtree tree`, `pomtree spend`, and `pomtree reap <id>` for an exited child you still hold.
+- Docker leftovers of a stopped daemon: `docker ps -a --filter name=pomtree-egress-proxy-` and `docker volume ls --filter name=pomtree-egress-socket-`; never remove a sidecar of a daemon that is still running (see [Operating](../../docs/operating.md)).
+- Stop `scripts/pomtree-up` with Ctrl-C, and the model stub if you started it by hand. `rehearse.sh` stops what it started.
+
+## Troubleshooting
+
+- A spawn refused with "budget ... exceeds the ... the parent has left" (exit 5): the pool is too small; set `POMTREED_BUDGET_ROOT_MICROS` to the value the driver prints.
+- Timeouts: a reader is waited for up to `READER_TIMEOUT_S` (default 720 seconds); the orchestrator and distiller have `ORCH_TIMEOUT_S` (900) and `DIST_TIMEOUT_S` (600). See `drive.sh --help`.
+- A rehearsal that stalls or loops: restart the stub, whose `times` counters are per process.
+- Browser windows and egress details for browser agents: [examples/browse-agent/README.md](../browse-agent/README.md).
