@@ -21,6 +21,7 @@ import { Daemon, LocalOrchestrator, wireLocalHost } from "@pomtree/pomtreed";
 import { buildChannelRegistry } from "../../../pomtreed/src/channels.ts";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
+import { until as pollUntil } from "@pomtree/testing";
 import { DirReportStore } from "@pomtree/report-dir";
 import { demoWorkspace } from "./demo-workspace.ts";
 import { startLiveModel } from "../live-model.ts";
@@ -143,13 +144,16 @@ const check = (name: string, ok: boolean, detail = "") => {
 };
 
 async function until<T>(what: string, f: () => Promise<T | undefined | false>, ms = phaseMs): Promise<T> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const v = await f();
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error(`timed out (${Math.round(ms / 1000)}s) waiting for ${what}`);
-    await sleep(400);
-  }
+  let found: T | undefined | false;
+  await pollUntil(
+    async () => {
+      found = await f();
+      return !!found;
+    },
+    ms,
+    { what, intervalMs: 400 },
+  );
+  return found as T;
 }
 
 type P = { kind: string; [k: string]: unknown };

@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { request } from "node:http";
 import { createServer } from "node:net";
+import { until as pollUntil } from "@pomtree/testing";
 
 export class Deadline extends Error {}
 export class Fatal extends Error {} // thrown inside an `until` probe: stops the polling at once instead of being retried
@@ -36,16 +37,21 @@ export function getSock(sock: string, path: string): Promise<number> {
   });
 }
 export async function until<T>(what: string, ms: number, f: () => Promise<T | undefined> | T | undefined): Promise<T> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = await Promise.resolve()
+  let found: T | undefined;
+  const probe = async () => {
+    found = await Promise.resolve()
       .then(f)
       .catch((e) => {
         if (e instanceof Deadline || e instanceof Fatal) throw e;
         return undefined;
       });
-    if (v !== undefined) return v;
-    if (Date.now() > end) throw new Deadline(`timeout waiting for ${what}`);
-    await sleep(500);
+    return found !== undefined;
+  };
+  try {
+    await pollUntil(probe, ms, { what, intervalMs: 500 });
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.startsWith("timed out waiting for ")) throw e; // an invalid scale or ms is not a timeout
+    throw new Deadline(`timeout waiting for ${what}`, { cause: e }); // the shared error (budget, scale, elapsed) rides on `cause`
   }
+  return found as T;
 }

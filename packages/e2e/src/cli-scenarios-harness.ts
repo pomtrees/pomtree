@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { POMTREED_KINDS, secretFileEnv } from "@pomtree/core";
-import { FakeModelUpstream, type ModelScript } from "@pomtree/testing";
+import { FakeModelUpstream, type ModelScript, until as pollUntil } from "@pomtree/testing";
 import { envName } from "../../pomtreed/src/daemon-config.ts";
 import { gitRepo } from "./harness.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
@@ -23,6 +23,14 @@ const pomtreeMain = join(ROOT, "packages/pomtree/src/main.ts");
 // the stub's openai-completions wire and the proxy prices from the catalog.
 export const PROVIDER = "deepseek";
 export const MODEL = "deepseek-flash";
+
+// Maps an error from the shared `until` for a scenario wait: only its timeout error gains the pomtreed log tail; an error thrown by the
+// caller's condition (`callerError`) or any other error, such as an invalid timeout scale, passes through unchanged.
+export function withLogTail(e: unknown, log: string, callerError?: { e: unknown }): unknown {
+  if (callerError && callerError.e === e) return e;
+  if (!(e instanceof Error) || !e.message.startsWith("timed out waiting for ")) return e;
+  return new Error(`${e.message}\n--- pomtreed log tail\n${log.slice(-3000)}`, { cause: e });
+}
 
 export const image = process.env.PTREE_E2E_IMAGE;
 
@@ -290,10 +298,19 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
   };
   const kinds = async (id: string, kind: string) => (await events(id)).filter((e) => e.payload.kind === kind);
   const until = async (what: string, ok: () => Promise<boolean>, timeoutMs: number) => {
-    const deadline = Date.now() + timeoutMs;
-    while (!(await ok())) {
-      if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}\n--- pomtreed log tail\n${log.slice(-3000)}`);
-      await sleep(200);
+    let callerError: { e: unknown } | undefined;
+    const probe = async () => {
+      try {
+        return await ok();
+      } catch (e) {
+        callerError = { e };
+        throw e;
+      }
+    };
+    try {
+      await pollUntil(probe, timeoutMs, { what, intervalMs: 200 });
+    } catch (e) {
+      throw withLogTail(e, log, callerError);
     }
   };
 

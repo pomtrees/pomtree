@@ -5,7 +5,7 @@ import { CONFIG_DEFAULTS, type AgentId, type Harness, type HarnessEvent, type Ha
 import { Daemon, ProxyCredentialGateway, LocalOrchestrator, handle, wireLocalHost } from "@pomtree/pomtreed";
 import { buildChannelRegistry } from "../../pomtreed/src/channels.ts";
 import type { ApiResponse, DaemonDeps } from "@pomtree/pomtreed";
-import { FakeModelCatalog, createFakes, keyed, tmpDir } from "@pomtree/testing";
+import { FakeModelCatalog, createFakes, keyed, tmpDir, until as pollUntil } from "@pomtree/testing";
 import { openStore } from "@pomtree/store-sqlite";
 import type { Store } from "@pomtree/store-sqlite";
 import { DirReportStore } from "@pomtree/report-dir";
@@ -162,13 +162,7 @@ export function rig(o: RigOpts = {}): Rig {
   return { daemon, orchestrator, store, workspace, repo, stateDir, sandbox: fakes.sandbox };
 }
 
-export async function until(cond: () => Promise<boolean> | boolean, what: string, ms = 20_000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!(await cond())) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
+export const until = (cond: () => Promise<boolean> | boolean, what: string, ms = 20_000): Promise<void> => pollUntil(cond, ms, { what, intervalMs: 10 });
 
 // Real-git tests need git >= 2.38 (the workspace refuses to ingest below it); returns a skip reason, or false when usable.
 export function gitSkip(): string | false {
