@@ -1,0 +1,2 @@
+{"provenance":"inferred","provider":"sail","source":"https://docs.sailresearch.com/api-reference/networking/tunnel-to-a-port.md (binary frames, {\"type\":\"eof\"} half-close); a tunnel cut after four bytes, with no eof, for the conformance channel-drop clause","date":"2026-11-11","apiVersion":"v1","placeholders":["sbx-1"]}
+{"seq":1,"method":"GET","path":"/v1/sailboxes/sbx-1/tunnel","query":{"port":"7100"},"status":101,"stream":[{"dir":"in","data":"MDEyMzQ1Njc4OQ==","binary":true},{"dir":"out","data":"MDEyMw==","binary":true}]}

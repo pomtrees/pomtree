@@ -17,6 +17,9 @@
       "path": "packages/sandbox-kubernetes"
     },
     {
+      "path": "packages/sandbox-sail"
+    },
+    {
       "path": "packages/workspace-git"
     },
     {

@@ -1,0 +1,2 @@
+{"provenance":"inferred","provider":"sail","source":"https://docs.sailresearch.com/api-reference/lifecycle/list-sailboxes.md (documented limit and offset parameters); the next marker in the reply envelope is inferred, to prove a possibly partial listing is refused","date":"2026-11-11","apiVersion":"v1","placeholders":["sbx_0002"]}
+{"seq":1,"method":"GET","path":"/v1/sailboxes","status":200,"responseBody":{"sailboxes":[{"sailbox_id":"sbx_0002","name":"someone-elses-box","status":"running","env":{}}],"next":"offset-1"}}

@@ -1,0 +1,19 @@
+{
+  "name": "@pomtree/sandbox-sail",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@pomtree/core": "workspace:*",
+    "@pomtree/sandbox-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@pomtree/testing": "workspace:*"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "sandboxBackends": [
+    {
+      "id": "sail",
+      "params": [
+        {
+          "key": "baseUrl",
+          "kind": "string",
+          "default": "https://sailbox-api.sailresearch.com/v1",
+          "doc": "Base URL of the Sailboxes REST API, including the version path. Change it only for a proxy or a test stub; the API token is sent to this address."
+        }
+      ],
+      "credentials": ["apiToken"]
+    }
+  ]
+}

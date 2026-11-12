@@ -448,6 +448,14 @@ A backend's keys live under `sandbox.<id>.*`, where `<id>` is the backend id in 
 | --- | --- | --- | --- | --- | --- | --- |
 | `sandbox.podman.socket` | `POMTREED_SANDBOX_PODMAN_SOCKET` | string | unset |  | operator | Unix socket path of the Podman engine's Docker-compatible API. Empty = detect it (CONTAINER_HOST, `podman machine inspect`, then the standard locations). A remote (tcp or ssh) endpoint is refused. |
 
+##### `sandbox.sail` (built-in `@pomtree/sandbox-sail`, backend `sail`)
+
+| Key | Environment variable | Kind | Default | Limits | Scope | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sandbox.sail.baseUrl` | `POMTREED_SANDBOX_SAIL_BASE_URL` | string | `https://sailbox-api.sailresearch.com/v1` |  | operator | Base URL of the Sailboxes REST API, including the version path. Change it only for a proxy or a test stub; the API token is sent to this address. |
+
+Declared credential of `sail`: `POMTREED_SANDBOX_SAIL_APITOKEN_FILE` (secret file).
+
 #### Extension keys: `hn-digest`
 
 Composed with `extendRegistry` from `examples/hn-digest/manifest.json`, exactly as the daemon composes a present extension, so these are the names and bounds it resolves. Keys exist only while the extension is present in `extensions.dir`; extension keys are host-side only and never sensitive.
