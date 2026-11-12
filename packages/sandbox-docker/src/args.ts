@@ -13,6 +13,7 @@ import {
   proxyEnv,
 } from "./egress.ts";
 import { DOCKER_PROFILE, type EngineProfile } from "./engine-profile.ts";
+import { PASTA_HOST_LOOPBACK_ALIAS } from "./proxy.ts";
 import { EGRESS_GID } from "./worker-ready.ts";
 
 export const LABEL = "pomtree";
@@ -172,7 +173,16 @@ export function chromiumSeccompProfile(): string {
 // (uid/gid 1000, mode 0770); keep-id maps the host user to 1000:1000 instead. There is deliberately no `idmap` flag (Docker has none).
 export const PODMAN_USERNS = `keep-id:uid=1000,gid=${EGRESS_GID}`;
 // Rootless Podman gives the sidecar its own pasta network: isolation by construction, so the shared ICC-off bridge is not used.
-const PODMAN_SIDECAR_NETWORK = "pasta";
+// --map-host-loopback makes the alias (which Podman also writes into /etc/hosts as host.docker.internal) reach the daemon host's
+// 127.0.0.1, so a relay grant works with the daemon bound to loopback only. Pasta also lets the sidecar reach docker0, br-* and LAN
+// listeners of the host: the proxy's host-address and private-class denial is what keeps those out (proxy.ts).
+const PODMAN_SIDECAR_NETWORK = `pasta:--map-host-loopback=${PASTA_HOST_LOOPBACK_ALIAS}`;
+// The tmpfs `--opt` string of the egress socket volume. The volume is mounted by a process with keep-id: under rootless Podman
+// the tmpfs uid/gid are read in the engine's user namespace, where 0 is the host user and so container uid/gid 1000; naming 1000 there
+// gives the volume owner 999:999 and the sidecar cannot create its socket.
+export function egressSocketVolumeOptions(profile: EngineProfile, uid: number): string {
+  return isPodman(profile) ? "o=uid=0,gid=0,mode=0770,size=1m" : `o=uid=${uid},gid=1000,mode=0770,size=1m`;
+}
 // SELinux relabel option for a shared read-only bind mount (Linux SELinux hosts only; macOS shares are virtiofs and need none).
 // Known limitation: relabel=shared is applied to read-only bind mounts only, by design. On an enforcing-SELinux Linux host an unlabeled
 // WRITABLE bind (the workspace bind and the sidecar spool log directory) may be denied to the container, so the operator must pre-label
@@ -275,7 +285,7 @@ export function describeRunHardening(spec: SandboxSpec, opts: Pick<RunArgsOption
     hostGateway: !spec.egress && shape.addHostGateway && !isPodman(profile),
     ...(isPodman(profile) ? { userns: PODMAN_USERNS } : {}),
     ...(shape.ociRuntime === "runsc" ? { ociRuntime: "runsc" as const } : {}),
-    ...(spec.egress ? { sidecarNetwork: isPodman(profile) ? PODMAN_SIDECAR_NETWORK : ("shared-icc-off" as const) } : {}),
+    ...(spec.egress ? { sidecarNetwork: isPodman(profile) ? ("pasta" as const) : ("shared-icc-off" as const) } : {}),
   };
 }
 

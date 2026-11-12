@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SandboxSpec } from "@pomtree/core";
-import { buildEgressProxyArgs, buildRunArgs, describeRunHardening, PODMAN_USERNS } from "./args.ts";
+import { buildEgressProxyArgs, buildRunArgs, describeRunHardening, egressSocketVolumeOptions, PODMAN_USERNS } from "./args.ts";
 import { DOCKER_PROFILE, PODMAN_PROFILE } from "./engine-profile.ts";
 import { ICC_OPTION, EGRESS_NETWORK } from "./network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
@@ -56,7 +56,7 @@ test("podman worker with egress: network none and the socket volume as on Docker
 test("podman sidecar: own pasta network instead of the shared ICC-off network, keep-id, no add-host", () => {
   const a = buildEgressProxyArgs("i", egressSpec, sidecarOpts, PODMAN_PROFILE);
   const f = flags(a);
-  assert.equal(f[f.indexOf("--network") + 1], "pasta");
+  assert.equal(f[f.indexOf("--network") + 1], "pasta:--map-host-loopback=169.254.1.2");
   assert.ok(f.includes(`--userns=${PODMAN_USERNS}`));
   assert.ok(!f.includes("--add-host"));
   assert.equal(f[f.indexOf("--user") + 1], "501:1000");
@@ -116,4 +116,10 @@ test("negative control: the Docker-only check catches a Docker-only option", () 
 test("the podman path still enforces the shared sandbox floor", async () => {
   await assert.rejects(build({ ...base, runtime: { user: "0:0" } }, PODMAN_PROFILE), /below the sandbox floor/);
   await assert.rejects(build({ ...egressSpec, runtime: { user: "1000:1001" } }, PODMAN_PROFILE), /egress socket/);
+});
+
+test("podman socket volume options use uid 0 and gid 0 (the engine's namespace owner), docker keeps the daemon uid and gid 1000", () => {
+  assert.equal(egressSocketVolumeOptions(PODMAN_PROFILE, 1000), "o=uid=0,gid=0,mode=0770,size=1m");
+  assert.equal(egressSocketVolumeOptions(PODMAN_PROFILE, 501), "o=uid=0,gid=0,mode=0770,size=1m");
+  assert.equal(egressSocketVolumeOptions(DOCKER_PROFILE, 501), "o=uid=501,gid=1000,mode=0770,size=1m");
 });

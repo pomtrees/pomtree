@@ -32,6 +32,7 @@ import {
 import {
   AGENT_LABEL,
   buildEgressProxyArgs,
+  egressSocketVolumeOptions,
   buildRunArgs,
   describeRunHardening,
   EGRESS_LABEL,
@@ -682,7 +683,7 @@ export class DockerSandbox implements Sandbox {
         "--opt",
         "device=tmpfs",
         "--opt",
-        `o=uid=${uid},gid=1000,mode=0770,size=1m`,
+        egressSocketVolumeOptions(this.profile, uid),
         "--label",
         `${ID_LABEL}=${id}`,
         "--label",

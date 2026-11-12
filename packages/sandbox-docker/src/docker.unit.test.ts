@@ -1249,10 +1249,13 @@ test("podman profile: start runs only podman, hands it the socket, uses the past
   assert.ok(!launches.some((l) => l.args[0] === "network"), "no shared-network create/inspect for the pasta sidecar");
   const sidecar = launches.find((l) => l.args[0] === "run" && l.args.includes("--entrypoint"));
   assert.ok(sidecar, "sidecar run call");
-  assert.equal(sidecar.args[sidecar.args.indexOf("--network") + 1], "pasta");
+  assert.equal(sidecar.args[sidecar.args.indexOf("--network") + 1], "pasta:--map-host-loopback=169.254.1.2");
   assert.ok(sidecar.args.includes("--userns=keep-id:uid=1000,gid=1000"));
   const volume = launches.find((l) => l.args[0] === "volume" && l.args[1] === "create");
-  assert.ok(volume?.args.includes("o=uid=1000,gid=1000,mode=0770,size=1m"), "socket volume owned by the keep-id container uid");
+  assert.ok(
+    volume?.args.includes("o=uid=0,gid=0,mode=0770,size=1m"),
+    "socket volume owned by the keep-id container uid (uid 0 in the engine's user namespace)",
+  );
 });
 
 test("docker profile: the same start still validates the shared egress network and passes no socket variable", async () => {

@@ -140,6 +140,7 @@ test("podman: the description names userns keep-id and the pasta sidecar, and th
     PODMAN_PROFILE,
   );
   assert.ok(worker.includes(`--userns=${h.userns}`) && side.includes(`--userns=${h.userns}`));
-  assert.equal(side[side.indexOf("--network") + 1], h.sidecarNetwork);
+  // the description names the network kind; the argv adds pasta's option (host loopback mapping)
+  assert.ok(side[side.indexOf("--network") + 1]?.startsWith(`${h.sidecarNetwork}:--map-host-loopback=`));
   assert.equal(h.sidecarNetwork, "pasta");
 });
