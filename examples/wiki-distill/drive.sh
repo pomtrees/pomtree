@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TODO(wiki-distill-live-validation): nothing in this script has run against a live daemon, model or Wikipedia; only drive.test.mts (fake CLI) has exercised it.
+# TODO(wiki-distill-live-validation): this script ran once live (2026-11-12, two readers) and drive.test.mts (fake CLI) exercises it offline. Still unverified: the editorial quality, whether a small model follows the 24-step reader plan at larger reader counts, and what the slice URLs returned given the aborted navigations.
 # Operator-run driver for the wiki-distill demo: spawns readers, orchestrator and distiller with the plain `pomtree` CLI
 # and choreographs the web UI (`pomtree ui ...`). Spends real money unless the daemon runs the model stub: see README.md.
 set -euo pipefail
