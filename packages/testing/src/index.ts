@@ -13,3 +13,5 @@ export * from "./messaging-wire-stub.ts";
 export * from "./idempotency.ts";
 export * from "./probe-fake.ts";
 export * from "./timing.ts";
+export * from "./schema-check.ts";
+export { kubernetesPodCreate } from "./provider-schemas/kubernetes-pod-create.ts";
