@@ -61,7 +61,7 @@ Ports separate `pomtreed` from its dependencies. Each is defined by what the dae
 | Harness | Start or resume an agent session and return normalized events | Interactive Pi with an events side-channel | Other harnesses |
 | Orchestrator | Run lifecycles durably with timers, wake conditions, cancellation | In-process | A durable external engine |
 | Journal | Append ordered events; subscribe from a position | SQLite | Same, on the controller |
-| Registry | Agent records (id, parent, state, host, generation, exit cause); peer lookups; the one resume edge, exited to running | SQLite | Shared database |
+| Registry | Agent records (id, parent, state, host, generation, exit cause, sandbox backend); the backend is pinned while the record holds a sandbox id (a different selected backend is refused and the agent is held until the recorded one is selected again or the agent is abandoned) and cleared with the sandbox; peer lookups; the one resume edge, exited to running | SQLite | Shared database |
 | Mailbox | Durable inbox per agent | SQLite | Same, on the controller |
 | CheckpointStore | Write and read checkpoints | SQLite plus Git | Object store |
 | SessionStore | Keep harness session files by id | Local directory | Object store |
