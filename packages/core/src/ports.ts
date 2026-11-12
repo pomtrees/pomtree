@@ -172,7 +172,10 @@ export interface Registry {
   // IllegalTransitionError is not involved). Records/clears the live sandbox id as sandboxes
   // start and stop. Idempotent by key (repeating a key returns the original record without
   // re-applying the write).
-  setSandbox(id: AgentId, generation: number, sandbox: SandboxId | null, idempotencyKey: string): Promise<AgentRecord>;
+  // `backend` (optional) records the backend the sandbox is started under, before the provider call. The backend is pinned for as
+  // long as the record holds a sandbox id: a different one against a recorded backend throws SandboxBackendMismatchError and
+  // changes nothing, and clearing the sandbox (null) clears the backend too (null with a backend is a caller bug and throws).
+  setSandbox(id: AgentId, generation: number, sandbox: SandboxId | null, idempotencyKey: string, backend?: SandboxBackendId): Promise<AgentRecord>;
   // Bump the agent's budgetMicros by deltaMicros (an approved budget raise). Idempotent by key: a replay
   // returns the original record without raising again. deltaMicros must be a positive safe integer;
   // anything else throws before the key lookup and mutates nothing.

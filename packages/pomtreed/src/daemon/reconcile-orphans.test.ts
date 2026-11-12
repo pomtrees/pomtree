@@ -13,7 +13,7 @@ function make() {
   const recorded: string[] = [];
   const ctx = {
     deps: {
-      sandbox: { list: async () => [{ id: "sb1", agent: "ghost", labels: { daemon_epoch: "0" } }] },
+      sandbox: { declaration: { backend: "fake" }, list: async () => [{ id: "sb1", agent: "ghost", labels: { daemon_epoch: "0" } }] },
       workspace: { list: async () => ["ghost"] },
       registry: { list: async () => [] },
       adoptOrphans: false,

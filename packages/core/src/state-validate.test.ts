@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  checkAgentSandboxBackend,
   checkStateExpectRev,
   checkStateKey,
   checkStateListPrefix,
@@ -11,12 +12,15 @@ import {
   clampStateLimits,
   clampStateListLimit,
   encodeStateValue,
+  fenceSandboxBackend,
+  sandboxBackendAfter,
   parseStateLimits,
   STATE_DOC_BYTES_CONFIG_MAX,
   STATE_LIMITS_DEFAULT,
   STATE_LIST_LIMIT_MAX,
   STATE_TOMBSTONES_CEILING,
   STATE_VALUE_MAX_DEPTH,
+  SandboxBackendMismatchError,
   StateError,
 } from "./index.ts";
 
@@ -266,4 +270,47 @@ test("parseStateLimits (shared by pomtreed and standalone tools): defaults, owne
     '{"owners":{"Bad Owner":{}}}',
   ])
     assert.throws(() => parseStateLimits(bad), /POMTREED_STATE_LIMITS/, bad);
+});
+
+test("checkAgentSandboxBackend accepts null and a backend id, and rejects missing, empty and malformed values", () => {
+  assert.equal(checkAgentSandboxBackend("a", null), null);
+  assert.equal(checkAgentSandboxBackend("a", "docker"), "docker");
+  for (const bad of [undefined, "", "Docker", "e2b:prod", "-x", 7, {}]) {
+    assert.throws(() => checkAgentSandboxBackend("a1", bad), /agent a1 has an invalid sandbox backend.*move the database file aside and restart/, String(bad));
+  }
+});
+
+test("fenceSandboxBackend keeps the first backend and refuses a different one with the exact message", () => {
+  assert.equal(fenceSandboxBackend({ sandbox: null, sandboxBackend: null }, "docker"), "docker");
+  assert.equal(fenceSandboxBackend({ sandbox: "s1", sandboxBackend: "docker" }, "docker"), "docker");
+  assert.throws(
+    () => fenceSandboxBackend({ sandbox: "s1", sandboxBackend: "docker" }, "podman"),
+    (e: unknown) =>
+      e instanceof SandboxBackendMismatchError &&
+      e.recorded === "docker" &&
+      e.selected === "podman" &&
+      e.sandbox === "s1" &&
+      e.message ===
+        "agent record (sandbox s1) was created under backend docker; the selected backend is podman; set sandbox.backend back to docker, or remove sandbox s1 with docker's own tooling, then restart",
+  );
+  assert.throws(
+    () => fenceSandboxBackend({ sandbox: null, sandboxBackend: null }, null as unknown as string),
+    (e: unknown) => e instanceof Error && /the selected sandbox backend null is not a backend id/.test(e.message) && !/database/.test(e.message),
+  );
+});
+
+test("sandboxBackendAfter pins the backend while a sandbox is held and clears it with the sandbox", () => {
+  const none = { sandbox: null, sandboxBackend: null };
+  const held = { sandbox: "s1", sandboxBackend: "docker" };
+  assert.equal(sandboxBackendAfter(none, "s1", "docker"), "docker", "the first start records it");
+  assert.equal(sandboxBackendAfter(held, "s1", "docker"), "docker", "the same backend is idempotent");
+  assert.equal(sandboxBackendAfter(held, "s2", undefined), "docker", "a sandbox set without a backend keeps the pin");
+  assert.equal(sandboxBackendAfter(held, null, undefined), null, "clearing the sandbox clears the pin");
+  assert.equal(
+    sandboxBackendAfter(sandboxBackendAfter(held, null, undefined) === null ? none : held, "s3", "podman"),
+    "podman",
+    "a cleared run can start under another backend",
+  );
+  assert.throws(() => sandboxBackendAfter(held, "s2", "podman"), SandboxBackendMismatchError);
+  assert.throws(() => sandboxBackendAfter(held, null, "docker"), /pass the sandbox id too, or omit the backend/);
 });

@@ -22,6 +22,7 @@ const agent: AgentRecord = {
   host: "h1",
   generation: 2,
   sandbox: null,
+  sandboxBackend: null,
   budgetMicros: 5_000_000,
   createdAt: T0,
   updatedAt: T0 + 90_000,

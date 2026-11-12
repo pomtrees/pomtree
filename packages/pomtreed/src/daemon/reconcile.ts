@@ -5,7 +5,7 @@
 // and the host-health latches (`hub.store`). `reconcile()` is the only entry to `reconcileNow`; the
 // self-rescheduling reconcile timer stays in `Daemon.startWatchers` and calls the `Daemon.reconcile` delegate.
 
-import { SandboxUnavailableError } from "@pomtree/core";
+import { SandboxBackendMismatchError, SandboxUnavailableError, sandboxIdForKey } from "@pomtree/core";
 import type { AgentId, AgentRecord, Sandbox } from "@pomtree/core";
 import type { Live } from "../daemon-types.ts";
 import { isStoreDown, journalFailed, spawnedPayload } from "../daemon-util.ts";
@@ -642,6 +642,20 @@ export class Reconcile {
   // same-host containers whose record is not running are stopped; a second container labelled for an already-
   // adopted agent is superseded and stopped. Agents being driven right now (this.live) are never touched.
   async reconcileSandboxes() {
+    // The backend comes from the RECORD, never from current config. A record on this host that holds a live sandbox (non-terminal)
+    // under another backend cannot be listed, adopted or stopped here, so boot refuses with the mismatch error naming both ids
+    // and the action. A record on another host, or a finished one, is not this daemon's to refuse. A record that holds a sandbox
+    // but names no backend (written before the field existed, or damaged) cannot be matched to any backend: refused too.
+    const selected = this.ctx.deps.sandbox.declaration.backend;
+    for (const r of await this.ctx.deps.registry.list({ excludeState: "reaped" })) {
+      if (r.sandbox === null || r.host !== this.ctx.deps.hostId || isDone(r)) continue;
+      if (r.sandboxBackend === null) {
+        throw new Error(
+          `agent ${r.id} holds sandbox ${r.sandbox} but its record names no sandbox backend (written by a build before the field existed, or damaged), so the sandbox cannot be matched to a backend; move the database file aside and restart to re-initialize`,
+        );
+      }
+      if (r.sandboxBackend !== selected) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend, selected);
+    }
     let listed: Awaited<ReturnType<Sandbox["list"]>>;
     try {
       listed = await this.ctx.deps.sandbox.list(sandboxOwner(this.ctx.deps, this.epoch));
@@ -683,6 +697,19 @@ export class Reconcile {
       }
       if (r.state === "running" && r.host === this.ctx.deps.hostId) {
         if (r.sandbox === s.id) continue; // already adopted
+        // The id start() recorded before its provider call is the key-derived one. An adapter whose ids are not derived names the
+        // sandbox otherwise: link the listed sandbox that reports this record's generation (and this host), and only that one; a
+        // lower-generation sandbox of the same agent is stale and falls through to the stop below.
+        if (
+          r.sandbox === sandboxIdForKey(`${r.id}:${r.generation}:start`) &&
+          s.generation === r.generation &&
+          (s.host === null || s.host === this.ctx.deps.hostId)
+        ) {
+          await this.ctx.deps.registry
+            .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`)
+            .catch(journalFailed(this.ctx.record, r, "adopt-bind"));
+          continue;
+        }
         if (r.sandbox !== null) {
           // A second container labelled for an already-adopted agent is superseded; keep the registry's sandbox.
           await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
@@ -690,7 +717,7 @@ export class Reconcile {
           // Links the live container's sandbox id into the registry; reconcile() then re-adopts it via
           // Sandbox.attach (see adoptRunning) so a checkpoint-less running agent survives the restart.
           await this.ctx.deps.registry
-            .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`)
+            .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`, selected)
             .catch(journalFailed(this.ctx.record, r, "adopt-bind"));
         }
         continue;

@@ -17,7 +17,9 @@ import {
   EXIT_CAUSE_WORDING,
   START_FAILURE_CAUSE,
   SandboxStartError,
+  SandboxOutcomeUnknownError,
   SandboxUnavailableError,
+  sandboxIdForKey,
   TemplateError,
   type SandboxSpec,
   CONFIG_DEFAULTS,
@@ -92,7 +94,7 @@ import {
 import type { WaitCtx } from "../daemon-util.ts";
 import type { DaemonCtx, ForceResumeCause, InterruptMode } from "./ctx.ts";
 import type { Budget } from "./budget.ts";
-import { sandboxOpKey } from "./sandbox-ops.ts";
+import { sandboxOpKey, sandboxOwner } from "./sandbox-ops.ts";
 import type { Merge } from "./merge.ts";
 import type { Messaging } from "./messaging.ts";
 import type { Reconcile } from "./reconcile.ts";
@@ -1403,6 +1405,33 @@ export class Lifecycle {
     })();
   }
 
+  // Starts the run's sandbox. The backend and the derived sandbox id are persisted BEFORE the provider call, so a crash anywhere
+  // after leaves a record naming the backend that may hold the sandbox (and the fence refuses a different backend: it throws
+  // SandboxBackendMismatchError and nothing starts). A start that throws SandboxOutcomeUnknownError is settled by looking for the
+  // sandbox in list(owner): found, it is adopted through attach (never a second start); absent, one retry with the same key.
+  // Safety of that retry rests on the provider's idempotency of the key (the adapter's declared unique-name, native-token or
+  // tag-lookup), not on anything the daemon does: a backend declaring idempotency "none" is refused at admission. A definite
+  // failure clears the recorded id (and with it the backend pin), so no record points at a sandbox that does not exist and the
+  // run is not stuck on the backend that failed. After an unknown outcome the pointer is NEVER cleared, whatever follows (a
+  // second unknown outcome, a failed list or attach): the sandbox may exist, and boot reconcile adopts or stops it by that id.
+  private async startSandbox(rec: AgentRecord, gen: number, spec: SandboxSpec): Promise<SandboxHandle> {
+    const d = this.ctx.deps;
+    const id = rec.id;
+    const key = `${id}:${gen}:start`;
+    await d.registry.setSandbox(id, gen, sandboxIdForKey(key), `${id}:${gen}:sandbox-intent`, d.sandbox.declaration.backend);
+    try {
+      return await d.sandbox.start(spec, key);
+    } catch (e) {
+      if (!(e instanceof SandboxOutcomeUnknownError)) {
+        await d.registry.setSandbox(id, gen, null, `${id}:${gen}:sandbox-intent-clear`).catch(() => {});
+        throw e;
+      }
+      const listed = await d.sandbox.list(sandboxOwner(d, this.epoch));
+      if (listed.some((s) => s.id === e.id && s.agent === id)) return await d.sandbox.attach(e.id, id);
+      return await d.sandbox.start(spec, key);
+    }
+  }
+
   private ownerLabels(): Record<string, string> {
     return { daemon_epoch: this.epoch, ...(this.ctx.deps.storeId !== undefined && { store_id: this.ctx.deps.storeId }) };
   }
@@ -1683,9 +1712,9 @@ export class Lifecycle {
           ...(deadlineAt !== undefined && { POMTREE_AGENT_DEADLINE_AT: new Date(deadlineAt).toISOString() }),
         },
       };
-      // TODO(restart-start-retry): decide whether to retry a failed start. Current behavior: a failed start ends the run.
-      // The error is journaled as a drive-error row; e2e fault-gaps.test.ts (restart-rollback) pins the resume path.
-      entry.sandbox = await d.sandbox.start(sandboxSpec, `${id}:${gen}:start`);
+      // A failed start ends the run (journaled as a drive-error row; e2e fault-gaps.test.ts (restart-rollback) pins the resume
+      // path). An unknown outcome is not a failure: startSandbox adopts the sandbox if it was created.
+      entry.sandbox = await this.startSandbox(rec, gen, sandboxSpec);
       await d.registry.setSandbox(id, gen, entry.sandbox.id, `${id}:${gen}:sandbox-set`);
       await this.journalSandbox(rec, gen, "started", entry.sandbox.id, {
         spec: describeSandboxSpec(sandboxSpec),

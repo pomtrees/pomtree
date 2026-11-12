@@ -68,6 +68,26 @@ export class SandboxOutcomeUnknownError extends Error {
   }
 }
 
+// A record's live sandbox belongs to a different backend than the one now selected. The pin lifecycle is a deliberate rule
+// (state-validate.ts, sandboxBackendAfter): the backend is pinned for as long as the record holds a sandbox id, and clearing the
+// sandbox clears the pin, so a run whose start failed definitively under one backend is not stuck on it, while a live sandbox
+// keeps its backend. Resume, attach, reclaim and a second start refuse rather than look for the sandbox in the wrong place. The
+// action works without the daemon: select the recorded backend again, or remove the sandbox with that backend's own tooling.
+export class SandboxBackendMismatchError extends Error {
+  sandbox: SandboxId | null;
+  recorded: SandboxBackendId;
+  selected: SandboxBackendId;
+  constructor(sandbox: SandboxId | null, recorded: SandboxBackendId, selected: SandboxBackendId) {
+    super(
+      `agent record${sandbox === null ? "" : ` (sandbox ${sandbox})`} was created under backend ${recorded}; the selected backend is ${selected}; set sandbox.backend back to ${recorded}, or remove ${sandbox === null ? "its sandbox" : `sandbox ${sandbox}`} with ${recorded}'s own tooling, then restart`,
+    );
+    this.name = "SandboxBackendMismatchError";
+    this.sandbox = sandbox;
+    this.recorded = recorded;
+    this.selected = selected;
+  }
+}
+
 // A capability the caller needs is declared false (or its facet is missing) on the active backend.
 export class SandboxCapabilityError extends Error {
   backend: SandboxBackendId;

@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CHECKPOINT_FORMAT, IdempotencyConflictError, IllegalTransitionError, StaleGenerationError, UnsupportedCheckpointVersion } from "@pomtree/core";
+import {
+  CHECKPOINT_FORMAT,
+  IdempotencyConflictError,
+  SandboxBackendMismatchError,
+  IllegalTransitionError,
+  StaleGenerationError,
+  UnsupportedCheckpointVersion,
+} from "@pomtree/core";
 import type { ApprovalRequester, ExitCause, ExitStatus, Schedule, WatchdogState } from "@pomtree/core";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -1210,4 +1217,60 @@ test("checkpoints: the folder fields round-trip", async () => {
   assert.equal(back?.ingested, null);
   assert.equal("commit" in (back ?? {}), false);
   s.close();
+});
+
+test("registry.setSandbox pins the sandbox backend while a sandbox is held and clears the pin with the sandbox", async () => {
+  const dir = tmpDir("store-sbk-");
+  const file = join(dir, "s.sqlite");
+  const s = openStore(file);
+  const a = await s.registry.create(newAgent("k-sbk"));
+  assert.equal(a.sandboxBackend, null);
+  const set = await s.registry.setSandbox(a.id, 0, "sb1", "k-sbk-1", "docker");
+  assert.equal(set.sandboxBackend, "docker");
+  assert.equal((await s.registry.setSandbox(a.id, 0, "sb1", "k-sbk-1b", "docker")).sandboxBackend, "docker", "the same backend is idempotent");
+  assert.equal((await s.registry.setSandbox(a.id, 0, "sb1", "k-sbk-1c")).sandboxBackend, "docker", "no backend given keeps the pin");
+  await assert.rejects(
+    () => s.registry.setSandbox(a.id, 0, "sb2", "k-sbk-4", "podman"),
+    (e: unknown) =>
+      e instanceof SandboxBackendMismatchError &&
+      e.message ===
+        "agent record (sandbox sb1) was created under backend docker; the selected backend is podman; set sandbox.backend back to docker, or remove sandbox sb1 with docker's own tooling, then restart",
+  );
+  const rec = await s.registry.get(a.id);
+  assert.equal(rec?.sandbox, "sb1", "a refused write changes nothing");
+  assert.equal(rec?.sandboxBackend, "docker");
+  s.close();
+  const again = openStore(file);
+  assert.equal((await again.registry.get(a.id))?.sandboxBackend, "docker", "the backend survives a reopen");
+  // Clearing the sandbox clears the pin, so a run whose start failed under docker can start under podman.
+  assert.equal((await again.registry.setSandbox(a.id, 0, null, "k-sbk-5")).sandboxBackend, null);
+  assert.equal((await again.registry.setSandbox(a.id, 0, "sb3", "k-sbk-6", "podman")).sandboxBackend, "podman");
+  await assert.rejects(() => again.registry.setSandbox(a.id, 0, null, "k-sbk-7", "podman"), /pass the sandbox id too, or omit the backend/);
+  again.close();
+});
+
+test("a stored sandbox backend that is empty or malformed fails the read with cause and action", async () => {
+  const dir = tmpDir("store-sbk-bad-");
+  const file = join(dir, "s.sqlite");
+  const s = openStore(file);
+  const a = await s.registry.create(newAgent("k-sbk-bad"));
+  const raw = new DatabaseSync(file);
+  raw.prepare("UPDATE agents SET sandbox_backend='' WHERE id=?").run(a.id);
+  await assert.rejects(() => s.registry.get(a.id), /invalid sandbox backend "".*move the database file aside and restart/);
+  raw.prepare("UPDATE agents SET sandbox_backend='Not A Backend' WHERE id=?").run(a.id);
+  await assert.rejects(() => s.registry.list(), /invalid sandbox backend "Not A Backend"/);
+  raw.close();
+  s.close();
+});
+
+test("a store whose agents table has no sandbox_backend column is refused at open, naming the action", () => {
+  const dir = tmpDir("store-sbk-col-");
+  const file = join(dir, "s.sqlite");
+  openStore(file).close();
+  const raw = new DatabaseSync(file);
+  const cols = () => (raw.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).map((c) => c.name);
+  assert.ok(cols().includes("sandbox_backend"), "the baseline creates the column");
+  raw.exec("ALTER TABLE agents DROP COLUMN sandbox_backend");
+  raw.close();
+  assert.throws(() => openStore(file), /agents\.sandbox_backend.*move the file aside and restart to re-initialize/);
 });

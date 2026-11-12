@@ -180,6 +180,7 @@ interface AgentRecordBase {
   host: HostId;
   generation: number; // fencing token; bumped on every resume
   sandbox: SandboxId | null; // live sandbox id, null when none; lets a restarted daemon stop/kill/inspect without container labels (the daemon keeps no state in memory)
+  sandboxBackend: SandboxBackendId | null; // the backend the run's sandbox was started under; null until the first start, then fixed (fenceSandboxBackend)
   budgetMicros: number; // carved out of the parent's
   createdAt: number; // epoch ms
   updatedAt: number;

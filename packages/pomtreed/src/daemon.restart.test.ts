@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AgentRecord, JournalEntry } from "@pomtree/core";
+import { SandboxBackendMismatchError, sandboxIdForKey } from "@pomtree/core";
+import type { AgentRecord, JournalEntry, Sandbox, SandboxListing } from "@pomtree/core";
 import { get, setup, spawnSpec, until } from "./test-setup.ts";
 
 const done = (t: ReturnType<typeof setup>, id: string) => async () => (await get(t, id)).state === "exited" || (await get(t, id)).state === "reaped";
@@ -309,4 +310,149 @@ test("probeStore: a failing write keeps the latch", async () => {
   d.degraded = true;
   await t.daemon.probeStore();
   assert.equal(d.degraded, true);
+});
+
+const ok = (c: { api: (m: string, u: string, b?: unknown) => Promise<unknown> }) =>
+  c.api("POST", "/v1/agents/self/result", { result: { summary: "ok", value: "ok" } });
+const MISMATCH_DOCKER = (sandbox: string) =>
+  `agent record (sandbox ${sandbox}) was created under backend docker; the selected backend is fake; set sandbox.backend back to docker, or remove sandbox ${sandbox} with docker's own tooling, then restart`;
+// A running agent on this host whose record holds `sandbox`, pinned to `backend` (undefined: written through the fake's agents map, no pin).
+async function holder(t: ReturnType<typeof setup>, name: string, sandbox: string, backend?: string, o: { host?: string; exited?: boolean } = {}) {
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const a = await reg.create({ spec: spawnSpec, parent: root.id, name, task: "t", host: o.host ?? "h1", budgetMicros: 100_000, idempotencyKey: name });
+  await reg.transition(a.id, a.generation, "running", { idempotencyKey: `${name}-run` });
+  if (backend !== undefined) await reg.setSandbox(a.id, a.generation, sandbox, `${name}-sb`, backend);
+  else (t.fakes.hooks.raw.registry.agents.get(a.id) as { sandbox: string | null }).sandbox = sandbox; // legacy: a sandbox with no backend
+  if (o.exited) await reg.transition(a.id, a.generation, "exited", { exit: "succeeded", idempotencyKey: `${name}-x` });
+  return a;
+}
+
+for (const applied of [true, false]) {
+  test(`sandbox-backend: a start with an unknown outcome (sandbox ${applied ? "created" : "not created"}) yields exactly one sandbox and pins the backend while it runs`, async () => {
+    let pinned: string | null | undefined;
+    const t = setup(async (c) => {
+      pinned = (await get(t, c.agent)).sandboxBackend;
+      await ok(c);
+    });
+    t.fakes.hooks.raw.sandbox.faults.add("start", { kind: "unknown-outcome", applied });
+    const a = await t.spawn();
+    await t.orchestrator.idle();
+    assert.equal((await get(t, a.id)).exit, "succeeded", "the run completes on the adopted or retried sandbox");
+    assert.equal(t.fakes.hooks.raw.sandbox.started.length, 1, "no second sandbox");
+    assert.equal(pinned, "fake", "the backend was recorded while the sandbox ran");
+  });
+}
+
+test("sandbox-backend: a second unknown outcome keeps the recorded sandbox id (the sandbox may exist) instead of clearing it", async () => {
+  const t = setup(async () => {});
+  const sb = t.fakes.hooks.raw.sandbox;
+  sb.faults.add("start", { kind: "unknown-outcome", applied: false }).add("start", { kind: "unknown-outcome", applied: true });
+  await t.spawn();
+  await t.orchestrator.idle();
+  assert.equal(sb.started.length, 1, "the second attempt did create the sandbox");
+  const cleared = t.fakes.calls.filter((c) => c.port === "Registry" && c.method === "setSandbox" && String(c.args[3]).endsWith(":sandbox-intent-clear"));
+  assert.equal(cleared.length, 0, "the pointer to the possibly created sandbox was never cleared by startSandbox");
+});
+
+test("sandbox-backend: a definite start failure clears the recorded id and with it the backend pin", async () => {
+  const t = setup(async () => {});
+  t.fakes.hooks.raw.sandbox.faults.add("start", { kind: "error", error: new Error("boom") });
+  const a = await t.spawn();
+  await t.orchestrator.idle();
+  const cleared = t.fakes.calls.filter((c) => c.port === "Registry" && c.method === "setSandbox" && String(c.args[3]).endsWith(":sandbox-intent-clear"));
+  assert.equal(cleared.length, 1);
+  assert.deepEqual([(await get(t, a.id)).sandbox, (await get(t, a.id)).sandboxBackend], [null, null]);
+});
+
+test("sandbox-backend: restart between persisting the backend and the create (sandbox never created) starts at most one sandbox and ends the run", async () => {
+  const t = setup(async () => {});
+  const sb = t.fakes.hooks.raw.sandbox;
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
+  await reg.transition(a.id, a.generation, "running", { idempotencyKey: "a-run" });
+  await reg.setSandbox(a.id, a.generation, sandboxIdForKey(`${a.id}:${a.generation}:start`), "intent", "fake");
+  await t.daemon.recover();
+  await t.orchestrator.idle();
+  const after = await get(t, a.id);
+  assert.ok(sb.started.length <= 1, `at most one sandbox: ${sb.started.length}`);
+  assert.ok(after.state === "exited" || after.state === "reaped" || after.generation > a.generation, `not stuck: ${after.state}`);
+});
+
+test("sandbox-backend: restart after the create (before the real id was recorded) links the listed sandbox of this generation only", async () => {
+  const t = setup(async () => {});
+  const sb = t.fakes.hooks.raw.sandbox;
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 100_000, idempotencyKey: "a" });
+  const b = await reg.bumpGeneration(a.id, "h1", "a-bump"); // generation 1
+  await reg.transition(b.id, b.generation, "running", { idempotencyKey: "a-run" });
+  await reg.setSandbox(b.id, b.generation, sandboxIdForKey(`${b.id}:${b.generation}:start`), "intent", "fake");
+  const spec = { agent: b.id, image: "img", env: {}, mounts: [], labels: { daemon_epoch: "0" } };
+  const stale = await sb.start(spec, "stale-gen0"); // listed first: the previous generation's leftover
+  const right = await sb.start(spec, `${b.id}:1:start`);
+  const gens = new Map([
+    [stale.id, 0],
+    [right.id, 1],
+  ]);
+  const wrapped = new Proxy(sb, {
+    get(target, prop) {
+      if (prop === "list")
+        return async (o: Parameters<Sandbox["list"]>[0]): Promise<SandboxListing[]> =>
+          (await target.list(o)).map((l) => ({ ...l, generation: gens.get(l.id) ?? null }));
+      const v = Reflect.get(target, prop, target);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  }) as Sandbox;
+  (t.daemon.deps as { sandbox: Sandbox }).sandbox = wrapped;
+  await t.daemon.recover();
+  assert.equal((await get(t, b.id)).sandbox, right.id, "bound to the sandbox of this generation");
+  assert.notEqual(sb.running.get(stale.id)!.exitCode, null, "the stale lower-generation sandbox was stopped");
+  assert.equal(sb.running.get(right.id)!.exitCode, null, "the correct sandbox was kept running");
+});
+
+test("sandbox-backend: a live sandbox recorded under another backend refuses boot with the exact mismatch message", async () => {
+  const t = setup(async () => {});
+  await holder(t, "a", "sb-docker-1", "docker");
+  await assert.rejects(
+    () => t.daemon.recover(),
+    (e: unknown) => e instanceof SandboxBackendMismatchError && e.message === MISMATCH_DOCKER("sb-docker-1"),
+  );
+  assert.equal(t.fakes.hooks.raw.sandbox.started.length, 0);
+});
+
+test("sandbox-backend: a record of another host, or a finished one, on another backend does not refuse boot; the selected backend boots (controls)", async () => {
+  const t = setup(async () => {});
+  await holder(t, "elsewhere", "sb-d-1", "docker", { host: "h2" });
+  await holder(t, "finished", "sb-d-2", "docker", { exited: true });
+  await holder(t, "mine", "sb-f-1", "fake");
+  await t.daemon.recover();
+});
+
+test("sandbox-backend: a record that holds a sandbox but names no backend refuses boot with cause and action", async () => {
+  const t = setup(async () => {});
+  const a = await holder(t, "a", "sb-legacy");
+  await assert.rejects(
+    () => t.daemon.recover(),
+    (e: unknown) =>
+      e instanceof Error &&
+      e.message.includes(`agent ${a.id} holds sandbox sb-legacy but its record names no sandbox backend`) &&
+      e.message.includes("move the database file aside and restart"),
+  );
+});
+
+test("sandbox-backend: the fake registry pins the backend while a sandbox is held and clears the pin with the sandbox, as the store does", async () => {
+  const t = setup(async () => {});
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const a = await reg.create({ spec: spawnSpec, parent: root.id, name: "a", task: "t", host: "h1", budgetMicros: 1, idempotencyKey: "a" });
+  assert.equal((await reg.setSandbox(a.id, 0, "s1", "k1", "docker")).sandboxBackend, "docker");
+  assert.equal((await reg.setSandbox(a.id, 0, "s1", "k1b", "docker")).sandboxBackend, "docker", "same backend is idempotent");
+  await assert.rejects(
+    () => reg.setSandbox(a.id, 0, "s2", "k2", "podman"),
+    (e: unknown) => e instanceof SandboxBackendMismatchError && e.recorded === "docker" && e.selected === "podman",
+  );
+  assert.equal((await reg.setSandbox(a.id, 0, null, "k3")).sandboxBackend, null, "clearing the sandbox clears the pin");
+  assert.equal((await reg.setSandbox(a.id, 0, "s3", "k4", "podman")).sandboxBackend, "podman", "a cleared run may start under another backend");
 });

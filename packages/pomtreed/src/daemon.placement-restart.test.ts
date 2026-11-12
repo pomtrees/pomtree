@@ -81,7 +81,7 @@ test("the running set and queue live in the store: a restarted daemon sees them,
     { agent: L.id, image: "img", env: {}, mounts: [{ kind: "workspace", workspace: "ws-test", containerPath: "/work" }] },
     "l-sb",
   );
-  await reg.setSandbox(L.id, L.generation, sb.id, "l-set");
+  await reg.setSandbox(L.id, L.generation, sb.id, "l-set", "fake");
   const S = await mk("stale");
   await reg.transition(S.id, S.generation, "running", { idempotencyKey: "s-run" });
   await reg.transition(S.id, S.generation, "exited", { exit: "succeeded", idempotencyKey: "s-exit" });

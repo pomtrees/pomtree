@@ -77,6 +77,7 @@ import type {
   SandboxFacets,
   SandboxChannel,
   SandboxHandle,
+  SandboxBackendId,
   SandboxId,
   SandboxListing,
   SandboxOwner,
@@ -169,6 +170,7 @@ import {
   validateDeclaration,
   STATE_LIMITS_DEFAULT,
   StaleGenerationError,
+  sandboxBackendAfter,
   StateError,
   stateWriterId,
   budgetLedger,
@@ -344,6 +346,11 @@ export class FakeRegistry implements Registry {
   agents = new Map<AgentId, AgentRecord>();
   // setRootPool journals through this in the same synchronous step as the change (wired by createFakes); unset, it throws.
   journal?: FakeJournal;
+  // Test convenience that the store does not have: a setSandbox that names a sandbox but no backend, on a record with no pin,
+  // pins this backend (createFakes sets it to the fake sandbox's own), so the many tests that set a sandbox by hand model a
+  // daemon that started it. Set it to undefined, or write `agents` directly, to build a legacy record that holds a sandbox
+  // with no backend.
+  defaultBackend: SandboxBackendId | undefined;
   // Own settled plus in-flight model use per agent for the ledger setRootPool reads (the fake has no debit buckets); default 0.
   ownUse: (id: AgentId) => number = () => 0;
   // The provider retry ladder's count per agent (bumpProviderAttempts), and each bump key's first answer.
@@ -381,6 +388,7 @@ export class FakeRegistry implements Registry {
       host: a.host,
       generation: 0,
       sandbox: null,
+      sandboxBackend: null,
       budgetMicros: a.budgetMicros,
       executor,
       spec,
@@ -442,11 +450,12 @@ export class FakeRegistry implements Registry {
       return a;
     });
   }
-  async setSandbox(id: AgentId, generation: number, sandbox: SandboxId | null, idempotencyKey: string) {
+  async setSandbox(id: AgentId, generation: number, sandbox: SandboxId | null, idempotencyKey: string, backend?: SandboxBackendId) {
     return this.once("setSandbox", idempotencyKey, () => {
       const a = this.must(id);
       if (generation !== a.generation) throw new StaleGenerationError(id, generation, a.generation);
-      Object.assign(a, { sandbox, updatedAt: this.now() });
+      const sandboxBackend = sandboxBackendAfter(a, sandbox, backend ?? (sandbox !== null && a.sandboxBackend === null ? this.defaultBackend : undefined));
+      Object.assign(a, { sandbox, sandboxBackend, updatedAt: this.now() });
       return a;
     });
   }
@@ -3197,6 +3206,7 @@ export function createFakes(script: Script = {}): Fakes {
     captures: new FakeCaptureIndex(now),
     captureParser: new FakeCaptureParser(),
   };
+  registry.defaultBackend = raw.sandbox.declaration.backend;
   return {
     journal: wrap("Journal", raw.journal, calls),
     registry: wrap("Registry", raw.registry, calls),

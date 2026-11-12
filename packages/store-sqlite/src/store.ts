@@ -9,7 +9,9 @@ import {
   RootWithdrawalError,
   CHECKPOINT_FORMAT,
   checkpointOf,
+  checkAgentSandboxBackend,
   checkExecutorSpec,
+  sandboxBackendAfter,
   decodeGatewayCredential,
   newAgentExecutor,
   JOURNAL_PRUNABLE_KINDS,
@@ -154,7 +156,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS idempotency (scope TEXT NOT NULL, key TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, fingerprint TEXT, PRIMARY KEY (scope, key));
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, parent TEXT, name TEXT NOT NULL, task TEXT NOT NULL, state TEXT NOT NULL,
-  exit TEXT, result TEXT, host TEXT NOT NULL, generation INTEGER NOT NULL, sandbox TEXT, budget_micros INTEGER NOT NULL,
+  exit TEXT, result TEXT, host TEXT NOT NULL, generation INTEGER NOT NULL, sandbox TEXT, sandbox_backend TEXT, budget_micros INTEGER NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, seq INTEGER NOT NULL,
   spec TEXT NOT NULL DEFAULT '{}', exit_cause TEXT,
   executor TEXT NOT NULL DEFAULT 'container' CHECK (executor IN ('container','deterministic'))
@@ -293,6 +295,14 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
       db.exec(CAPTURE_SCHEMA);
     },
   });
+  // Pre-release there is one baseline and no migration path: an agents table from a build before sandbox_backend existed has
+  // no such column and cannot hold the fence, so refuse it loudly rather than fail on the first write.
+  if (!(db.prepare("PRAGMA table_info(agents)").all() as Row[]).some((c) => c.name === "sandbox_backend")) {
+    db.close();
+    throw new Error(
+      `store ${path} was created by a build before agents.sandbox_backend existed, so it cannot record which sandbox backend started a run; refusing to open: move the file aside and restart to re-initialize`,
+    );
+  }
   const pollMs = Math.max(10, Math.trunc(opts.subscribePollMs ?? 250));
   // The request fingerprint once() stores beside a key (idem-fingerprint): sha256 of the canonical JSON (keys sorted) of the
   // request, so a replay of the same request matches whatever order its fields were built in.
@@ -316,6 +326,7 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
       host: r.host,
       generation: r.generation,
       sandbox: r.sandbox ?? null,
+      sandboxBackend: checkAgentSandboxBackend(r.id, r.sandbox_backend),
       budgetMicros: r.budget_micros,
       executor,
       spec,
@@ -521,8 +532,8 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
           const now = Date.now();
           const { executor, spec } = newAgentExecutor(a);
           db.prepare(
-            "INSERT INTO agents (id,parent,name,task,state,exit,exit_cause,result,host,generation,sandbox,budget_micros,spec,created_at,updated_at,seq,executor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-          ).run(id, a.parent, a.name, a.task, "pending", null, null, null, a.host, 0, null, a.budgetMicros, JSON.stringify(spec), now, now, 0, executor);
+            "INSERT INTO agents (id,parent,name,task,state,exit,exit_cause,result,host,generation,sandbox,sandbox_backend,budget_micros,spec,created_at,updated_at,seq,executor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          ).run(id, a.parent, a.name, a.task, "pending", null, null, null, a.host, 0, null, null, a.budgetMicros, JSON.stringify(spec), now, now, 0, executor);
           return mustAgent(id);
         },
         fingerprintOf(request),
@@ -561,11 +572,12 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
         return mustAgent(id);
       });
     },
-    async setSandbox(id, generation, sandbox, idempotencyKey) {
+    async setSandbox(id, generation, sandbox, idempotencyKey, backend) {
       return once("registry.setSandbox", idempotencyKey, () => {
         const a = mustAgent(id);
         if (a.generation !== generation) throw new StaleGenerationError(id, generation, a.generation);
-        db.prepare("UPDATE agents SET sandbox=?, updated_at=? WHERE id=?").run(sandbox, Date.now(), id);
+        const sandboxBackend = sandboxBackendAfter(a, sandbox, backend);
+        db.prepare("UPDATE agents SET sandbox=?, sandbox_backend=?, updated_at=? WHERE id=?").run(sandbox, sandboxBackend, Date.now(), id);
         return mustAgent(id);
       });
     },

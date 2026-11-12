@@ -26,6 +26,7 @@ export const agent = (id: string, parent: string | null, extra: AgentFixtureExtr
     result: null,
     host: "h1",
     sandbox: null,
+    sandboxBackend: null,
     generation: 0,
     budgetMicros: 1_000_000,
     createdAt: 0,

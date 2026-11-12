@@ -46,7 +46,7 @@ async function seedRunning(r: Rig, sb: FakeSandbox, name: string, o: { container
   let sandbox: string | undefined;
   if ((o.container ?? "none") !== "none") {
     const h = await sb.start(sbSpec(a), `${name}-sb`);
-    await reg.setSandbox(a.id, a.generation, h.id, `${name}-set`);
+    await reg.setSandbox(a.id, a.generation, h.id, `${name}-set`, "fake");
     if (o.container === "dead") await sb.kill(h.id, `${h.id}:test-kill`);
     sandbox = h.id;
   }
