@@ -136,14 +136,15 @@ test("a retryable provider_error yields with a timer wait and resumes after back
     { limits: { providerBackoffMs: 20, maxProviderBackoffMs: 100, maxProviderRetries: 3 }, random: () => 0.5 },
   );
   await t.spawn();
-  await until(async () => aId !== "" && (await t.daemon.get(aId))!.state === "yielded", 30_000).catch(() => {
-    throw new Error("agent never yielded on the provider-error timer wait within 30s");
+  // The backoff is ~10-20 ms, so the "yielded" state is gone before a poll under load can see it; wait on the terminal state
+  // and assert the durable record (the yield checkpoint and the journal) afterwards.
+  // TODO(load-flakes): the backoff runs on the daemon's real timer; a fake clock for the provider backoff would let the test
+  // observe the yielded state itself, deterministically. Until then it asserts only the checkpoint and journal after the fact.
+  await until(async () => kinds(await t.journal.read({ agent: aId })).includes("exited:succeeded"), 30_000).catch(() => {
+    throw new Error("agent never resumed and exited:succeeded after the provider-error backoff within 30s");
   });
   const cp = (await t.daemon.deps.checkpoints.latest(aId))!;
   assert.equal((cp.wait as { kind: string }).kind, "timer");
-  await until(async () => kinds(await t.journal.read({ agent: aId })).includes("exited:succeeded"), 30_000).catch(() => {
-    throw new Error("agent never resumed and exited:succeeded after backoff within 30s");
-  });
   const seen = kinds(await t.journal.read({ agent: aId }));
   assert.ok(seen.includes("yielded"));
   assert.ok(seen.includes("resumed"));
