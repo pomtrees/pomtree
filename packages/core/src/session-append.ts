@@ -8,6 +8,9 @@ import type { AgentId } from "./types.ts";
 // at the acknowledged offset and keeps the chain; it never restarts the stream at 0. Pure: no fs, no sockets. Both sides call the same validators and `applyAppend`, so the forwarder and the handler cannot
 // drift. Records hold ids, offsets and digests only, never local paths. The endpoint itself belongs to the daemon.
 
+// TODO(session-forwarder-sender): no sender uses these types yet, so session events from a remote sandbox do not reach the store; current behavior:
+// the request and response types and validators exist and nothing in the sandbox image forwards. A stale chain must make the sender stop and ask
+// for a restart from the daemon's current state, never from offset 0.
 export const SESSION_APPEND_STREAMS = ["events", "session"] as const;
 export type SessionAppendStream = (typeof SESSION_APPEND_STREAMS)[number];
 
