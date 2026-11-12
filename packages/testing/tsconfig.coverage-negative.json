@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "files": ["src/sandbox-coverage.negative.ts"],
+  "include": []
+}

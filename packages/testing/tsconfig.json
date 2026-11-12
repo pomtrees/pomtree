@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
   "include": ["src", "bin"],
-  "exclude": ["src/**/*-missing-mode.fixture.ts"]
+  "exclude": ["src/**/*-missing-mode.fixture.ts", "src/sandbox-coverage.negative.ts"]
 }
