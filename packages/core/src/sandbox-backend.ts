@@ -91,6 +91,9 @@ export type SandboxBackendModule = Pick<SandboxBackendProvider, "portVersion" | 
 export const RESERVED_SANDBOX_BACKEND_IDS: readonly string[] = ["auto", "docker", "podman", "kubernetes", "sail", "e2b"];
 const BACKEND_ID_RE = /^[a-z][a-z0-9-]{0,30}$/;
 
+// True when `id` has the shape of a backend id (the pattern only: reserved names are validateBackendId's concern).
+export const isBackendId = (id: unknown): id is string => typeof id === "string" && BACKEND_ID_RE.test(id);
+
 // Refuses an id a contributed backend may not use. Returns the id so a caller can chain it.
 export function validateBackendId(id: string): string {
   if (!BACKEND_ID_RE.test(id)) {

@@ -1,5 +1,6 @@
 export * from "./types.ts";
 export * from "./errors.ts";
+export * from "./image-artifact.ts";
 export * from "./ports.ts";
 export * from "./sandbox-capabilities.ts";
 export * from "./sandbox-backend.ts";

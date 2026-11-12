@@ -498,6 +498,17 @@ export interface ImageArtifact {
   idempotencyKey: string; // the key of the call that produced it
 }
 
+// The durable record of derived images, one row per (configDigest, backend). Rows hold ids and digests, never local paths.
+export interface ImageArtifacts {
+  // Idempotent by `a.idempotencyKey` with a fingerprint of the whole artifact: a replay of the same artifact returns the stored one
+  // with no second row, a different artifact under the same key throws IdempotencyConflictError and changes nothing. A write whose
+  // generation is below the stored row's for the same (configDigest, backend) throws StaleGenerationError; an equal or higher one
+  // replaces the row. Throws on an invalid artifact (bad digest, path-looking reference).
+  put(a: ImageArtifact): Promise<ImageArtifact>;
+  // The exact (configDigest, backend) row, or null; a null backend reads the registry artifact only. Throws if the stored row is invalid.
+  get(configDigest: string, backend: SandboxBackendId | null): Promise<ImageArtifact | null>;
+}
+
 export interface SnapshotRef {
   id: SnapshotId;
   backend: SandboxBackendId;

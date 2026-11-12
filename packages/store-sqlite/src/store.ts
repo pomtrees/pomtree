@@ -27,6 +27,7 @@ import {
 } from "@pomtree/core";
 import { openVersionedDb } from "./db.ts";
 import { CAPTURE_SCHEMA, sqliteCaptureIndex } from "./capture-index.ts";
+import { IMAGE_ARTIFACT_PUT_SCOPE, IMAGE_ARTIFACT_SCHEMA, sqliteImageArtifacts } from "./image-artifacts.ts";
 import type { BackupPruneReport, Migration, Row } from "./db.ts";
 import type {
   AgentId,
@@ -49,6 +50,7 @@ import type {
   LedgerView,
   QuotaCounters,
   CaptureIndex,
+  ImageArtifacts,
   Escalation,
   EscalationId,
   EscalationState,
@@ -126,6 +128,8 @@ export interface Store {
   generationOf(agent: AgentId): number | undefined;
   // The capture broker's durable jobs, positive and negative caches and domain pauses (core CaptureIndex).
   captures: CaptureIndex;
+  // Derived images by (configDigest, backend), fenced by generation (core ImageArtifacts).
+  imageArtifacts: ImageArtifacts;
   // Durable fixed-window counters (core QuotaCounters) for quotas and pacing that must survive a restart.
   quotaCounters(): QuotaCounters;
   /** Deletes quota windows that started before `beforeMs`, and lifetime (window 0) counters last changed before
@@ -143,7 +147,7 @@ export type SqliteModelDebitStore = DurableModelDebitStore & Required<Pick<Durab
 // result, never re-execute (a second agent for one spawn, a second budget raise for one grant, a second usage charge for one
 // joined model call). Joined usage identities outlive journal pruning, like the debit ledger's per-request records.
 const JOURNAL_USAGE_SCOPE = "journal.usage";
-export const IDEMPOTENCY_KEPT_SCOPES = ["registry.create", "registry.raiseBudget", JOURNAL_USAGE_SCOPE] as const;
+export const IDEMPOTENCY_KEPT_SCOPES = ["registry.create", "registry.raiseBudget", JOURNAL_USAGE_SCOPE, IMAGE_ARTIFACT_PUT_SCOPE] as const;
 
 // SQLite `PRAGMA application_id` of a store database: big-endian ASCII "POMS". Stamped by the baseline; a database without it
 // (a pre-release build) or with another id is refused (db.ts).
@@ -293,6 +297,7 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
     baseline(db) {
       db.exec(SCHEMA);
       db.exec(CAPTURE_SCHEMA);
+      db.exec(IMAGE_ARTIFACT_SCHEMA);
     },
   });
   // Pre-release there is one baseline and no migration path: an agents table from a build before sandbox_backend existed has
@@ -1673,6 +1678,7 @@ export function openStore(path: string = ":memory:", opts: OpenOptions = {}): St
     },
     generationOf: (agent) => getAgent(agent)?.generation,
     captures: sqliteCaptureIndex({ db, once, fingerprintOf, now: () => Date.now() }),
+    imageArtifacts: sqliteImageArtifacts({ db, once, fingerprintOf }),
     quotaCounters: () => quotaCounters,
     // A windowed row goes once its window started before the cutoff; a lifetime row (window 0) only once it has not been
     // touched since the cutoff, so a live agent's or task's lifetime cap is never reset by the sweep.

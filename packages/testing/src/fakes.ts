@@ -151,6 +151,12 @@ import {
   decodeGatewayCredential,
   encodeGatewayCredential,
   IdempotencyConflictError,
+  assertImageArtifactFence,
+  replayOfImageArtifact,
+  checkImageArtifact,
+  imageArtifactSlot,
+  type ImageArtifact,
+  type ImageArtifacts,
   IllegalTransitionError,
   isLevelKind,
   JOURNAL_PRUNABLE_KINDS,
@@ -3128,6 +3134,7 @@ export interface Fakes {
   placement: FakePlacement;
   extensions: FakeExtensionGateway;
   captures: FakeCaptureIndex;
+  imageArtifacts: ImageArtifacts;
   captureParser: FakeCaptureParser;
   calls: CallLog;
   hooks: Hooks;
@@ -3161,6 +3168,7 @@ export interface Hooks {
     placement: FakePlacement;
     extensions: FakeExtensionGateway;
     captures: FakeCaptureIndex;
+    imageArtifacts: FakeImageArtifacts;
     captureParser: FakeCaptureParser;
   };
   exitSandbox(id: SandboxId, code: number, oomKilled?: boolean): void;
@@ -3206,6 +3214,7 @@ export function createFakes(script: Script = {}): Fakes {
     placement: new FakePlacement(script.placement ?? (() => ({ host })), host, script.placementMaxConcurrent ?? 4, script.placementStatus),
     extensions: new FakeExtensionGateway(),
     captures: new FakeCaptureIndex(now),
+    imageArtifacts: new FakeImageArtifacts(),
     captureParser: new FakeCaptureParser(),
   };
   registry.defaultBackend = raw.sandbox.declaration.backend;
@@ -3235,6 +3244,7 @@ export function createFakes(script: Script = {}): Fakes {
     placement: wrap("Placement", raw.placement, calls),
     extensions: wrap("ExtensionGateway", raw.extensions, calls),
     captures: wrap("CaptureIndex", raw.captures, calls),
+    imageArtifacts: wrap("ImageArtifacts", raw.imageArtifacts, calls),
     captureParser: wrap("CaptureParser", raw.captureParser, calls),
     calls,
     hooks: {
@@ -3973,6 +3983,90 @@ export async function hostStoreContractBody(w: HostStoreContractWorld): Promise<
   assert.ok(rd.seq > rc.seq);
   const rb2 = await hs.reserve(nr("b", 5), "r6"); // re-reserving a released agent is a fresh insert with a new seq
   assert.ok(rb2.seq > rd.seq);
+}
+
+// In-memory ImageArtifacts with the durable adapter's rules (store-sqlite image-artifacts.ts), through the same core helpers:
+// validation, the generation fence, and idempotency by key with a whole-artifact fingerprint.
+export class FakeImageArtifacts implements ImageArtifacts {
+  readonly rows = new Map<string, ImageArtifact>();
+  private keys = new Map<string, { fingerprint: string; result: ImageArtifact }>();
+  async put(a: ImageArtifact): Promise<ImageArtifact> {
+    checkImageArtifact(a);
+    const fingerprint = JSON.stringify(a, Object.keys(a).sort());
+    const scoped = `imageArtifacts.put:${a.idempotencyKey}`;
+    const hit = this.keys.get(scoped);
+    if (hit) {
+      if (hit.fingerprint !== fingerprint) throw new IdempotencyConflictError("imageArtifacts.put", a.idempotencyKey);
+      return structuredClone(hit.result);
+    }
+    const slot = imageArtifactSlot(a.configDigest, a.backend);
+    const stored = this.rows.get(slot) ?? null;
+    const replay = replayOfImageArtifact(stored, a);
+    if (replay) return structuredClone(replay);
+    assertImageArtifactFence(stored, a);
+    this.rows.set(slot, structuredClone(a));
+    this.keys.set(scoped, { fingerprint, result: structuredClone(a) });
+    return structuredClone(a);
+  }
+  async get(configDigest: string, backend: string | null): Promise<ImageArtifact | null> {
+    const a = this.rows.get(imageArtifactSlot(configDigest, backend));
+    return a ? structuredClone(a) : null;
+  }
+}
+
+export interface ImageArtifactsContractWorld {
+  imageArtifacts: ImageArtifacts;
+}
+
+// ImageArtifacts contract: a replay of one key returns the stored artifact (one row); the same key with different content is an
+// IdempotencyConflictError that changes nothing; a write below the slot's generation is StaleGenerationError; an equal or higher one
+// replaces; slots are per backend; a path-looking reference or a bad digest is refused and nothing is stored.
+export async function imageArtifactsContractBody(w: ImageArtifactsContractWorld): Promise<void> {
+  const ia = w.imageArtifacts;
+  const digest = `sha256:${"a".repeat(64)}`;
+  const base: ImageArtifact = {
+    configDigest: digest,
+    revision: "r1",
+    engineLocalId: null,
+    providerImage: "tmpl-1",
+    backend: "e2b",
+    hostId: "h",
+    generation: 2,
+    idempotencyKey: "ia-1",
+  };
+  const first = await ia.put(base);
+  assert.deepEqual(first, base);
+  assert.deepEqual(await ia.put({ ...base }), first); // replay: same key, same content
+  assert.deepEqual(await ia.get(digest, "e2b"), base);
+  assert.equal(await ia.get(digest, null), null);
+  assert.equal(await ia.get(digest, "docker"), null);
+  await assert.rejects(() => ia.put({ ...base, providerImage: "tmpl-2" }), IdempotencyConflictError);
+  assert.deepEqual(await ia.get(digest, "e2b"), base); // the conflict changed nothing
+  await assert.rejects(() => ia.put({ ...base, generation: 1, idempotencyKey: "ia-stale" }), StaleGenerationError);
+  assert.deepEqual(await ia.get(digest, "e2b"), base);
+  // Decision: equal generation, different key and content, overwrites (last write wins within a generation).
+  const same = await ia.put({ ...base, idempotencyKey: "ia-eq", providerImage: "tmpl-3" });
+  assert.equal((await ia.get(digest, "e2b"))?.providerImage, "tmpl-3");
+  assert.equal(same.providerImage, "tmpl-3");
+  const up = await ia.put({ ...base, idempotencyKey: "ia-up", generation: 3, providerImage: "tmpl-4" });
+  assert.equal((await ia.get(digest, "e2b"))?.generation, 3);
+  assert.deepEqual(await ia.put({ ...base, idempotencyKey: "ia-up", generation: 3, providerImage: "tmpl-4" }), up);
+  await ia.put({ ...base, backend: null, providerImage: undefined, idempotencyKey: "ia-reg", generation: 1 }); // another slot, lower generation is fine
+  assert.equal((await ia.get(digest, null))?.generation, 1);
+  assert.equal((await ia.get(digest, "e2b"))?.generation, 3);
+  for (const [i, bad] of [
+    { providerImage: "/var/lib/images/x" },
+    { providerImage: "../x" },
+    { engineLocalId: "C:\\images\\x" },
+    { engineLocalId: "file:///x" },
+    { configDigest: "sha256:abc" },
+  ].entries()) {
+    await assert.rejects(
+      () => ia.put({ ...base, ...bad, configDigest: bad.configDigest ?? `sha256:${"b".repeat(64)}`, idempotencyKey: `ia-bad-${i}` }),
+      /image artifact/,
+    );
+  }
+  assert.equal(await ia.get(`sha256:${"b".repeat(64)}`, "e2b"), null);
 }
 
 export interface CheckpointFenceContractWorld {
