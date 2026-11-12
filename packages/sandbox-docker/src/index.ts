@@ -26,3 +26,4 @@ export {
 export * from "./local-engine.ts";
 export * from "./local-engine-fake.ts";
 export * from "./provider.ts";
+export * from "./podman-egress-probe.ts";
