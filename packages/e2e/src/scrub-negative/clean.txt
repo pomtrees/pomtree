@@ -1,0 +1,7 @@
+{"placeholders":["acct-ok-1"],"account_id":"acct-ok-1"}
+Authorization: Bearer <BEARER_TOKEN>
+x-api-key: <REDACTED>
+POMTREE_TOKEN=<TOKEN>
+cwd: /workspace/project
+image: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+status: ok
