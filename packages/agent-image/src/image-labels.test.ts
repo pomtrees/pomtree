@@ -1,9 +1,30 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_IMAGE_TAGS, IMAGE_TARGETS, imageInspectArgv, PI_VERSION_LABEL, parseImageInspect, REVISION_LABEL } from "./image-labels.ts";
+import {
+  type BuildPlanInput,
+  type IdentityIo,
+  buildCommand,
+  buildResultLine,
+  guarded,
+  DEFAULT_IMAGE_TAGS,
+  IMAGE_TARGETS,
+  imageInspectArgv,
+  imageMissingMessage,
+  PI_VERSION_LABEL,
+  parseBuildEngine,
+  parseBuildxMetadata,
+  parseEngineLocalId,
+  parseImageInspect,
+  parsePodmanImageId,
+  parseSaveManifest,
+  readBuiltIdentity,
+  REVISION_LABEL,
+  resolveDockerIdentity,
+} from "./image-labels.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dockerfile = readFileSync(resolve(here, "..", "Dockerfile"), "utf8");
@@ -106,16 +127,278 @@ test("the demo image carries no browser, fonts, toolchain, Python or pi-browser;
   for (const re of [/\/opt\/pomtree\/egress\//, /^COPY packages\/agent-image\/ext /m]) assert.match(app ?? "", re);
 });
 
+const plan: BuildPlanInput = {
+  engine: "docker",
+  dockerfile: "/r/Dockerfile",
+  target: "full",
+  tag: "pomtree/agent:dev",
+  bundleDir: "/tmp/b",
+  buildArgs: ["--build-arg", "A=1"],
+  root: "/r",
+  resultFile: "/tmp/res",
+};
+
 test("the build script's layer cache is opt-in, local-directory based, and off by default", () => {
   assert.match(buildScript, /process\.env\.AGENT_IMAGE_CACHE_DIR/);
-  assert.match(buildScript, /: \{ builder: \["build"\], flags: \[\] as string\[\] \}/);
-  assert.match(buildScript, /type=local,src=\$\{cacheDir\}/);
-  assert.match(buildScript, /type=local,dest=\$\{cacheDir\},mode=max/);
+  assert.ok(!buildCommand(plan).argv.some((a) => a.includes("cache")));
+  const cached = buildCommand({ ...plan, cacheDir: "/c" }).argv;
+  assert.ok(cached.includes("type=local,src=/c") && cached.includes("type=local,dest=/c,mode=max"));
+});
+
+test("parseBuildEngine defaults to docker, accepts podman and refuses anything else naming the fix", () => {
+  assert.equal(parseBuildEngine(undefined), "docker");
+  assert.equal(parseBuildEngine("podman"), "podman");
+  assert.throws(() => parseBuildEngine("nerdctl"), /AGENT_IMAGE_ENGINE="nerdctl" is not a build engine; set it to docker or podman/);
+  assert.throws(() => parseBuildEngine(""), /is not a build engine/);
+  assert.match(buildScript, /parseBuildEngine\(process\.env\.AGENT_IMAGE_ENGINE\)/);
+});
+
+test("buildCommand: docker uses buildx with a single-manifest result and a metadata file", () => {
+  const { binary, argv } = buildCommand(plan);
+  assert.equal(binary, "docker");
+  assert.deepEqual(argv.slice(0, 6), ["buildx", "build", "--load", "--provenance=false", "--metadata-file", "/tmp/res"]);
+  assert.deepEqual(argv.slice(-1), ["/r"]);
+  assert.ok(!argv.includes("--format") && !argv.includes("--iidfile"));
+});
+
+test("buildCommand: podman pins the OCI format, reads --iidfile and never passes --metadata-file", () => {
+  const { binary, argv } = buildCommand({ ...plan, engine: "podman" });
+  assert.equal(binary, "podman");
+  assert.deepEqual(argv.slice(0, 5), ["build", "--format", "oci", "--iidfile", "/tmp/res"]);
+  assert.ok(!argv.includes("--metadata-file") && !argv.includes("buildx") && !argv.includes("--provenance=false"));
+  assert.ok(argv.includes("bundle=/tmp/b") && argv.includes("--target") && argv.includes("pomtree/agent:dev"));
+});
+
+test("buildCommand refuses the buildx cache under podman, naming the cause and the action", () => {
+  assert.throws(
+    () => buildCommand({ ...plan, engine: "podman", cacheDir: "/c" }),
+    /needs buildx, which only docker has; unset AGENT_IMAGE_CACHE_DIR .* AGENT_IMAGE_ENGINE=docker/,
+  );
+});
+
+const HEX = "ab".repeat(32);
+const meta = (o: unknown) => JSON.stringify(o);
+
+test("parsePodmanImageId reads an iidfile (prefixed) or `.Id` (bare hex) as the config digest", () => {
+  assert.deepEqual(parsePodmanImageId(`sha256:${HEX}`), { configDigest: `sha256:${HEX}` });
+  assert.deepEqual(parsePodmanImageId(`${HEX}\n`), { configDigest: `sha256:${HEX}` });
+  assert.throws(() => parsePodmanImageId(""), /not a sha256 config digest/);
+  assert.throws(() => parsePodmanImageId("abc123"), /not a sha256 config digest/);
+});
+
+test("parseBuildxMetadata reads the config digest and media type of a single-manifest result", () => {
+  const out = parseBuildxMetadata(
+    meta({
+      "containerimage.config.digest": `sha256:${HEX}`,
+      "containerimage.descriptor": { mediaType: "application/vnd.docker.distribution.manifest.v2+json", digest: `sha256:${"cd".repeat(32)}` },
+      "containerimage.digest": `sha256:${"cd".repeat(32)}`,
+    }),
+  );
+  assert.deepEqual(out, { configDigest: `sha256:${HEX}`, mediaType: "application/vnd.docker.distribution.manifest.v2+json" });
+});
+
+test("parseBuildxMetadata returns undefined for an index result without the key, and refuses an index media type or bad shapes", () => {
+  // Default provenance: P9 saw an index and no containerimage.config.digest.
+  assert.equal(parseBuildxMetadata(meta({ "containerimage.digest": `sha256:${HEX}` })), undefined);
+  assert.throws(
+    () =>
+      parseBuildxMetadata(
+        meta({ "containerimage.config.digest": `sha256:${HEX}`, "containerimage.descriptor": { mediaType: "application/vnd.oci.image.index.v1+json" } }),
+      ),
+    /media type is "application\/vnd\.oci\.image\.index\.v1\+json", expected .*rebuild with --provenance=false/,
+  );
+  assert.throws(() => parseBuildxMetadata(meta({ "containerimage.config.digest": HEX.slice(1) })), /not a sha256 config digest/);
+  assert.throws(() => parseBuildxMetadata(meta({ "containerimage.config.digest": 5 })), /is not a string/);
+  assert.throws(() => parseBuildxMetadata("nope"), /not JSON/);
+  assert.throws(() => parseBuildxMetadata("[]"), /not a JSON object/);
+});
+
+test("parseSaveManifest reads the Config field of both archive layouts and refuses anything else", () => {
+  assert.deepEqual(parseSaveManifest(meta([{ Config: `blobs/sha256/${HEX}`, RepoTags: ["x"] }])), { configDigest: `sha256:${HEX}` });
+  assert.deepEqual(parseSaveManifest(meta([{ Config: `${HEX}.json` }])), { configDigest: `sha256:${HEX}` });
+  assert.throws(() => parseSaveManifest(meta([{ Config: "blobs/sha256/short" }])), /no sha256 Config entry/);
+  assert.throws(() => parseSaveManifest(meta([{}, {}])), /exactly one image/);
+  assert.throws(() => parseSaveManifest("x"), /not JSON/);
+});
+
+test("resolveDockerIdentity prefers the buildx digest, falls back to docker save once, else fails closed", () => {
+  const withKey = meta({ "containerimage.config.digest": `sha256:${HEX}` });
+  const saved = meta([{ Config: `blobs/sha256/${"ef".repeat(32)}` }]);
+  let reads = 0;
+  const read = () => {
+    reads++;
+    return saved;
+  };
+  assert.deepEqual(resolveDockerIdentity(withKey, read), { configDigest: `sha256:${HEX}` });
+  assert.equal(reads, 0, "no docker save when buildx gave the digest");
+  const idx = meta({
+    "containerimage.digest": `sha256:${HEX}`,
+    "containerimage.descriptor": { mediaType: "application/vnd.docker.distribution.manifest.v2+json" },
+  });
+  assert.deepEqual(resolveDockerIdentity(idx, read), {
+    configDigest: `sha256:${"ef".repeat(32)}`,
+    mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+  });
+  assert.equal(reads, 1);
+  assert.throws(() => resolveDockerIdentity("{}", () => "[]"), /exactly one image/);
+});
+
+const LOCAL = `sha256:${"cd".repeat(32)}`;
+
+test("buildResultLine keeps the engine-local id as field 2 and adds the config digest, even when the two differ (containerd store)", () => {
+  // Docker with the containerd store: `.Id` is the index or manifest digest, not the config digest (P9). Existing consumers
+  // (egressProxyImage, safety-boot) verify field 2 against `docker image inspect .Id`, so it must stay that value.
+  const line = buildResultLine("t:1", LOCAL, { configDigest: `sha256:${HEX}`, mediaType: "m" });
+  assert.deepEqual(line.split(" "), ["t:1", LOCAL, `sha256:${HEX}`, "m"]);
+  assert.equal(buildResultLine("t:1", LOCAL, { configDigest: `sha256:${HEX}` }), `t:1 ${LOCAL} sha256:${HEX}`);
+  // Podman: `.Id` is the config digest, so both fields are equal.
+  assert.equal(buildResultLine("t:1", `sha256:${HEX}`, { configDigest: `sha256:${HEX}` }), `t:1 sha256:${HEX} sha256:${HEX}`);
+});
+
+test("parseEngineLocalId reads `.Id` (prefixed or bare hex) and refuses anything else, naming the action", () => {
+  assert.equal(parseEngineLocalId(`${LOCAL}\n`), LOCAL);
+  assert.equal(parseEngineLocalId("cd".repeat(32)), LOCAL);
+  assert.throws(() => parseEngineLocalId(""), /engine image id is not a sha256 config digest.*rebuild/);
+});
+
+test("imageMissingMessage names the store and the build command", () => {
+  assert.equal(
+    imageMissingMessage("podman", "pomtree/agent:demo", "demo"),
+    "image pomtree/agent:demo is not in the podman store (images are per engine store; an image built by the other engine is not visible here); build it with: AGENT_IMAGE_ENGINE=podman AGENT_IMAGE_TAG=pomtree/agent:demo pnpm --filter @pomtree/agent-image build:image:demo",
+  );
+});
+
+test("the build script rejects an unknown target and an unknown engine before building anything", () => {
+  const run = (args: string[], env: Record<string, string>) =>
+    spawnSync(process.execPath, [resolve(here, "..", "scripts", "build.ts"), ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+  const target = run(["--target", "nope"], {});
+  assert.notEqual(target.status, 0);
+  assert.match(target.stderr, /unknown image target "nope"; expected one of full, demo/);
+  const engineRun = run([], { AGENT_IMAGE_ENGINE: "nerdctl" });
+  assert.notEqual(engineRun.status, 0);
+  assert.match(engineRun.stderr, /AGENT_IMAGE_ENGINE="nerdctl" is not a build engine/);
 });
 
 test("the build script builds a declared target with its default tag", () => {
   assert.deepEqual(DEFAULT_IMAGE_TAGS, { full: "pomtree/agent:dev", demo: "pomtree/agent:demo" });
-  assert.match(buildScript, /"--target",\s+target,/);
+  const demo = buildCommand({ ...plan, target: "demo" }).argv;
+  assert.equal(demo[demo.indexOf("--target") + 1], "demo");
   const pkg = JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8")) as { scripts: Record<string, string> };
   assert.equal(pkg.scripts["build:image:demo"], "node scripts/build.ts --target demo");
+});
+
+const io = (o: Partial<IdentityIo>): IdentityIo => ({ readResultFile: () => undefined, run: () => "", readSaveManifest: () => "[]", ...o });
+const enoent = Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" });
+
+test("readBuiltIdentity: containerd-store docker keeps the local id apart from the config digest", () => {
+  const got = readBuiltIdentity(
+    "docker",
+    "t",
+    "full",
+    io({ readResultFile: () => meta({ "containerimage.config.digest": `sha256:${HEX}` }), run: () => `${LOCAL}\n` }),
+  );
+  assert.deepEqual(got, { image: { configDigest: `sha256:${HEX}` }, localId: LOCAL });
+});
+
+test("readBuiltIdentity: podman reads the iidfile, else `.Id`, and an uppercase-hex id fails closed with cause and action", () => {
+  assert.equal(readBuiltIdentity("podman", "t", "full", io({ readResultFile: () => `sha256:${HEX}` })).localId, `sha256:${HEX}`);
+  assert.equal(readBuiltIdentity("podman", "t", "full", io({ run: () => HEX })).image.configDigest, `sha256:${HEX}`);
+  assert.throws(
+    () => readBuiltIdentity("podman", "t", "full", io({ readResultFile: () => `sha256:${HEX.toUpperCase()}` })),
+    /not a sha256 config digest.*rebuild/,
+  );
+  assert.throws(() => readBuiltIdentity("podman", "t", "full", io({ readResultFile: () => HEX.toUpperCase() })), /not a sha256 config digest/);
+});
+
+test("readBuiltIdentity names the real cause and action for a missing binary, a missing result file and a failing engine", () => {
+  const ok = meta({ "containerimage.config.digest": `sha256:${HEX}` });
+  assert.throws(
+    () =>
+      readBuiltIdentity(
+        "docker",
+        "t",
+        "full",
+        io({
+          readResultFile: () => ok,
+          run: () => {
+            throw enoent;
+          },
+        }),
+      ),
+    /^Error: docker was not found on PATH; install docker, or set AGENT_IMAGE_ENGINE/,
+  );
+  assert.throws(
+    () => readBuiltIdentity("docker", "t", "full", io({})),
+    /metadata file was not written by the build; check that `docker buildx version` works, then rebuild/,
+  );
+  assert.throws(
+    () =>
+      readBuiltIdentity(
+        "docker",
+        "t",
+        "full",
+        io({
+          readResultFile: () => ok,
+          run: () => {
+            throw new Error("daemon down");
+          },
+        }),
+      ),
+    /failed \(daemon down\); check that the docker engine is running/,
+  );
+  assert.throws(
+    () =>
+      readBuiltIdentity(
+        "podman",
+        "t",
+        "demo",
+        io({
+          run: () => {
+            throw new Error("no such image");
+          },
+        }),
+      ),
+    /not in the podman store.*build:image:demo/,
+  );
+  // docker save fallback: a missing tar or docker is its own cause, and unreadable output still fails closed.
+  const idx = meta({ "containerimage.digest": `sha256:${HEX}` });
+  assert.throws(
+    () =>
+      readBuiltIdentity(
+        "docker",
+        "t",
+        "full",
+        io({
+          readResultFile: () => idx,
+          readSaveManifest: () => {
+            throw enoent;
+          },
+        }),
+      ),
+    /docker or tar was not found on PATH/,
+  );
+  assert.throws(() => readBuiltIdentity("docker", "t", "full", io({ readResultFile: () => idx })), /exactly one image/);
+});
+
+test("guarded always runs cleanup and reports instead of exiting, on success and on failure", () => {
+  const calls: string[] = [];
+  assert.equal(
+    guarded(
+      () => calls.push("work"),
+      () => calls.push("cleanup"),
+      () => calls.push("report"),
+    ),
+    true,
+  );
+  assert.deepEqual(calls, ["work", "cleanup"]);
+  calls.length = 0;
+  const failed = guarded(
+    () => {
+      throw new Error("boom");
+    },
+    () => calls.push("cleanup"),
+    (e) => calls.push(`report:${e.message}`),
+  );
+  assert.equal(failed, false);
+  assert.deepEqual(calls, ["report:boom", "cleanup"]);
 });
