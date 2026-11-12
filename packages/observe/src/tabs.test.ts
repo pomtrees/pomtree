@@ -9,6 +9,10 @@ import { MENU_KIT_JS, type MenuKitApi } from "./menuModel.ts";
 import { TERMINAL_DECLARATION } from "./viewMenus.ts";
 import { renderReportsPane, renderTreePane } from "./web.ts";
 
+// The reconnect jitter (+-25%, Math.random) can land a retry delay on exactly 800 ms, the overlay grace delay these tests tell
+// timers apart by. A pinned midpoint makes every backoff the exact base step (500, 1000, ...), never 800.
+const unjitteredMath = Object.assign(Object.create(Math) as Math, { random: () => 0.5 });
+
 test("audit pane is fully inline, fetches the journal path, and has filter and more controls", () => {
   const html = renderAuditPane();
   assert.ok(html.includes('K.getJson("/v1/journal"'));
@@ -823,7 +827,7 @@ function runShell(
     Object,
     Set,
     Promise,
-    Math,
+    Math: unjitteredMath,
     setInterval: (fn: () => void, ms?: number) => {
       intervals.push({ fn, cleared: false, ms });
       return intervals.length;
@@ -1124,13 +1128,18 @@ test("terminal overlay: a finished agent is a danger overlay with the cause, a y
   assert.equal(termOverlay(y.doc).kind, "idle");
   const gaveUp = runShell("#/terminal/a1", running);
   await flush();
-  for (let i = 0; i < 13; i++) {
+  const pendingRetries = () => gaveUp.timeouts.filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800);
+  // MAX_ATTEMPTS (12) drops each arm a retry; the next drop arms none and gives up.
+  for (let i = 0; i < 12; i++) {
     gaveUp.sockets[gaveUp.sockets.length - 1]!.drop();
     await flush();
-    const retry = gaveUp.timeouts.filter((x) => !x.cleared && x.ms !== 120 && x.ms !== 800).pop();
-    if (!retry) break;
+    const retry = pendingRetries().pop();
+    assert.ok(retry, `drop ${i + 1} armed no retry timer (timers: ${JSON.stringify(gaveUp.timeouts.map((x) => [x.ms, x.cleared]))})`);
     retry.fn();
   }
+  gaveUp.sockets[gaveUp.sockets.length - 1]!.drop();
+  await flush();
+  assert.equal(pendingRetries().length, 0, "the drop past the budget arms no retry");
   assert.deepEqual(termOverlay(gaveUp.doc), {
     hidden: false,
     kind: "dead",

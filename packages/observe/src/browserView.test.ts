@@ -9,6 +9,10 @@ import { MENU_KIT_JS, type MenuKitApi } from "./menuModel.ts";
 import { BROWSER_DECLARATION } from "./viewMenus.ts";
 import { TERM_LOGIC_JS } from "./termKit.ts";
 
+// The reconnect jitter (+-25%, Math.random) can land a retry delay on exactly 800 ms, the overlay grace delay these tests tell
+// timers apart by. A pinned midpoint makes every backoff the exact base step (500, 1000, ...), never 800.
+const unjitteredMath = Object.assign(Object.create(Math) as Math, { random: () => 0.5 });
+
 // ---- BrowserKit: the pure logic ----------------------------------------------------------------------------------
 
 const kit = (() => {
@@ -273,7 +277,7 @@ function setup(
     Blob,
     Uint8Array,
     JSON,
-    Math,
+    Math: unjitteredMath,
     Date,
     Object,
     Promise,
@@ -832,14 +836,18 @@ test("overlay: a finished agent shows a danger icon and the cause over the kept 
 
 test("overlay: giving up after repeated drops is a danger overlay with the cause", async () => {
   const t = setup();
-  for (let i = 0; i < 13; i++) {
-    const ws = t.sockets[t.sockets.length - 1]!;
-    ws.drop();
+  const pendingRetries = () => t.timeouts.filter((x) => x.ms !== 800 && !x.cleared);
+  // MAX_ATTEMPTS (12) drops each arm a retry; the next drop arms none and gives up.
+  for (let i = 0; i < 12; i++) {
+    t.sockets[t.sockets.length - 1]!.drop();
     await t.flush();
-    const retry = t.timeouts.filter((x) => x.ms !== 800 && !x.cleared).pop();
-    if (!retry) break;
+    const retry = pendingRetries().pop();
+    assert.ok(retry, `drop ${i + 1} armed no retry timer (timers: ${JSON.stringify(t.timeouts.map((x) => [x.ms, x.cleared]))}, fetches: ${t.fetches.length})`);
     retry.fn();
   }
+  t.sockets[t.sockets.length - 1]!.drop();
+  await t.flush();
+  assert.equal(pendingRetries().length, 0, "the drop past the budget arms no retry");
   assert.deepEqual(overlay(t), {
     hidden: false,
     kind: "dead",
