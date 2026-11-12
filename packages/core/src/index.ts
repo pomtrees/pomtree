@@ -26,3 +26,4 @@ export * from "./state.ts";
 export * from "./build-identity.ts";
 export * from "./config/index.ts";
 export * from "./state-validate.ts";
+export * from "./session-append.ts";
