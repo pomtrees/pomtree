@@ -11,6 +11,9 @@
       "path": "packages/sandbox-docker"
     },
     {
+      "path": "packages/sandbox-kit"
+    },
+    {
       "path": "packages/workspace-git"
     },
     {
