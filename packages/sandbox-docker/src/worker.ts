@@ -13,10 +13,14 @@ import {
 } from "./container-contract.gen.ts";
 import { childExitCode, socketOwnershipProblem, workerLaunch } from "./worker-ready.ts";
 
+// The most client/upstream socket PAIRS one bridge carries at once (so at most twice as many sockets). The hosted-sandbox CONNECT
+// terminator in @pomtree/sandbox-kit takes this same value as its injected `maxConnections`, so there is one cap definition.
+export const BRIDGE_MAX_CONNECTIONS = 32;
+
 export function attachByteBridge(socketPath: string, port = EGRESS_PROXY_PORT) {
   const sockets = new Set<Socket>();
   const server = createServer((client) => {
-    if (sockets.size >= 64) {
+    if (sockets.size >= 2 * BRIDGE_MAX_CONNECTIONS) {
       client.destroy();
       return;
     }
@@ -38,7 +42,7 @@ export function attachByteBridge(socketPath: string, port = EGRESS_PROXY_PORT) {
     client.pipe(upstream);
     upstream.pipe(client);
   });
-  server.maxConnections = 32;
+  server.maxConnections = BRIDGE_MAX_CONNECTIONS;
   return {
     server,
     listen: () =>

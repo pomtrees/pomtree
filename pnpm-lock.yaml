@@ -160,6 +160,9 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@pomtree/sandbox-kit':
+        specifier: workspace:*
+        version: link:../sandbox-kit
       '@pomtree/testing':
         specifier: workspace:*
         version: link:../testing

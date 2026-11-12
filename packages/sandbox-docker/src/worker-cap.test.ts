@@ -5,14 +5,13 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type AddressInfo } from "node:net";
-import { attachByteBridge } from "./worker.ts";
+import { createConnectTerminator } from "@pomtree/sandbox-kit/terminate";
+import { until } from "@pomtree/testing";
+import { BRIDGE_MAX_CONNECTIONS, attachByteBridge } from "./worker.ts";
 
+// The deadline is the shared scaled test budget (POMTREE_TEST_TIMEOUT_SCALE), not a fixed real-time margin.
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 3000;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await until(predicate, 3000, { what: label });
 }
 
 function openClient(port: number): Promise<Socket> {
@@ -101,4 +100,66 @@ test("byte bridge caps client connections at 32 (33rd destroyed before dialing u
     upstream.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// One cap definition: the docker bridge and the kit's CONNECT terminator are both fed BRIDGE_MAX_CONNECTIONS. The terminator's cap is
+// observed through behavior (the first refused tunnel), the bridge's through the listener it builds and the 33rd-client test above.
+// NOTE: the single definition is nominal until the worker program wires the terminator and the worker stream from this constant
+// (both take the cap as a required option); this test proves each side honours the value it is given, not the wiring itself.
+test("the kit terminator and the docker bridge enforce the same BRIDGE_MAX_CONNECTIONS", async () => {
+  assert.equal(BRIDGE_MAX_CONNECTIONS, 32, "the cap value is pinned so a change is deliberate and reviewed with the bridge test above");
+  const bridge = attachByteBridge("/nonexistent/unused.sock", 0);
+  assert.equal(bridge.server.maxConnections, BRIDGE_MAX_CONNECTIONS);
+
+  const open: Array<() => void> = [];
+  const refusals: number[] = [];
+  const term = createConnectTerminator({
+    allow: () => true,
+    maxConnections: BRIDGE_MAX_CONNECTIONS,
+    dial: async () => ({
+      write: async () => {},
+      output: () => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise<IteratorResult<Uint8Array>>((resolve) => open.push(() => resolve({ done: true, value: undefined }))),
+        }),
+      }),
+      close: () => {},
+    }),
+    audit: (r) => {
+      if (r.status === 503) refusals.push(r.active);
+    },
+    now: () => 0,
+    sleep: (_ms, signal) => new Promise<void>((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true })),
+  });
+  const request = new TextEncoder().encode("CONNECT a.test:443 HTTP/1.1\r\n\r\n");
+  const clients: Array<Promise<void>> = [];
+  let accepted = 0;
+  const client = () => {
+    let wake: (() => void) | undefined;
+    const input = new Promise<void>((r) => (wake = r));
+    clients.push(
+      term.handle({
+        write: async (data) => {
+          if (new TextDecoder().decode(data).startsWith("HTTP/1.1 200")) accepted++;
+        },
+        output: () =>
+          (async function* () {
+            yield request;
+            await input;
+          })(),
+        close: () => wake?.(),
+      }),
+    );
+  };
+  for (let i = 0; i < BRIDGE_MAX_CONNECTIONS; i++) client();
+  await waitFor(() => accepted === BRIDGE_MAX_CONNECTIONS, "every tunnel up to the cap to be accepted");
+  assert.equal(term.active, BRIDGE_MAX_CONNECTIONS);
+  client();
+  await waitFor(() => refusals.length === 1, "the tunnel past the cap to be refused");
+  assert.deepEqual(refusals, [BRIDGE_MAX_CONNECTIONS]);
+  assert.equal(term.active, BRIDGE_MAX_CONNECTIONS);
+  for (const release of open) release();
+  await Promise.all(clients);
+  assert.equal(term.active, 0);
+  bridge.close();
 });
