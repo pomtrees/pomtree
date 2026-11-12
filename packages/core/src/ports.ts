@@ -377,6 +377,12 @@ export interface SandboxSpec {
   tty?: { cols: number; rows: number };
 }
 
+// How a sandbox ended. "expired" = the provider lifetime or lease ran out; "preempted" = the provider reclaimed it. Both are
+// distinguishable from an agent exit so the daemon resumes instead of failing (exit code null for those two).
+// TODO(exit-reason-wiring): wait() still returns { exitCode: number; oomKilled?: boolean } and no caller passes `reason` to classifyExit;
+// pending: widening wait() to report the reason, the daemon passing it through, and reconciling with the fake's SandboxUnavailableError rejection.
+export type SandboxExitReason = "exited" | "oom" | "killed" | "expired" | "preempted";
+
 export interface SandboxHandle {
   id: SandboxId;
   output(): AsyncIterable<{ stream: "stdout" | "stderr"; chunk: string }>;

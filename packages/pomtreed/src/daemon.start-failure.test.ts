@@ -56,8 +56,11 @@ for (const [label, err] of [
     const rec = (await t.daemon.get(a.id)) as AgentRecord;
     assert.equal(rec.exit, "failed");
     assert.equal((await exited(t, a.id))?.cause, "sandbox_unavailable");
-    assert.match((await errors(t, a.id))[0] ?? "", /^sandbox start failed \(kind=(endpoint_unreachable, retryable=true|unavailable)\): .*Docker/);
-    assert.match(summary(rec), /ended failed \(sandbox_unavailable\).*start Docker/);
+    assert.match(
+      (await errors(t, a.id))[0] ?? "",
+      /^sandbox start failed \(kind=(endpoint_unreachable, retryable=true|unavailable)\): .*sandbox backend was unreachable/,
+    );
+    assert.match(summary(rec), /ended failed \(sandbox_unavailable\).*local engine, start it/);
     assert.equal((await t.daemon.doctor()).sandboxUp, false);
     assert.ok((await t.journal.read({ agent: root.id })).some((e) => e.payload.kind === "host_error"));
     const b = await t.spawn("k2");

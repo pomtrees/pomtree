@@ -10,7 +10,7 @@ import {
   START_FAILURE_CAUSE,
   SandboxStartError,
 } from "./index.ts";
-import type { AgentState, ExitCause, ExitSignal, ExitStatus, Handoff, Signal } from "./index.ts";
+import type { AgentState, ExitCause, ExitSignal, ExitStatus, Handoff, SandboxExitReason, Signal } from "./index.ts";
 
 test("classifyExit maps exit codes to causes", () => {
   assert.equal(classifyExit({ exitCode: 0 }), undefined);
@@ -34,6 +34,47 @@ test("EXIT_SIGNALS names only the container stop/kill signals behind a 128+n cod
 test("classifyExit maps endpointUnreachable to endpoint_unreachable (not for clean exits)", () => {
   assert.equal(classifyExit({ exitCode: 1, endpointUnreachable: true }), "endpoint_unreachable");
   assert.equal(classifyExit({ exitCode: 0, endpointUnreachable: true }), undefined);
+});
+
+// One row per SandboxExitReason; `satisfies Record<SandboxExitReason, ...>` fails tsc when a new reason has no row.
+const REASON_ROWS = {
+  exited: { exitCode: 1, cause: "app_exit" },
+  oom: { exitCode: 137, cause: "oom_killed" },
+  killed: { exitCode: 137, cause: "host_stopped" },
+  expired: { exitCode: null, cause: "sandbox_unavailable" },
+  preempted: { exitCode: null, cause: "sandbox_unavailable" },
+} satisfies Record<SandboxExitReason, { exitCode: number | null; cause: ExitCause }>;
+
+test("classifyExit maps every SandboxExitReason through the table; expired and preempted are sandbox_unavailable, not agent failures", () => {
+  for (const [reason, row] of Object.entries(REASON_ROWS) as [SandboxExitReason, (typeof REASON_ROWS)[SandboxExitReason]][]) {
+    assert.equal(classifyExit({ exitCode: row.exitCode, reason }), row.cause, reason);
+  }
+  assert.ok(!["app_exit", "signal", "host_stopped"].includes(classifyExit({ exitCode: null, reason: "expired" })!));
+});
+
+test("classifyExit: a provider-ended sandbox the daemon cancelled is explained; clean and flagged exits keep their cause", () => {
+  assert.equal(classifyExit({ exitCode: null, reason: "preempted", cancelledByUs: true }), undefined);
+  assert.equal(classifyExit({ exitCode: 0, reason: "exited" }), undefined);
+  assert.equal(classifyExit({ exitCode: 137, reason: "exited", oomKilled: true }), "oom_killed");
+});
+
+test("classifyExit: an unknown reason cast past the union falls back to the exit code, or sandbox_unavailable without one", () => {
+  const unknown = "vanished" as SandboxExitReason;
+  assert.equal(classifyExit({ exitCode: 1, reason: unknown }), "app_exit");
+  assert.equal(classifyExit({ exitCode: 137, reason: unknown }), "host_stopped");
+  assert.equal(classifyExit({ exitCode: 0, reason: unknown }), undefined);
+  assert.equal(classifyExit({ exitCode: null, reason: unknown }), "sandbox_unavailable");
+});
+
+test("classifyExit: a cancelled expiry is explained like a cancelled preemption", () => {
+  assert.equal(classifyExit({ exitCode: null, reason: "expired", cancelledByUs: true }), undefined);
+  assert.equal(classifyExit({ exitCode: null, reason: "expired" }), "sandbox_unavailable");
+});
+
+test("classifyExit fails loudly on a missing exit code", () => {
+  assert.throws(() => classifyExit({ exitCode: null, reason: "exited" }), /needs an exit code/);
+  assert.throws(() => classifyExit({ exitCode: null }), /needs an exit code.*adapter must report/);
+  assert.throws(() => classifyExit({ exitCode: null, reason: "killed" }), /needs an exit code/);
 });
 
 test("ExitCause includes the supervisor-assigned causes restart_exhausted and quarantined (never produced by classifyExit)", () => {
@@ -83,7 +124,7 @@ test("EXIT_CAUSE_WORDING: every cause has a non-empty clause with no control cha
     assert.ok(EXIT_CAUSE_WORDING[c].length > 10, c);
     assert.ok(![...EXIT_CAUSE_WORDING[c]].some((ch) => ch.charCodeAt(0) < 0x20), c);
   }
-  assert.match(EXIT_CAUSE_WORDING.sandbox_unavailable, /Docker/);
+  assert.match(EXIT_CAUSE_WORDING.sandbox_unavailable, /expired, or preempted/);
   assert.match(EXIT_CAUSE_WORDING.image_unavailable, /image/);
 });
 
@@ -108,7 +149,7 @@ test("EXIT_CAUSE_WORDING: every cause is a cause clause then an imperative actio
     resource_exhaustion: /; free host resources and retry$/,
     journal_unwritable: /; the operator must fix the state store/,
     provider_error: /; read the run's error and provider_error entries.*then respawn$/,
-    sandbox_unavailable: /; the operator must start Docker, then retry$/,
+    sandbox_unavailable: /; retry it: if the backend is a local engine, start it; if it is a hosted provider, check its status and your lease or quota$/,
     merge_conflict: /; resolve the conflict and merge again$/,
     empty_branch: /; reap it, or resume it/,
     signal: /; read the end of the trace and check host logs.*then respawn$/,

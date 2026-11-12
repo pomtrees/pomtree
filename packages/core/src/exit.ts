@@ -1,4 +1,5 @@
 import type { SandboxStartError } from "./errors.ts";
+import type { SandboxExitReason } from "./ports.ts";
 import type { AgentState, ExitCause, ExitStatus } from "./types.ts";
 
 // Signals named by a shell-style 128+n exit code. Only the ones a stop or kill of a container produces. The one table that
@@ -13,8 +14,38 @@ export type ExitSignal = (typeof EXIT_SIGNALS)[number];
 
 // Pure classification of a sandbox exit into an ExitCause (undefined = clean exit or an exit
 // the daemon itself explains, e.g. a cancel it requested). Unexplained 137/143 mean something
-// outside the daemon stopped the container.
-export function classifyExit(o: { exitCode: number; oomKilled?: boolean; cancelledByUs?: boolean; endpointUnreachable?: boolean }): ExitCause | undefined {
+// outside the daemon stopped the container. `reason` is the port's SandboxExitReason when the backend reports one: "expired" and
+// "preempted" mean the provider ended the sandbox (exit code null), which is not an agent failure, so they end as the retryable
+// sandbox_unavailable; "oom" is oom_killed like the `oomKilled` flag. Rules: a null exit code with reason exited, killed or none is an
+// adapter contract breach and throws; a reason outside the union (a newer adapter, cast past the type) does not throw: it falls back
+// to the exit-code logic, or to sandbox_unavailable when the code is null.
+export function classifyExit(o: {
+  exitCode: number | null;
+  reason?: SandboxExitReason;
+  oomKilled?: boolean;
+  cancelledByUs?: boolean;
+  endpointUnreachable?: boolean;
+}): ExitCause | undefined {
+  switch (o.reason) {
+    case undefined:
+    case "exited":
+    case "killed":
+      break;
+    case "oom":
+      // Open question for the exit-reason-wiring follow-up: `reason: "oom"` with a code other than 137 skips the daemon's 137 gate
+      // (daemon-util `classifySandboxExit` only trusts oomKilled with 137) once the daemon passes the reason through.
+      return "oom_killed";
+    case "expired":
+    case "preempted":
+      return o.cancelledByUs ? undefined : "sandbox_unavailable";
+    default:
+      if (o.exitCode === null) return "sandbox_unavailable";
+  }
+  if (o.exitCode === null) {
+    throw new Error(
+      `classifyExit: exit reason ${o.reason ?? "(none)"} needs an exit code; only expired and preempted exits have none, so the adapter must report one`,
+    );
+  }
   if (o.oomKilled) return "oom_killed";
   if (o.exitCode === 0) return undefined;
   if (o.endpointUnreachable) return "endpoint_unreachable";
@@ -43,7 +74,8 @@ export const EXIT_CAUSE_WORDING: Readonly<Record<ExitCause, string>> = {
   journal_unwritable: "the daemon could not write its journal; the operator must fix the state store (disk space, permissions), then respawn",
   provider_error:
     "the model provider failed (auth, funding, configuration or repeated outages); read the run's error and provider_error entries for which, fix that, then respawn",
-  sandbox_unavailable: "the container engine (Docker) was unreachable; the operator must start Docker, then retry",
+  sandbox_unavailable:
+    "the sandbox backend was unreachable or ended the sandbox (engine down, lease expired, or preempted); retry it: if the backend is a local engine, start it; if it is a hosted provider, check its status and your lease or quota",
   merge_conflict: "its branch conflicted with the merge target; resolve the conflict and merge again",
   empty_branch: "it pushed no commits, so there was nothing to merge; reap it, or resume it with a clearer task if work was expected",
   signal: "the agent process was killed by a signal pomtree did not send; read the end of the trace and check host logs (dmesg), then respawn",

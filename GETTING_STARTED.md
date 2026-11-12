@@ -304,7 +304,7 @@ Exit causes (why it ended; the wording is rendered from the code's own table):
 | `resource_exhaustion` | the host ran out of a resource (disk, processes or memory) while starting or running it; free host resources and retry |
 | `journal_unwritable` | the daemon could not write its journal; the operator must fix the state store (disk space, permissions), then respawn |
 | `provider_error` | the model provider failed (auth, funding, configuration or repeated outages); read the run's error and provider_error entries for which, fix that, then respawn |
-| `sandbox_unavailable` | the container engine (Docker) was unreachable; the operator must start Docker, then retry |
+| `sandbox_unavailable` | the sandbox backend was unreachable or ended the sandbox (engine down, lease expired, or preempted); retry it: if the backend is a local engine, start it; if it is a hosted provider, check its status and your lease or quota |
 | `merge_conflict` | its branch conflicted with the merge target; resolve the conflict and merge again |
 | `empty_branch` | it pushed no commits, so there was nothing to merge; reap it, or resume it with a clearer task if work was expected |
 | `signal` | the agent process was killed by a signal pomtree did not send; read the end of the trace and check host logs (dmesg), then respawn |
