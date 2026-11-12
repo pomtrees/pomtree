@@ -10,13 +10,20 @@
 // already has testing as a dev dependency, so the reverse edge would be a cycle). Reopen when pomtree publishes packages: the entry
 // point then moves into the published testing package.
 //
-// Offline by design: the deps' `fetch` and `request` reach only loopback hosts (a descriptor's `conformance.mts` may start a local
-// loopback provider), every declared credential reads a sentinel value, and config is the manifest params' defaults. A backend that
-// needs what this command cannot supply (a live endpoint, a local engine) is gated with a printed reason, by its conformance.mts
-// returning a `gate`, or here when the loader reports the `run` dep; a gated run exits non-zero unless `--accept-closed` is passed,
-// because a run in which nothing ran proves nothing.
+// What this does NOT protect: the command EXECUTES the extension's code (its provider module and its conformance.mts) in this process,
+// on the machine of whoever runs it, with that user's full privileges. Run it only on code you are willing to run. The pin is computed
+// here from the very tree being loaded, so it is no review: it only stops a file being swapped between measurement and import during
+// this run (the `afterPin` test seam shows exactly that). The import guard is the daemon's review aid and friction, not isolation.
+// "Offline" is a property of the injected deps alone: `deps.fetch` and `deps.request` reach only loopback hosts, every declared
+// credential reads a sentinel value (no real credential file is read), and config is the manifest params' defaults. Provider code and
+// conformance.mts can still call the global fetch, open sockets or read the environment and files; nothing here prevents that.
 //
-// `<dir>/conformance.mts` (optional, inside the pinned tree, so it is loaded from the reviewed bytes under the same guard) default-exports
+// A backend that needs what this command cannot supply (a live endpoint, a local engine) is gated with a printed reason, by its
+// conformance.mts returning a `gate`, or here when the loader reports the `run` dep. A gated run exits non-zero unless `--accept-closed`
+// is passed, because a run in which nothing ran proves nothing. With `--accept-closed` and a gated run the suite floor is skipped: only
+// the coverage-table findings run, so such a run proves the table is well formed and nothing about the backend.
+//
+// `<dir>/conformance.mts` (optional, inside the pinned tree, so it is loaded from the measured bytes under the same guard) default-exports
 // `({ provider, deps, base }) => SandboxUnderTest`, where `base` is the descriptor built here; it returns `base` with the hooks, gate or
 // options its backend needs.
 import { existsSync, readFileSync, realpathSync } from "node:fs";

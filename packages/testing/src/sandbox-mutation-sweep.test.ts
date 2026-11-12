@@ -102,7 +102,23 @@ const NO_OP_MODES: SweptMode[] = CLAUSE_IDS.map((clause) => {
   return { clause, mode: NO_OP, ...(entry.enable && { enable: entry.enable }) };
 });
 
+// A sweep over nothing passes every assertion below vacuously; these are the findings that rule that out.
+function vacuityFindings(clauses: readonly string[], modes: readonly SweptMode[]): string[] {
+  const out: string[] = [];
+  if (clauses.length === 0) out.push("the clause registry is empty, so the sweep checks nothing; register the clauses");
+  if (modes.length < clauses.length)
+    out.push(`only ${modes.length} break modes for ${clauses.length} clauses; every clause needs at least one mode in BREAK_MODES`);
+  return out;
+}
+
+test("sweep vacuity: the registry and the mode list are non-empty and cover every clause (an empty list is refused)", () => {
+  assert.deepEqual(vacuityFindings(CLAUSE_IDS, ALL_MODES), []);
+  assert.equal(vacuityFindings([], []).length, 1, "an empty registry must be a finding");
+  assert.equal(vacuityFindings(CLAUSE_IDS, []).length, 1, "a registry with no modes must be a finding");
+});
+
 test("sweep: every break mode kills its clause, fails only its declared collateral, and every clause is killed by some mode", async () => {
+  assert.deepEqual(vacuityFindings(CLAUSE_IDS, ALL_MODES), []);
   const rows = await sweep(ALL_MODES);
   assert.equal(rows.length, ALL_MODES.length);
   assert.deepEqual(brokenControls(rows), [], "each mode's correct reference world must pass every check and run its target clause");
@@ -132,6 +148,27 @@ test("sweep control: the no-op mode fails nothing and the sweep flags it as a su
   // The same detector over the real modes plus one no-op: exactly the no-op survives.
   const mixed = await sweep([...ALL_MODES.slice(0, 2), NO_OP_MODES[0] as SweptMode]);
   assert.deepEqual(survivors(mixed), [`no-op-control (${CLAUSE_IDS[0]})`]);
+});
+
+test("sweep control: a real mode weakened in the test (its broken start and attach undone) is reported as a surviving mutant", async () => {
+  const real = ALL_MODES.find((m) => m.mode.name === "swallow-exit-code");
+  assert.ok(real !== undefined && real.clause === "lifecycle-run", "the lifecycle-run primary mode must be swallow-exit-code");
+  // The real wrapper still runs; the methods it breaks are routed back to the correct sandbox, as a regression in the mode would.
+  const weakened: BreakVariant = {
+    ...real.mode,
+    wrap: (inner, env) => {
+      const broken = real.mode.wrap(inner, env);
+      return new Proxy(broken, {
+        get(target, p) {
+          if (p === "start" || p === "attach") return inner[p].bind(inner);
+          const v = Reflect.get(target, p, target);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    },
+  };
+  const rows = await sweep([{ ...real, mode: weakened }, ...ALL_MODES.filter((m) => m.clause === "attach-existing")]);
+  assert.deepEqual(survivors(rows), ["swallow-exit-code (lifecycle-run)"]);
 });
 
 // ---- the coverage table's exhaustiveness negative control ----

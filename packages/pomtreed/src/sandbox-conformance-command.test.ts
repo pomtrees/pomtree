@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, test } from "node:test";
 import { SANDBOX_PORT_VERSION } from "@pomtree/core";
 import type { Sandbox, SandboxBackendDeps } from "@pomtree/core";
-import { brokenSandbox, FakeSandbox } from "@pomtree/testing";
+import { brokenSandbox, FakeSandbox, scaled } from "@pomtree/testing";
 import { conformanceCommand } from "../scripts/sandbox-conformance.ts";
 import { parseManifest } from "./extension-manifest.ts";
 import { measureExtensionTree } from "./sandbox-provider-load.ts";
@@ -18,6 +19,8 @@ import { measureExtensionTree } from "./sandbox-provider-load.ts";
 const roots: string[] = [];
 after(() => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
+  delete g.__pomtreeConformanceFixture;
+  seen = [];
 });
 function tmp(): string {
   const d = mkdtempSync(join(tmpdir(), "pomtree-conformance-cmd-"));
@@ -94,9 +97,45 @@ test("an invalid manifest exits non-zero and prints the daemon's parse message v
     expected = (e as Error).message;
   }
   assert.ok(expected !== "", "the fixture manifest must be one the daemon's parser refuses");
-  const r = spawnSync(process.execPath, [script, dir], { encoding: "utf8", timeout: 60_000, env: { ...process.env, INIT_CWD: process.cwd() } });
+  const r = spawnSync(process.execPath, [script, dir], { encoding: "utf8", timeout: scaled(60_000), env: { ...process.env, INIT_CWD: process.cwd() } });
   assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
   assert.ok(r.stderr.split("\n").includes(expected), `stderr must hold the parser's message ${JSON.stringify(expected)} on its own line; got ${r.stderr}`);
+});
+
+// The real command line: a child `node <script> ext` run from another directory, with INIT_CWD (set by pnpm) naming where the relative
+// directory resolves. A preload written next to the fixture installs the fixture factory in the child, since the child shares no globals.
+function spawnCommand(breakMode?: string) {
+  const dir = writeExtension();
+  const testing = pathToFileURL(join(import.meta.dirname, "..", "..", "testing", "src", "index.ts")).href;
+  const preload = join(dirname(dir), "preload.mjs");
+  const make = breakMode === undefined ? "fake()" : `brokenSandbox(fake(), ${JSON.stringify(breakMode)})`;
+  writeFileSync(
+    preload,
+    `import { FakeSandbox, brokenSandbox } from ${JSON.stringify(testing)};
+const fake = () => new FakeSandbox([], "graceful", { declaration: { backend: ${JSON.stringify(ID)} } });
+globalThis.__pomtreeConformanceFixture = () => ${make};
+`,
+  );
+  return spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, script, "ext"], {
+    cwd: tmpdir(),
+    encoding: "utf8",
+    timeout: scaled(60_000),
+    env: { ...process.env, INIT_CWD: dirname(dir) },
+  });
+}
+
+test("the real command line: a conformant fixture extension exits 0 with the summary and floor lines", () => {
+  const r = spawnCommand();
+  assert.equal(r.status, 0, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stdout, /^pin: cfix=sha256:[0-9a-f]{64}$/m);
+  assert.match(r.stdout, /^CONFORMANCE cfix: conformance: \d+ passed, 0 failed/m);
+  assert.match(r.stdout, /^CONFORMANCE cfix floor: \d+ capabilities covered, \d+ deferred$/m);
+});
+
+test("the real command line: a fixture whose sandbox breaks a clause exits 1 naming it", () => {
+  const r = spawnCommand("swallow-exit-code");
+  assert.equal(r.status, 1, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stdout, /^FAIL lifecycle-run:/m);
 });
 
 test("a conformant fixture extension passes through the whole path: pin, guarded load, facade deps, clauses and floor", async () => {

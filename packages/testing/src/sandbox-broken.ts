@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { IdempotencyConflictError, LOOPBACK_PORTS, SANDBOX_CAPABILITIES, SandboxOutcomeUnknownError, SandboxUnavailableError } from "@pomtree/core";
+import {
+  DEFAULT_FETCH_USER_AGENT,
+  IdempotencyConflictError,
+  LOOPBACK_PORTS,
+  SANDBOX_CAPABILITIES,
+  SandboxOutcomeUnknownError,
+  SandboxUnavailableError,
+} from "@pomtree/core";
 import type { ByteChannel, ByteStream, ProbeResult, Sandbox, SandboxFacets, SandboxHandle, SandboxId, SandboxListing, SandboxSpec } from "@pomtree/core";
 import type { ClauseId, FakeUnderTestOptions, SandboxConformanceHooks } from "./sandbox-conformance.ts";
 
@@ -163,10 +170,9 @@ export function pinnedEngineSandbox(inner: Sandbox, engine: SimulatedEngine, ver
 // What a provider sees of an adapter, as the hooks `requests` and `secrets` report it: the User-Agent of each request and the
 // environment of each create. The provider stub plays this part for a real adapter; here the reference layer below feeds it.
 type ProviderHooks = Required<Pick<SandboxConformanceHooks, "requests" | "secrets">>;
-export const FETCH_USER_AGENT = "pomtree";
 export class SimulatedProvider {
   // The User-Agent the reference layer stamps on the next request (a mode clears it for the calls it breaks).
-  userAgent: string | undefined = FETCH_USER_AGENT;
+  userAgent: string | undefined = DEFAULT_FETCH_USER_AGENT;
   // Whether the reference layer records the create-time environment (a mode turns it off: the provider never saw one).
   recordEnv = true;
   // Whether the reference layer puts the planted secret in the create-time environment (the sandbox.secretsInEnv behavior).
@@ -185,7 +191,7 @@ export class SimulatedProvider {
 
 export function providerHooks(get: () => SimulatedProvider): ProviderHooks {
   return {
-    requests: { expectedUserAgent: FETCH_USER_AGENT, observe: () => get().requests },
+    requests: { expectedUserAgent: DEFAULT_FETCH_USER_AGENT, observe: () => get().requests },
     secrets: {
       // Read when the clause runs, so each world reports the lane's setting.
       get secretsInEnv() {
