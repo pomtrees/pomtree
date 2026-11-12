@@ -32,6 +32,8 @@ export interface WindowMenuKitApi {
   // variants are disabled; close and close all stay enabled.
   items(layout: Layout, leafId: string | null, opts?: { narrow?: boolean }): WindowMenuItem[];
   enabled(layout: Layout, command: string, leafId: string | null, opts?: { narrow?: boolean }): boolean;
+  // Why the command does nothing for that window (the text of the "does nothing here" notice); "" when it is enabled.
+  reason(layout: Layout, command: string, leafId: string | null, opts?: { narrow?: boolean }): string;
   // The same layout reference when the command is disabled or does nothing. leafId may be null only for
   // window.close-all and window.restore (which then un-maximizes).
   apply(layout: Layout, command: string, leafId: string | null, opts?: { narrow?: boolean }): Layout;
@@ -79,6 +81,27 @@ const WindowMenuKit = globalThis.WindowMenuKit || (globalThis.WindowMenuKit = ((
     }
   };
 
+  const reason = (layout, command, leafId, opts) => {
+    if (enabled(layout, command, leafId, opts)) return "";
+    const narrow = !!(opts && opts.narrow);
+    if (narrow && (ZOOM[command] || command === "window.close-others" || command === "window.close-left" || command === "window.close-right")) return "narrow screens show one window at a time. Make the window wider than 640px.";
+    if (command === "window.close-all") return "no windows are open.";
+    if (command === "window.restore" && (leafId === null || leafId === undefined)) return "no window is maximized.";
+    const all = LayoutKit.leaves(layout);
+    const at = all.findIndex((l) => l.id === leafId);
+    if (at < 0) return "that window is not open.";
+    const hidden = all[at].hidden === true;
+    switch (command) {
+      case "window.close-others": return "there is no other window.";
+      case "window.close-left": return "it is the first window in the bar.";
+      case "window.close-right": return "it is the last window in the bar.";
+      case "window.maximize": return LayoutKit.maximized(layout) === leafId ? "it is already maximized." : "it is the only window shown.";
+      case "window.restore": return "it is neither maximized nor minimized.";
+      case "window.minimize": return hidden ? "it is already minimized." : "that window cannot be minimized.";
+      default: return "the command does not apply to that window.";
+    }
+  };
+
   const apply = (layout, command, leafId, opts) => {
     if (!enabled(layout, command, leafId, opts)) return layout;
     switch (command) {
@@ -119,6 +142,6 @@ const WindowMenuKit = globalThis.WindowMenuKit || (globalThis.WindowMenuKit = ((
     return null;
   };
 
-  return { COMMANDS, items, enabled, apply, fromUiCommand };
+  return { COMMANDS, items, enabled, reason, apply, fromUiCommand };
 })());
 `;

@@ -25,6 +25,8 @@ export const LAUNCHER_CSS = `
 .lb-winlist::-webkit-scrollbar { display: none; }
 .lb-win { display: inline-flex; align-items: center; gap: 0.375rem; flex: 0 0 auto; white-space: nowrap; padding: 0.25rem 0.625rem; border-width: 1px; border-style: solid; border-color: transparent; border-radius: var(--radius-sm, 0.25rem); background: none; color: var(--muted, inherit); cursor: pointer; font-size: 0.875rem; transition: background-color 0.12s; }
 .lb-win:hover { color: var(--text, inherit); background: var(--hover, transparent); }
+.lb-win.min { opacity: 0.55; font-style: italic; border-style: dashed; border-color: var(--border-strong, currentColor); }
+.lb-win.min:hover, .lb-win.min:focus-visible { opacity: 1; }
 .lb-win.on { color: var(--accent, inherit); border-color: var(--border-strong, currentColor); background: color-mix(in srgb, var(--lb-a) 12%, transparent); }
 .lb-winlist.compact .lb-win > span:last-child { max-width: 8rem; overflow: hidden; text-overflow: ellipsis; }
 .lb-dot { display: inline-block; flex: 0 0 auto; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted, currentColor); }
@@ -75,6 +77,7 @@ export const LAUNCHER_CSS = `
   .lb, .lb-drop, .lb-omni { background-color: Canvas; color: CanvasText; border-color: ButtonBorder; }
   .lb-start, .lb-badge b { background-color: ButtonFace; color: ButtonText; border-color: ButtonBorder; }
   .lb-win.on, .lb-item.sel { border-color: Highlight; background-color: Highlight; color: HighlightText; }
+  .lb-win.min { opacity: 1; border-style: dashed; border-color: GrayText; color: GrayText; }
   .lb-dot { background-color: CanvasText; forced-color-adjust: none; }
   .lb-conn { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
   .lb-menu-item:hover, .lb-menu-item:focus-visible { background-color: Highlight; color: HighlightText; }
@@ -89,6 +92,7 @@ function createLauncherBar(wm, cfg) {
   const bar = document.getElementById("lb-bar");
   if (!bar) throw new Error('launcher bar: element "#lb-bar" is missing; the page shell must emit <header id="lb-bar" class="lb"></header> before the bar script runs');
 
+  const ctxMenu = ContextMenuKit.create({ document });
   const data = { agents: [], reports: [], approvals: null, escalations: null };
   let conn = { failures: 0, everOk: false, cause: "" };
   let omni = K.omniInitial();
@@ -465,24 +469,40 @@ function createLauncherBar(wm, cfg) {
   // ---- window list ----
   function renderWindows() {
     const st = api.state();
-    const wl = K.windowList(st.leaves, st.focus, api.views(), data.agents, inboxCount());
+    const wl = K.windowList(st.leaves, st.focus, api.views(), data.agents, inboxCount(), st.maximized);
     const sig = JSON.stringify(wl);
     if (sig === lastWinSig) return;
+    // An open window menu keeps its opener: the rebuild waits (lastWinSig stays stale) and the next render after the menu closes catches up.
+    if (ctxMenu.isOpen()) return;
     lastWinSig = sig;
     winlist.className = "lb-winlist" + (wl.compact ? " compact" : "");
     winlist.setAttribute("aria-label", wl.label);
     winlist.replaceChildren();
     if (wl.emptyHint) winlist.appendChild(el("span", "lb-empty", wl.emptyHint));
     wl.entries.forEach((entry) => {
-      const b = el("button", "lb-win" + (entry.focused ? " on" : ""));
+      const b = el("button", "lb-win" + (entry.focused ? " on" : "") + (entry.minimized ? " min" : ""));
       b.type = "button";
       b.setAttribute("aria-pressed", entry.focused ? "true" : "false");
       b.setAttribute("title", entry.title);
+      if (entry.minimized) b.setAttribute("aria-label", entry.label + " (minimized)");
       const dot = el("span", "lb-dot " + entry.dot);
       dot.setAttribute("aria-hidden", "true");
       b.appendChild(dot);
       b.appendChild(el("span", null, entry.label));
-      b.addEventListener("click", () => attempt("Focus window", () => api.focus(entry.leaf)));
+      b.addEventListener("click", () => {
+        attempt("Focus window", () => api.focus(entry.leaf));
+        if (entry.minimized && typeof api.focusDom === "function") api.focusDom();
+      });
+      ContextMenuKit.attach(b, {
+        menu: ctxMenu,
+        items: () => api.windowMenuItems(entry.leaf),
+        label: "Window menu: " + entry.label,
+        onPick: (command) => {
+          attempt("Window command", () => api.windowCommand(command, entry.leaf));
+          // the pick rebuilt the list: the entry the menu returned focus to may be gone
+          if (!winlist.contains(b) && typeof api.focusDom === "function") api.focusDom();
+        },
+      });
       winlist.appendChild(b);
       if (entry.focused && typeof b.scrollIntoView === "function") b.scrollIntoView({ block: "nearest", inline: "nearest" });
     });

@@ -27,12 +27,15 @@ export interface ContextMenuAttach {
   onPick?: (command: string) => void;
   label: string;
   keyTarget?: unknown;
+  // Element that receives focus on Escape or a pick; defaults to el. Pass a focusable element when el itself is not focusable.
+  opener?: { focus(): void } | null;
 }
 export interface ContextMenuKitApi {
   create(deps: { document: unknown }): ContextMenu;
   attach(el: unknown, opts: ContextMenuAttach): () => void;
 }
 
+// TODO(wm-menu-touch): the menu opens from a right-click and from the ContextMenu key or Shift+F10; long-press on a touch screen is not built (a touch user reaches the window commands through the tile-bar buttons only).
 export const CONTEXT_MENU_JS = `
 const ContextMenuKit = globalThis.ContextMenuKit || (globalThis.ContextMenuKit = (() => {
   "use strict";
@@ -209,7 +212,7 @@ const ContextMenuKit = globalThis.ContextMenuKit || (globalThis.ContextMenuKit =
         report("ContextMenuKit: could not build the menu items: " + (err && err.message ? err.message : show(err)) + "; reload the page if it keeps failing.");
         return;
       }
-      opts.menu.open({ items, x, y, label: opts.label, opener: el, onPick: opts.onPick });
+      opts.menu.open({ items, x, y, label: opts.label, opener: opts.opener || el, onPick: opts.onPick });
     };
     const onContext = (ev) => {
       prevent(ev);

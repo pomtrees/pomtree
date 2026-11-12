@@ -8,6 +8,8 @@ const K = runInContext(
   createContext({ globalThis: {}, JSON, Math, Number, String, isFinite, Object, Array }),
 ) as LayoutKitApi;
 
+// hidden flag read from leaves() (the same data the bar uses)
+const isHid = (l: Layout, id: string) => K.leaves(l).find((x) => x.id === id)?.hidden === true;
 // The kit runs in a vm realm, so compare through JSON to avoid cross-realm prototype mismatches.
 const plain = (x: unknown) => JSON.parse(JSON.stringify(x));
 const deepFreeze = <T>(x: T): T => {
@@ -703,7 +705,7 @@ test("maximize sets max and focus, unhides the leaf and leaves the tree untouche
   assert.deepEqual([l.max, l.focus, K.maximized(l), K.maximized(three())], ["t1", "t1", "t1", ""]);
   assert.deepEqual(plain(l.root), plain(three().root));
   const h = K.maximize(K.minimize(three(), "t2"), "t2");
-  assert.deepEqual([h.max, h.focus, K.isHidden(h, "t2")], ["t2", "t2", false]);
+  assert.deepEqual([h.max, h.focus, isHid(h, "t2")], ["t2", "t2", false]);
   assert.equal(K.leaves(h)[1]?.hidden, undefined);
 });
 
@@ -736,15 +738,15 @@ test("restore returns the same reference with nothing to restore", () => {
 test("restore of a hidden leaf unhides and focuses it", () => {
   const l = K.minimize(three(), "t1");
   const r = K.restore(l, "t1");
-  assert.deepEqual([K.isHidden(r, "t1"), r.focus], [false, "t1"]);
+  assert.deepEqual([isHid(r, "t1"), r.focus], [false, "t1"]);
   assert.equal(K.leaves(r)[0]?.hidden, undefined);
 });
 
 test("restore of a hidden leaf while another is maximized hands the zoom to it", () => {
   const l = K.minimize(K.maximize(three(), "t2"), "t4"); // t4 hidden while t2 is maximized
-  assert.deepEqual([l.max, K.isHidden(l, "t4")], ["t2", true]);
+  assert.deepEqual([l.max, isHid(l, "t4")], ["t2", true]);
   const r = K.restore(l, "t4");
-  assert.deepEqual([r.max, r.focus, K.isHidden(r, "t4")], ["t4", "t4", false]);
+  assert.deepEqual([r.max, r.focus, isHid(r, "t4")], ["t4", "t4", false]);
 });
 
 test("minimize hides the leaf in place and moves focus to the sibling subtree's visible leaf", () => {
@@ -753,9 +755,9 @@ test("minimize hides the leaf in place and moves focus to the sibling subtree's 
   assert.equal(l.focus, "t2");
   assert.deepEqual(ids(l), ["t1", "t2", "t4"]); // still listed
   assert.deepEqual(plain(K.visibleLeaves(l).map((x) => x.id)), ["t1", "t2"]);
-  assert.equal(K.isHidden(l, "t4"), true);
-  assert.equal(K.isHidden(l, "t1"), false);
-  assert.equal(K.isHidden(l, "nope"), false);
+  assert.equal(isHid(l, "t4"), true);
+  assert.equal(isHid(l, "t1"), false);
+  assert.equal(isHid(l, "nope"), false);
 });
 
 test("minimize of an unfocused leaf keeps focus; of the maximized leaf clears max", () => {
@@ -849,7 +851,7 @@ test("focusDir ignores hidden and non-maximized leaves", () => {
 test("focus unhides a hidden leaf and, while max is set, moves max to the focused leaf", () => {
   const l = K.minimize(three(), "t1");
   const f = K.focus(l, "t1");
-  assert.deepEqual([K.isHidden(f, "t1"), f.focus], [false, "t1"]);
+  assert.deepEqual([isHid(f, "t1"), f.focus], [false, "t1"]);
   assert.equal("max" in f, false);
   const m = K.focus(K.maximize(three(), "t1"), "t2");
   assert.deepEqual([m.max, m.focus], ["t2", "t2"]);

@@ -7,6 +7,7 @@ import { TERM_CSS } from "./termKit.ts";
 import { TRACE_CSS } from "./traceKit.ts";
 import { PANE_CSS } from "./paneKit.ts";
 import { LAYOUT_LOGIC_JS } from "./layout.ts";
+import { WINDOW_MENU_JS } from "./windowMenu.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
 import { LAYOUT_SHELL_JS, LAYOUT_STORAGE_KEY } from "./layoutShell.ts";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
@@ -14,6 +15,7 @@ import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } fro
 import { UI_COMMAND_JS, UI_STREAM_PATH } from "./uiCommand.ts";
 import { UI_DRIVER_JS } from "./uiDriver.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
+import { CONTEXT_MENU_CSS, CONTEXT_MENU_JS } from "./contextMenu.ts";
 import { WINDOW_CHROME_JS } from "./windowChrome.ts";
 import { CHROME_CSS } from "./chromeCss.ts";
 import { THEME_CSS } from "./themeCss.ts";
@@ -100,7 +102,7 @@ main { box-sizing: border-box; width: min(100% - 2 * var(--pad), 80rem); margin:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
-${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${CHROME_CSS}${LAUNCHER_CSS}${THEME_CSS}`;
+${PANE_CSS}${MD_CSS}${TERM_CSS}${TRACE_CSS}${LAYOUT_CSS}${CHROME_CSS}${LAUNCHER_CSS}${CONTEXT_MENU_CSS}${THEME_CSS}`;
 
 export function renderShell(opts: { tabs: readonly UiTab[]; prefix?: string; title?: string }): string {
   const title = escapeHtml(opts.title ?? "pomtree");
@@ -158,7 +160,9 @@ const UI = {
 <main class="wm"><div id="wm-root" class="wm-root"></div><div id="wm-stash" hidden>${sections}</div></main>
 <script>
 ${LAYOUT_LOGIC_JS}
+${WINDOW_MENU_JS}
 ${MENU_NAV_JS}
+${CONTEXT_MENU_JS}
 ${WINDOW_CHROME_JS}
 ${LAYOUT_SHELL_JS}
 ${UI_COMMAND_JS}

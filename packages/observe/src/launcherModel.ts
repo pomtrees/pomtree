@@ -47,6 +47,7 @@ export interface LeafLike {
   id: string;
   view: string;
   params: { agent?: string; report?: string };
+  hidden?: boolean; // minimized: kept in the layout and listed, but not tiled
 }
 export type ActionId = "split-right" | "split-down" | "close-tile" | "reset-layout" | "export-layout" | "import-layout" | "sign-out";
 export type Run = { type: "focus"; leaf: string } | { type: "open"; view: string; agent?: string; report?: string } | { type: "action"; id: ActionId };
@@ -113,9 +114,11 @@ export interface MenuStep {
 export interface WindowEntry {
   leaf: string;
   label: string;
-  title: string; // tooltip: the full label plus the state in words
+  title: string; // tooltip: the full label plus the state in words (", minimized" / ", maximized" appended)
   dot: Dot;
   focused: boolean;
+  minimized: boolean; // the leaf is hidden: dimmed in the bar, clicking restores it
+  maximized: boolean;
 }
 export interface WindowList {
   entries: WindowEntry[];
@@ -170,7 +173,7 @@ export interface LauncherKitApi {
   inboxBadge(approvals: number | null, escalations: number | null): Badge;
   // window list
   windowLabel(leaf: LeafLike, views: ViewDef[], agents: AgentInfo[]): string;
-  windowList(leaves: LeafLike[], focus: string, views: ViewDef[], agents: AgentInfo[], inboxCount: number): WindowList;
+  windowList(leaves: LeafLike[], focus: string, views: ViewDef[], agents: AgentInfo[], inboxCount: number, maximized?: string): WindowList;
   // omnibar
   buildItems(ctx: BuildCtx): OmniItem[]; // open windows, then new windows, then actions
   parseQuery(text: string): { actionsOnly: boolean; tokens: string[] };
@@ -309,14 +312,16 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     if (dot === "err") return "failed";
     return "idle";
   }
-  function windowList(leaves, focus, views, agents, inboxCount) {
+  function windowList(leaves, focus, views, agents, inboxCount, maximized) {
     const entries = [];
     let attention = 0;
     for (const lf of leaves) {
       const label = windowLabel(lf, views, agents);
       const dot = leafDot(lf, agents, inboxCount);
       if (dot === "err" || dot === "warn") attention++;
-      entries.push({ leaf: lf.id, label, title: label + " (" + stateWord(lf, dot, agents) + ")", dot, focused: lf.id === focus });
+      const minimized = lf.hidden === true;
+      const zoomed = isStr(maximized) && maximized !== "" && lf.id === maximized;
+      entries.push({ leaf: lf.id, label, title: label + " (" + stateWord(lf, dot, agents) + ")" + (minimized ? ", minimized" : "") + (zoomed ? ", maximized" : ""), dot, focused: lf.id === focus, minimized, maximized: zoomed });
     }
     let label = "Open windows";
     if (attention > 0) label += ", " + attention + (attention === 1 ? " needs attention" : " need attention");
@@ -338,7 +343,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
         key: "open:" + lf.id,
         kind: "open",
         label: windowLabel(lf, ctx.views, ctx.agents),
-        hint: isStr(aid) ? aid + " " + (isStr(rid) ? rid + " " : "") + lf.view : lf.view,
+        hint: (isStr(aid) ? aid + " " + (isStr(rid) ? rid + " " : "") + lf.view : lf.view) + (lf.hidden === true ? " (minimized)" : ""),
         dot: leafDot(lf, ctx.agents, ctx.inboxCount),
         run: { type: "focus", leaf: lf.id },
       });

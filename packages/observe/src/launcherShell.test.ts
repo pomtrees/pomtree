@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
+import { LAYOUT_LOGIC_JS } from "./layout.ts";
+import { WINDOW_MENU_JS } from "./windowMenu.ts";
+import { MENU_NAV_JS } from "./menuNav.ts";
+import { CONTEXT_MENU_JS } from "./contextMenu.ts";
 import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
 import { inspect } from "node:util";
 import { FakeDocument, Node_ } from "./launcherFakeDom.ts";
@@ -36,29 +40,62 @@ interface Opts {
   exportThrows?: boolean;
   importThrows?: boolean;
   noFocusDom?: boolean;
+  // Back the fake api with the real LayoutKit and WindowMenuKit: windows in reading order (each split beside the last), the listed ones minimized.
+  layout?: { view: string; agent?: string; min?: boolean }[];
 }
+const plainOf = (x: unknown) => JSON.parse(JSON.stringify(x));
 
 function boot(o: Opts = {}) {
   const doc = new FakeDocument();
   const bar = new Node_("header");
   if (!o.noBar) doc.byId.set("lb-bar", bar);
   const calls: string[] = [];
-  const changeFns: (() => void)[] = [];
   const wm = {
     leaves: o.leaves ?? [
       { id: "l1", view: "terminal", params: { agent: "a1" } },
       { id: "l2", view: "tree", params: {} },
     ],
     focus: "l1",
+    maximized: "",
     narrow: !!o.narrow,
     views: o.views ?? VIEWS,
   };
   const focusDoms: number[] = [];
+  const changeFns: (() => void)[] = [];
+  const fire = () => {
+    for (const f of [...changeFns]) f();
+  };
+  // Real layout support: created in the sandbox below, so declared here and assigned after the kits are loaded.
+  let LK: any = null;
+  let WMK: any = null;
+  let lay: any = null;
+  const sync = () => {
+    wm.leaves = plainOf(LK.leaves(lay).map((l: any) => ({ id: l.id, view: l.view, params: l.params, hidden: l.hidden === true })));
+    wm.focus = lay.focus;
+    wm.maximized = LK.maximized(lay);
+  };
   const api = {
     ...(o.noFocusDom ? {} : { focusDom: () => void focusDoms.push(1) }),
-    state: () => ({ leaves: wm.leaves, focus: wm.focus, narrow: wm.narrow, maxLeaves: 16 }),
+    state: () => ({ leaves: wm.leaves, focus: wm.focus, maximized: wm.maximized, narrow: wm.narrow, maxLeaves: 16 }),
     views: () => wm.views,
-    focus: (id: string) => void calls.push(`focus:${id}`),
+    windowMenuItems: (id: string) => plainOf(WMK.items(lay, id, { narrow: wm.narrow })),
+    windowCommand: (cmd: string, id: string | null) => {
+      calls.push(`cmd:${cmd}:${id}`);
+      const next = WMK.apply(lay, cmd, id);
+      const changed = next !== lay;
+      lay = next;
+      sync();
+      fire();
+      return changed;
+    },
+    focus: (id: string) => {
+      calls.push(`focus:${id}`);
+      if (lay) {
+        lay = LK.focus(lay, id);
+        sync();
+        fire();
+      }
+    },
     openView: (v: string, a?: string, r?: string) => void calls.push(`open:${v}:${a ?? ""}${r ? `:${r}` : ""}`),
     splitFocused: (d: string) => void calls.push(`split:${d}`),
     closeFocused: () => void calls.push("close"),
@@ -97,10 +134,27 @@ function boot(o: Opts = {}) {
   };
   Object.defineProperty(sandbox, "globalThis", { get: () => ctx });
   const ctx = createContext(sandbox);
+  runInContext(LAYOUT_LOGIC_JS, ctx);
+  runInContext(WINDOW_MENU_JS, ctx);
+  runInContext(MENU_NAV_JS, ctx);
+  runInContext(CONTEXT_MENU_JS, ctx);
   runInContext(LAUNCHER_LOGIC_JS, ctx);
   runInContext(LAUNCHER_SHELL_JS, ctx);
+  LK = runInContext("LayoutKit", ctx);
+  WMK = runInContext("WindowMenuKit", ctx);
+  if (o.layout) {
+    const params = (w: { agent?: string }) => (w.agent ? { agent: w.agent } : {});
+    lay = LK.single(o.layout[0]!.view, params(o.layout[0]!));
+    for (const w of o.layout.slice(1)) lay = LK.split(lay, lay.focus, "row", w.view, params(w));
+    const first = LK.leaves(lay)[0].id;
+    o.layout.forEach((w, i) => {
+      if (w.min) lay = LK.minimize(lay, LK.leaves(lay)[i].id);
+    });
+    if (!o.layout.every((w) => w.min)) lay = LK.focus(lay, LK.leaves(lay).find((l: any) => !l.hidden)?.id ?? first);
+    sync();
+  }
   const mount = () => runInContext("createLauncherBar(wm, cfg)", ctx);
-  return { doc, bar, wm, focusDoms, calls, changeFns, net, fetched, reloads, intervals, mount, ctx };
+  return { doc, bar, wm, api, focusDoms, calls, changeFns, net, fetched, reloads, intervals, mount, ctx };
 }
 
 const settle = () => new Promise<void>((r) => setImmediate(r));
@@ -919,4 +973,145 @@ test("report entries recover on the next open after a failed fetch", async () =>
   assert.ok(h.labels().includes("Open report notes (alpha)"), "recovered on the next open");
   assert.equal(h.notice.hidden, true, "the failure notice is cleared by the next open");
   assert.equal(h.notice.textContent, "");
+});
+
+// ---- window entries: minimized state and the window context menu ----
+const THREE = [{ view: "terminal", agent: "a1" }, { view: "tree" }, { view: "inbox" }];
+const classes = (n: Node_) => n.className.split(" ");
+const ctxItems = (h: H) => h.doc.body.byClass("ctx-item");
+const ctxMenuEl = (h: H) => h.doc.body.byClass("ctx-menu")[0];
+const itemLabels = (h: H) => ctxItems(h).map((i) => i.textContent);
+const disabledLabels = (h: H) =>
+  ctxItems(h)
+    .filter((i) => i.getAttribute("aria-disabled") === "true")
+    .map((i) => i.textContent);
+const pick = (h: H, label: string) =>
+  ctxItems(h)
+    .find((i) => i.textContent === label)!
+    .click();
+
+test("a minimized window is listed dimmed with an accessible '(minimized)' name and a tooltip; a shown one is not", async () => {
+  const h = await up({
+    layout: [
+      { view: "terminal", agent: "a1" },
+      { view: "tree", min: true },
+    ],
+  });
+  const [shown, min] = h.wins();
+  assert.deepEqual(classes(min!), ["lb-win", "min"]);
+  assert.equal(min!.getAttribute("aria-label"), "Tree (minimized)");
+  assert.match(min!.getAttribute("title")!, /Tree \(idle\), minimized/);
+  assert.equal(min!.textContent, "Tree", "the visible label is unchanged");
+  assert.ok(!classes(shown!).includes("min"), "negative control: a shown window is not dimmed");
+  assert.equal(shown!.getAttribute("aria-label"), null);
+  assert.match(LAUNCHER_CSS, /\.lb-win\.min \{[^}]*opacity: 0\.55[^}]*border-style: dashed/, "dimmed by opacity plus a dashed border, not colour alone");
+  assert.match(LAUNCHER_CSS, /forced-colors: active\) \{[^@]*\.lb-win\.min \{[^}]*dashed/, "forced colors keep the dashed cue");
+});
+
+test("clicking a minimized entry focuses (restores) it and moves focus into the window; the entry is no longer dimmed", async () => {
+  const h = await up({
+    layout: [
+      { view: "terminal", agent: "a1" },
+      { view: "tree", min: true },
+    ],
+  });
+  const id = h.wm.leaves[1]!.id;
+  h.wins()[1]!.click();
+  assert.deepEqual(h.calls, [`focus:${id}`]);
+  assert.equal(h.focusDoms.length, 1);
+  assert.ok(!classes(h.wins()[1]!).includes("min"));
+  assert.equal(h.wins()[1]!.getAttribute("aria-pressed"), "true");
+  h.wins()[0]!.click();
+  assert.equal(h.focusDoms.length, 1, "negative control: clicking a shown entry does not touch DOM focus");
+});
+
+test("right-click on an entry opens a role=menu with the standard items; the first entry's 'Close to the left' is disabled", async () => {
+  const h = await up({ layout: THREE });
+  assert.equal(ctxMenuEl(h), undefined);
+  const first = h.wins()[0]!;
+  const ev = first.fire("contextmenu", { clientX: 5, clientY: 6 });
+  assert.equal(ev.defaultPrevented, true, "the browser menu is suppressed");
+  assert.equal(ctxMenuEl(h)!.getAttribute("role"), "menu");
+  assert.deepEqual(itemLabels(h), ["Maximize", "Minimize", "Close", "Close others", "Close to the left", "Close to the right", "Close all"]);
+  assert.ok(ctxItems(h).every((i) => i.getAttribute("role") === "menuitem"));
+  assert.deepEqual(disabledLabels(h), ["Close to the left"]);
+  ctxMenuEl(h)!.remove();
+  const last = h.wins()[2]!;
+  last.fire("contextmenu", { clientX: 5, clientY: 6 });
+  assert.deepEqual(disabledLabels(h), ["Close to the right"], "negative control: the last entry disables the other side");
+});
+
+test("the ContextMenu key and Shift+F10 on a focused entry open the menu; plain F10 and other keys do not", async () => {
+  const h = await up({ layout: THREE });
+  const b = h.wins()[1]!;
+  b.fire("keydown", { key: "F10" });
+  b.fire("keydown", { key: "a" });
+  assert.equal(ctxMenuEl(h), undefined);
+  const a = b.fire("keydown", { key: "ContextMenu" });
+  assert.equal(a.defaultPrevented, true);
+  assert.ok(ctxMenuEl(h));
+  assert.deepEqual(disabledLabels(h), []);
+  ctxMenuEl(h)!.remove();
+  h.wins()[1]!.fire("keydown", { key: "F10", shiftKey: true });
+  assert.ok(ctxMenuEl(h), "Shift+F10 opens it too");
+});
+
+test("Escape closes the menu and returns focus to the entry that opened it", async () => {
+  const h = await up({ layout: THREE });
+  const b = h.wins()[1]!;
+  b.fire("keydown", { key: "ContextMenu" });
+  const before = b.focused;
+  ctxItems(h)[0]!.fire("keydown", { key: "Escape" });
+  assert.equal(ctxMenuEl(h), undefined);
+  assert.equal(b.focused, before + 1);
+  assert.deepEqual(h.calls, [], "Escape runs no command");
+});
+
+test("picking Close others closes the other windows through the window manager; focus then goes to the window, not the gone entry", async () => {
+  const h = await up({ layout: THREE });
+  const keep = h.wm.leaves[1]!.id;
+  h.wins()[1]!.fire("contextmenu", { clientX: 1, clientY: 1 });
+  pick(h, "Close others");
+  assert.deepEqual(h.calls, [`cmd:window.close-others:${keep}`]);
+  assert.deepEqual(
+    h.wins().map((w) => w.textContent),
+    ["Tree"],
+  );
+  assert.equal(ctxMenuEl(h), undefined, "the menu closed");
+  assert.ok(h.focusDoms.length >= 1, "the opener entry was rebuilt, so focus moved to the window");
+});
+
+test("picking a disabled item does nothing and keeps the menu open", async () => {
+  const h = await up({ layout: THREE });
+  h.wins()[0]!.fire("contextmenu", { clientX: 1, clientY: 1 });
+  pick(h, "Close to the left");
+  assert.deepEqual(h.calls, []);
+  assert.ok(ctxMenuEl(h));
+});
+
+test("a failing window command is reported in the bar notice with its cause and the action", async () => {
+  const h = await up({ layout: THREE });
+  h.wins()[0]!.fire("contextmenu", { clientX: 1, clientY: 1 });
+  // deliberately wrong api: the command throws
+  h.api.windowCommand = () => {
+    throw new Error("layout locked");
+  };
+  pick(h, "Close");
+  assert.match(h.notice.textContent, /Window command failed: layout locked\. Reload the page and try again\./);
+  assert.equal(h.notice.hidden, false);
+});
+
+test("an open menu keeps its opener: a layout change waits for the menu to close; without a menu the list rebuilds at once", async () => {
+  const h = await up({ layout: THREE });
+  const b = h.wins()[0]!;
+  b.fire("contextmenu", { clientX: 1, clientY: 1 });
+  h.api.focus(h.wm.leaves[2]!.id);
+  assert.ok(h.winlist.contains(b), "the opener entry survives a render while the menu is open");
+  ctxItems(h)[0]!.fire("keydown", { key: "Escape" });
+  for (const f of h.changeFns) f();
+  assert.ok(!h.winlist.contains(b), "the next render after the menu closed catches up");
+  assert.equal(h.wins()[2]!.getAttribute("aria-pressed"), "true");
+  const c = h.wins()[0]!;
+  h.api.focus(h.wm.leaves[1]!.id);
+  assert.ok(!h.winlist.contains(c), "negative control: with no menu open a layout change rebuilds the list");
 });

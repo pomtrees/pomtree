@@ -12,6 +12,8 @@ const kits = runInContext(load, createContext({ globalThis: {}, JSON, Math, Numb
 const L = kits.LayoutKit;
 const W = kits.WindowMenuKit;
 
+// hidden flag read from leaves() (the same data the bar uses)
+const isHid = (l: Layout, id: string) => L.leaves(l).find((x) => x.id === id)?.hidden === true;
 const plain = (x: unknown) => JSON.parse(JSON.stringify(x));
 // t1 | (t2 / (t4 | t6)): reading order t1 t2 t4 t6, focus t6.
 const four = (): Layout => {
@@ -162,7 +164,7 @@ test("apply delegates to LayoutKit for every command", () => {
   assert.equal("max" in W.apply(m, "window.restore", "t2"), false);
   assert.equal("max" in W.apply(m, "window.restore", null), false);
   const h = W.apply(l, "window.minimize", "t2");
-  assert.equal(L.isHidden(W.apply(h, "window.restore", "t2"), "t2"), false);
+  assert.equal(isHid(W.apply(h, "window.restore", "t2"), "t2"), false);
 });
 
 test("apply returns the same reference when the command is disabled", () => {
@@ -203,4 +205,43 @@ test("every id produced by items and fromUiCommand is in COMMANDS (no second tab
   const set = new Set(plain(W.COMMANDS));
   for (const i of plain(W.items(four(), "t2")) as { kind: string; command?: string }[]) if (i.kind === "action") assert.ok(set.has(i.command));
   for (const c of [{ cmd: "close", scope: "all" }, { cmd: "maximize" }, { cmd: "restore" }, { cmd: "minimize" }]) assert.ok(set.has(W.fromUiCommand(c)));
+});
+
+test("reason is empty exactly when enabled, and names the cause otherwise (every command, every layout shape)", () => {
+  const f = four();
+  const one = L.single("tree") as Layout;
+  const h = L.minimize(f, "t2");
+  const cases: [Layout, string | null, { narrow?: boolean } | undefined][] = [
+    [f, "t1", undefined],
+    [f, "t6", undefined],
+    [one, "t1", undefined],
+    [h, "t2", undefined],
+    [L.maximize(f, "t2"), "t2", undefined],
+    [f, "t2", { narrow: true }],
+    [f, null, undefined],
+    [f, "nope", undefined],
+  ];
+  for (const [l, leaf, opts] of cases) {
+    for (const c of W.COMMANDS) {
+      const why = W.reason(l, c, leaf, opts);
+      assert.equal(why === "", W.enabled(l, c, leaf, opts), `${c} ${leaf} ${JSON.stringify(opts)}: ${why}`);
+    }
+  }
+});
+
+test("reason texts: first, last, only, none maximized, minimized, narrow, unknown window", () => {
+  const f = four();
+  const one = L.single("tree") as Layout;
+  assert.equal(W.reason(f, "window.close-left", "t1"), "it is the first window in the bar.");
+  assert.equal(W.reason(f, "window.close-right", "t6"), "it is the last window in the bar.");
+  assert.equal(W.reason(one, "window.close-others", "t1"), "there is no other window.");
+  assert.equal(W.reason(one, "window.maximize", "t1"), "it is the only window shown.");
+  assert.equal(W.reason(L.maximize(f, "t2"), "window.maximize", "t2"), "it is already maximized.");
+  assert.equal(W.reason(f, "window.restore", null), "no window is maximized.");
+  assert.equal(W.reason(f, "window.restore", "t2"), "it is neither maximized nor minimized.");
+  assert.equal(W.reason(L.minimize(f, "t2"), "window.minimize", "t2"), "it is already minimized.");
+  assert.equal(W.reason(L.closeAll(f), "window.close-all", null), "no windows are open.");
+  assert.equal(W.reason(f, "window.close", "nope"), "that window is not open.");
+  assert.equal(W.reason(f, "window.maximize", "t2", { narrow: true }), "narrow screens show one window at a time. Make the window wider than 640px.");
+  assert.equal(W.reason(f, "window.close", "t2", { narrow: true }), "", "close stays enabled in narrow mode");
 });

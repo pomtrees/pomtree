@@ -15,6 +15,7 @@ export const LAYOUT_SHELL_JS = `
 function createWindowManager(tabs, storageKey) {
   "use strict";
   const LK = LayoutKit;
+  const WMK = WindowMenuKit;
   const single = (view, params) => LK.single(view, params) || LK.single("tree", {});
   const K = globalThis.PaneKit || null;
   const MIN_W = 160;
@@ -25,6 +26,7 @@ function createWindowManager(tabs, storageKey) {
   const root = document.getElementById("wm-root");
   const stash = document.getElementById("wm-stash");
   const noticeBox = document.getElementById("wm-notices");
+  const ctxMenu = ContextMenuKit.create({ document });
 
   const titles = new Map();
   const order = [];
@@ -190,8 +192,8 @@ function createWindowManager(tabs, storageKey) {
     const l = layout();
     const lf = l && focusedLeaf(l);
     if (!lf) {
-      // An empty layout names no window, so a stale hash would reopen the last one on reload.
-      if (l && !LK.leaves(l).length && hashTarget(location.hash)) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
+      // An empty or all-minimized layout names no window, so a stale hash would reopen (and unhide) the last one on reload.
+      if (l && !LK.visibleLeaves(l).length && hashTarget(location.hash)) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} }
       return;
     }
     const t = hashTarget(location.hash);
@@ -293,20 +295,34 @@ function createWindowManager(tabs, storageKey) {
     };
     const bRight = mk("\\u25eb", "Split right", () => splitLeaf(lf.id, "row"));
     const bDown = mk("\\u2b13", "Split down", () => splitLeaf(lf.id, "col"));
-    const bClose = mk("\\u00d7", "Close tile", () => commit(LK.close(layout(), lf.id)));
+    const bMin = mk("\\u2212", "Minimize", () => { if (windowCommand("window.minimize", lf.id)) focusDom(); });
+    const bMax = mk("\\u25a1", "Maximize", () => windowCommand(LK.maximized(layout()) === lf.id ? "window.restore" : "window.maximize", lf.id));
+    const bClose = mk("\\u00d7", "Close tile", () => windowCommand("window.close", lf.id));
     const hasMenus = chrome && model.declaration.menus.length > 0;
     const hasControls = chrome && model.declaration.controls.length > 0;
-    const parts = [title, hasControls ? chrome.controls : null, hasMenus ? chrome.menus : null, hasMenus || hasControls ? chrome.overflow : null, sel, bRight, bDown, bClose];
+    const parts = [title, hasControls ? chrome.controls : null, hasMenus ? chrome.menus : null, hasMenus || hasControls ? chrome.overflow : null, sel, bRight, bDown, bMin, bMax, bClose];
     for (const c of parts) if (c) bar.appendChild(c);
     const body = make("div", "tile-body");
     el.appendChild(bar);
     el.appendChild(body);
     if (chrome && model.declaration.status.length > 0) el.appendChild(chrome.footer);
     el.addEventListener("pointerdown", () => focusLeaf(lf.id), true);
+    title.addEventListener("dblclick", () => {
+      const cmd = LK.maximized(layout()) === lf.id ? "window.restore" : "window.maximize";
+      if (WMK.enabled(layout(), cmd, lf.id, { narrow })) windowCommand(cmd, lf.id);
+    });
+    ContextMenuKit.attach(bar, {
+      menu: ctxMenu,
+      items: () => WMK.items(layout(), lf.id, { narrow }),
+      onPick: (command) => windowCommand(command, lf.id),
+      label: "Window menu: " + (titles.get(lf.view) || lf.view),
+      keyTarget: el,
+      opener: el,
+    });
     // only focus the operator caused counts: a view calling focus() on its own (xterm's hidden textarea once its socket opens) must not move the layout's focus
     // TODO(tile-focus-source): this key-held heuristic has two limits. (1) A key held down while a terminal's socket opens still counts as operator focus and moves the tile focus. (2) Focus that moves with no key or pointer press (screen-reader virtual cursor, voice control) no longer updates the focused tile. Preferred fix: stop the view stealing focus at the source (tabs.ts term.focus() after socket open skipped when its tile is not the focused one, e.g. via a host-provided focus-if-focused hook), then delete keyDown.
     el.addEventListener("focusin", () => { if (keyDown) focusLeaf(lf.id); });
-    Object.assign(rec, { el, title, sel, bClose, body });
+    Object.assign(rec, { el, title, sel, bMin, bMax, bClose, body });
 
     const note = (text) => {
       const n = make("div", "tile-note");
@@ -338,20 +354,6 @@ function createWindowManager(tabs, storageKey) {
     return rec;
   };
 
-  const splitsOf = (n, x, y, w, h, out) => {
-    if (n.kind === "leaf") return out;
-    out.set(n.id, { id: n.id, dir: n.dir, ratio: n.ratio, x, y, w, h });
-    if (n.dir === "row") {
-      const w1 = w * n.ratio;
-      splitsOf(n.children[0], x, y, w1, h, out);
-      splitsOf(n.children[1], x + w1, y, w - w1, h, out);
-    } else {
-      const h1 = h * n.ratio;
-      splitsOf(n.children[0], x, y, w, h1, out);
-      splitsOf(n.children[1], x, y + h1, w, h - h1, out);
-    }
-    return out;
-  };
   const minRatioOf = (s) => {
     const box = root.getBoundingClientRect();
     const size = s.dir === "row" ? s.w * box.width : s.h * box.height;
@@ -413,9 +415,11 @@ function createWindowManager(tabs, storageKey) {
     const l = layout();
     const leaves = LK.leaves(l);
     const rects = LK.rects(l);
+    // rects holds only the shown leaves (not hidden, and the maximized one alone while a leaf is maximized): tiles are built for those.
+    const shown = leaves.filter((lf) => rects[lf.id]);
     const owners = new Set();
     const want = new Map();
-    for (const lf of leaves) {
+    for (const lf of shown) {
       let kind = kindOf(lf.view);
       let note = "";
       if (kind === "none") { kind = "note"; note = lf.view + ": view not available. Choose another view or close this tile."; }
@@ -429,10 +433,11 @@ function createWindowManager(tabs, storageKey) {
     }
     for (const [id, rec] of [...tiles]) {
       const w = want.get(id);
+      // TODO(wm-restore-remount): a tile that stops being shown (minimized, or hidden behind a maximized window) is released here, so restoring it mounts a fresh view: a terminal reconnects and replays, scroll position and unsent input are lost.
       if (!w || w.sig !== rec.sig) { release(rec); rec.el.remove(); tiles.delete(id); }
     }
     let geom = "";
-    for (const lf of leaves) {
+    for (const lf of shown) {
       let rec = tiles.get(lf.id);
       if (!rec) { rec = buildTile(lf, want.get(lf.id)); tiles.set(lf.id, rec); root.appendChild(rec.el); }
       const r = rects[lf.id];
@@ -442,14 +447,27 @@ function createWindowManager(tabs, storageKey) {
       rec.el.style.height = pct(r.h);
       rec.el.className = lf.id === l.focus ? "tile tile-focused" : "tile";
       if (rec.sel) rec.sel.value = lf.view;
-      rec.bClose.disabled = narrow; // the one narrow window is the desktop layout's focus, not a tile to close
+      const maxed = LK.maximized(l) === lf.id;
+      const zoomCmd = maxed ? "window.restore" : "window.maximize";
+      const zoomLabel = maxed ? "Restore" : "Maximize";
+      rec.bClose.disabled = !WMK.enabled(l, "window.close", lf.id, { narrow });
+      const vis = (cmd) => WMK.items(l, lf.id, { narrow }).find((x) => x.command === cmd).visible;
+      rec.bMin.hidden = !vis("window.minimize");
+      rec.bMin.disabled = !WMK.enabled(l, "window.minimize", lf.id, { narrow });
+      rec.bMax.hidden = !vis(zoomCmd);
+      rec.bMax.disabled = !WMK.enabled(l, zoomCmd, lf.id, { narrow });
+      rec.bMax.textContent = maxed ? "\\u2750" : "\\u25a1";
+      rec.bMax.setAttribute("aria-label", zoomLabel);
+      rec.bMax.setAttribute("title", zoomLabel);
       geom += lf.id + ":" + rec.el.style.left + "," + rec.el.style.top + "," + rec.el.style.width + "," + rec.el.style.height + ";";
     }
-    if (leaves.length === 0) {
-      if (!emptyEl) { emptyEl = make("div", "wm-empty"); emptyEl.textContent = "No windows open: use the launcher (Alt+Shift+P) to open one."; }
-      if (!emptyEl.parent) root.appendChild(emptyEl);
-    } else if (emptyEl && emptyEl.parent) emptyEl.remove();
-    splitInfo = l.root ? splitsOf(l.root, 0, 0, 1, 1, new Map()) : new Map();
+    const hint = leaves.length === 0 ? "No windows open: use the launcher (Alt+Shift+P) to open one." : shown.length === 0 ? "All windows are minimized: click one in the bar to restore it." : "";
+    if (hint) {
+      if (!emptyEl) emptyEl = make("div", "wm-empty");
+      emptyEl.textContent = hint;
+      if (!emptyEl.parentNode) root.appendChild(emptyEl);
+    } else if (emptyEl && emptyEl.parentNode) emptyEl.remove();
+    splitInfo = new Map(LK.splits(l).map((s) => [s.id, s]));
     for (const [id, el] of [...splitEls]) if (!splitInfo.has(id)) { el.remove(); splitEls.delete(id); }
     for (const s of splitInfo.values()) {
       let el = splitEls.get(s.id);
@@ -470,32 +488,94 @@ function createWindowManager(tabs, storageKey) {
   // Shows a view: focuses the tile that shows it, else (narrow) replaces the single window, else splits the largest tile that
   // can still be split, along its longer side. The one path for api.openView and for an item view named by the hash.
   const showView = (view, params) => {
-    const l = layout();
+    let l = layout();
     const at = LK.find(l, view, params, multiOf(view));
-    if (at) { focusLeaf(at); return; }
+    if (at) { focusLeaf(at); return; } // also unhides a minimized window and moves the maximized state to it
     if (narrow) { commit(LK.setView(l, l.focus, view, params)); return; }
     if (!hasSubject(view, params)) {
       notify("open", "Cannot open " + (titles.get(view) || view) + " without " + needText(view) + ". Open it from the Tree, the top bar or a link that names it.");
       return;
     }
     if (LK.leaves(l).length === 0) { commit(LK.open(l, view, params, multiOf(view))); return; }
+    // TODO(wm-follow-maximized): a new window (launcher, link, ui open, follow mode) ends the maximized state: the tiling is restored first and the window is placed on it, so a spawn can end an operator's zoom.
+    if (LK.maximized(l)) l = LK.restore(l);
+    const vis = LK.visibleLeaves(l);
+    if (vis.length === 0) {
+      // every window is minimized: split in beside the first one in the bar
+      const next = LK.split(l, LK.leaves(l)[0].id, "row", view, params);
+      if (next !== l) { commit(next); return; }
+    }
     const rects = LK.rects(l);
     const box = root.getBoundingClientRect ? root.getBoundingClientRect() : null;
     const bw = box && box.width > 0 && box.height > 0 ? box.width : 1;
     const bh = box && box.width > 0 && box.height > 0 ? box.height : 1;
-    const cands = LK.leaves(l).map((lf, i) => {
+    const cands = vis.map((lf, i) => {
       const r = rects[lf.id];
       return { id: lf.id, i, w: r.w * bw, h: r.h * bh, area: r.w * bw * r.h * bh };
     });
     cands.sort((a, b) => b.area - a.area || (b.id === l.focus ? 1 : 0) - (a.id === l.focus ? 1 : 0) || a.i - b.i);
     for (const c of cands) {
-      if (commit(LK.split(l, c.id, c.w >= c.h ? "row" : "col", view, params))) return;
+      const next = LK.split(l, c.id, c.w >= c.h ? "row" : "col", view, params);
+      if (next !== l) { commit(next); return; }
     }
     const atLeaves = LK.leaves(l).length >= LK.MAX_LEAVES;
     notify("limit", atLeaves
       ? "Cannot open another window: a layout holds at most " + LK.MAX_LEAVES + " tiles. Close a tile first."
       : "Cannot open another window: every tile is already nested " + LK.MAX_DEPTH + " levels deep. Close a tile first.");
     syncHash();
+  };
+
+  // A browsing view named by the hash: focus the window that shows it (unhiding it), else open it on the restored tiling.
+  const openBrowsing = (l, view) => {
+    const at = LK.find(l, view, {}, false);
+    if (at) return LK.focus(l, at);
+    return LK.open(LK.maximized(l) ? LK.restore(l) : l, view, {}, false);
+  };
+  const focusDom = () => { const rec = tiles.get(layout().focus); if (rec && rec.el.focus) rec.el.focus(); };
+
+  // ---- window commands: the one path for the context menu, the tile-bar buttons, the title double-click and the ui drive ----
+  const labelOf = (command, l, leafId) => {
+    const it = WMK.items(l, leafId, { narrow }).find((x) => x.command === command);
+    return it ? it.label : command;
+  };
+  // Narrow mode: leafId names the narrow layout's single leaf, which is not the desktop layout's leaf (both number from t1), so a close
+  // finds the desktop window by its subject. TODO(wm-narrow-close): Close acts on the saved desktop layout the operator cannot see
+  // (it closes that window there and the narrow screen then shows the desktop's new focus, or the default view when the desktop is
+  // empty); Close others, Close to the left and Close to the right are disabled and Maximize, Restore and Minimize are hidden.
+  const narrowClose = (command, leafId) => {
+    const lab = labelOf(command, narrowLayout, leafId);
+    let next;
+    if (command === "window.close-all") next = LK.closeAll(desktop);
+    else {
+      const lf = LK.leaves(narrowLayout).find((x) => x.id === leafId);
+      const at = lf ? LK.find(desktop, lf.view, lf.params, multiOf(lf.view)) : null;
+      if (!at) {
+        notify("window", lab + " did nothing: this window is not in the saved desktop layout, so there is no tile to close. Make the window wider than 640px to see the layout.");
+        return false;
+      }
+      next = LK.close(desktop, at);
+    }
+    if (next === desktop) { notify("window", lab + " does nothing here: no windows are open."); return false; }
+    desktop = next;
+    narrowLayout = narrowOf();
+    render();
+    save();
+    syncHash();
+    dismiss("window");
+    return true;
+  };
+  const windowCommand = (command, leafId) => {
+    const l = layout();
+    if (narrow && (command === "window.close" || command === "window.close-all")) return narrowClose(command, leafId);
+    const next = WMK.apply(l, command, leafId, narrow ? { narrow } : undefined);
+    if (next === l) {
+      notify("window", labelOf(command, l, leafId) + " does nothing here: " + WMK.reason(l, command, leafId, narrow ? { narrow } : undefined));
+      return false;
+    }
+    commit(next);
+    dismiss("window");
+    if (command === "window.restore" || command === "window.maximize") focusDom();
+    return true;
   };
 
   // ---- narrow fallback: one view at a time, never persisted ----
@@ -515,7 +595,7 @@ function createWindowManager(tabs, storageKey) {
   const startItem = !!start && isItem(start.view);
   const startParams = start ? itemParams(start.agent, start.report) : undefined;
   desktop = stored || single(start ? start.view : defaultView, startParams);
-  if (stored && start && !startItem) desktop = LK.open(stored, start.view, {}, false);
+  if (stored && start && !startItem) desktop = openBrowsing(stored, start.view);
   if (narrow) {
     if (stored && startItem) narrowLayout = single(start.view, startParams);
     else narrowLayout = narrowOf();
@@ -530,7 +610,7 @@ function createWindowManager(tabs, storageKey) {
     const t = hashTarget(location.hash);
     if (!t) return;
     if (isItem(t.view)) showView(t.view, itemParams(t.agent, t.report));
-    else commit(LK.open(layout(), t.view, {}, false));
+    else commit(openBrowsing(layout(), t.view));
   });
   document.addEventListener("keyup", () => { keyDown = false; }, true);
   addEventListener("blur", () => { keyDown = false; });
@@ -550,11 +630,11 @@ function createWindowManager(tabs, storageKey) {
   const api = {
     state: () => {
       const l = layout();
-      return { leaves: LK.leaves(l).map((x) => ({ id: x.id, view: x.view, params: x.params })), focus: l.focus, narrow, maxLeaves: LK.MAX_LEAVES };
+      return { leaves: LK.leaves(l).map((x) => ({ id: x.id, view: x.view, params: x.params, hidden: x.hidden === true })), focus: l.focus, maximized: LK.maximized(l), narrow, maxLeaves: LK.MAX_LEAVES };
     },
     views: () => order.map((id) => ({ id, title: titles.get(id), multi: multiOf(id), subject: subjectOf(id) })),
     focus: focusLeaf,
-    focusDom: () => { const rec = tiles.get(layout().focus); if (rec && rec.el.focus) rec.el.focus(); },
+    focusDom,
     openView: (view, agent, report) => {
       if (kindOf(view) === "none") { notify("open", "View not available: " + view + "."); return; }
       const need = subjectOf(view);
@@ -586,6 +666,10 @@ function createWindowManager(tabs, storageKey) {
       commit(LK.close(layout(), at));
       return true;
     },
+    // Any leaf of the layout, minimized ones included; params are normalised like focusSubject.
+    leafOf: (view, params) => LK.find(layout(), view, subjectArgs(view, params), multiOf(view)),
+    windowCommand,
+    windowMenuItems: (leafId) => WMK.items(layout(), leafId, { narrow }),
     focusDirection: (dir) => {
       if (narrow) { notify("focus", "Focus direction is ignored on narrow screens (one window at a time). Make the window wider than 640px to move focus between tiles."); return false; }
       if (!commit(LK.focusDir(desktop, dir))) { notify("focus", "No window to focus " + dir + " of the current one."); return false; }

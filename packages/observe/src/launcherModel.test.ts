@@ -262,6 +262,40 @@ test("windowList entries, attention, compact", () => {
   assert.equal(K.windowList([leaf("q", "agent", "nope")], "q", VIEWS, [], 0).entries[0]?.title, "Agent: nope (unknown)");
 });
 
+test("windowList flags minimized and maximized windows in the entry and the tooltip, one entry per leaf in order, attention unchanged", () => {
+  const leaves: LeafLike[] = [leaf("t1", "tree"), { ...leaf("t2", "agent", "a2"), hidden: true }, leaf("t3", "inbox")];
+  const w = plain(K.windowList(leaves, "t3", VIEWS, [ag("a2", "beta", "yielded")], 2, "t3"));
+  assert.deepEqual(
+    w.entries.map((e: { leaf: string }) => e.leaf),
+    ["t1", "t2", "t3"],
+  );
+  assert.deepEqual(
+    w.entries.map((e: { minimized: boolean }) => e.minimized),
+    [false, true, false],
+  );
+  assert.deepEqual(
+    w.entries.map((e: { maximized: boolean }) => e.maximized),
+    [false, false, true],
+  );
+  assert.equal(w.entries[1].title, "Agent: beta (yielded), minimized");
+  assert.equal(w.entries[2].title, "Inbox (needs attention), maximized");
+  assert.equal(w.entries[0].title, "Tree (idle)", "negative control: a plain window has no suffix");
+  assert.equal(w.attention, 2, "a minimized window still counts for attention");
+  const none = plain(K.windowList(leaves, "t3", VIEWS, [], 0));
+  assert.deepEqual(
+    none.entries.map((e: { maximized: boolean }) => e.maximized),
+    [false, false, false],
+    "no maximized argument: nothing is maximized",
+  );
+});
+
+test("the omnibar entry for a minimized window says so in its hint; a shown window's hint is unchanged", () => {
+  const items = K.buildItems(ctx({ leaves: [leaf("t1", "tree"), { ...leaf("t2", "agent", "a1"), hidden: true }] }));
+  assert.equal(items.find((i) => i.key === "open:t2")!.hint, "a1 agent (minimized)");
+  assert.equal(items.find((i) => i.key === "open:t1")!.hint, "tree");
+  assert.equal(items.filter((i) => i.kind === "open").length, 2, "one entry per leaf");
+});
+
 test("windowList with zero windows: no entries, not compact, no attention, and the hint text", () => {
   const w = plain(K.windowList([], "", VIEWS, [], 0));
   assert.deepEqual(w.entries, []);

@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TabRegistry, renderShell } from "./shell.ts";
+import { TabRegistry, UI_CSS, renderShell } from "./shell.ts";
+import { LAYOUT_LOGIC_JS } from "./layout.ts";
+import { WINDOW_MENU_JS } from "./windowMenu.ts";
+import { MENU_NAV_JS } from "./menuNav.ts";
+import { CONTEXT_MENU_CSS, CONTEXT_MENU_JS } from "./contextMenu.ts";
+import { LAYOUT_SHELL_JS } from "./layoutShell.ts";
+import { LAUNCHER_CSS } from "./launcherShell.ts";
+import { THEME_CSS } from "./themeCss.ts";
 import type { UiTabCtx } from "./shell.ts";
 import { renderTreePane, renderReportsPane, scriptJson } from "./web.ts";
 
@@ -199,4 +206,24 @@ test("tree and reports panes ship the shared skeleton and declare their window s
   assert.ok(html.includes('id: "tree"'));
   assert.ok(html.includes('id: "reports"'));
   assert.ok(!html.includes("+ New agent"));
+});
+
+test("renderShell inlines WindowMenuKit right after LayoutKit and ContextMenuKit right after MenuNav, before the window manager, and the context menu CSS in UI_CSS", () => {
+  const html = renderShell({ tabs: [{ id: "tree", title: "Tree", render: () => "" }] });
+  const at = (s: string) => html.indexOf(s);
+  const layout = at(LAYOUT_LOGIC_JS);
+  const menu = at(WINDOW_MENU_JS);
+  const nav = at(MENU_NAV_JS);
+  const ctx = at(CONTEXT_MENU_JS);
+  const shell = at(LAYOUT_SHELL_JS);
+  assert.ok(layout > 0 && menu > layout && nav > menu && ctx > nav && shell > ctx, `order layout=${layout} menu=${menu} nav=${nav} ctx=${ctx} shell=${shell}`);
+  assert.equal(html.slice(layout + LAYOUT_LOGIC_JS.length, menu).trim(), "", "WindowMenuKit follows LayoutKit directly");
+  assert.equal(html.slice(nav + MENU_NAV_JS.length, ctx).trim(), "", "ContextMenuKit follows MenuNav directly");
+  assert.ok(UI_CSS.includes(CONTEXT_MENU_CSS), "the menu CSS is part of the shared stylesheet");
+  assert.ok(
+    UI_CSS.indexOf(CONTEXT_MENU_CSS) > UI_CSS.indexOf(LAUNCHER_CSS) && UI_CSS.indexOf(CONTEXT_MENU_CSS) < UI_CSS.indexOf(THEME_CSS),
+    "between the launcher CSS and the theme",
+  );
+  assert.equal(html.split("const ContextMenuKit").length, 2, "inlined exactly once");
+  assert.equal(html.split("const WindowMenuKit").length, 2, "inlined exactly once");
 });

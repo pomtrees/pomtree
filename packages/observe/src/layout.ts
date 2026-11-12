@@ -76,7 +76,6 @@ export interface LayoutKitApi {
   // Every leaf in reading order, hidden ones included (the launcher bar's order).
   leaves(layout: Layout): LeafNode[];
   visibleLeaves(layout: Layout): LeafNode[];
-  isHidden(layout: Layout, leafId: string): boolean;
   // The maximized leaf id, "" when none.
   maximized(layout: Layout): string;
   closeOthers(layout: Layout, leafId: string): Layout;
@@ -175,10 +174,6 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
   const leafById = (layout, id) => {
     const p = layout.root ? pathTo(layout.root, id, []) : null;
     return p && p[p.length - 1].kind === "leaf" ? p[p.length - 1] : null;
-  };
-  const isHidden = (layout, leafId) => {
-    const lf = leafById(layout, leafId);
-    return !!lf && lf.hidden === true;
   };
   const maximized = (layout) => (layout.max ? layout.max : "");
   const shown = (n) => (n.kind === "leaf" ? n.hidden !== true : shown(n.children[0]) || shown(n.children[1]));
@@ -521,6 +516,6 @@ const LayoutKit = globalThis.LayoutKit || (globalThis.LayoutKit = (() => {
     return { ok: true, layout, unknown };
   };
 
-  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, splits, leaves, visibleLeaves, isHidden, maximized, closeOthers, closeLeft, closeRight, closeAll, maximize, restore, minimize, setView, open, find, subjectKey, serialize, parse };
+  return { MAX_LEAVES, MAX_DEPTH, MAX_TEXT, DEFAULT_MIN_RATIO, single, split, close, resize, move, focus, focusDir, rects, splits, leaves, visibleLeaves, maximized, closeOthers, closeLeft, closeRight, closeAll, maximize, restore, minimize, setView, open, find, subjectKey, serialize, parse };
 })());
 `;

@@ -456,6 +456,24 @@ function attached() {
   return { ...t, el, seen, detach };
 }
 
+test("attach opener option: Escape and a pick focus the opener, not el; default is el", () => {
+  const t = setup();
+  const bar = t.doc.createElement("div") as El;
+  const root = t.doc.createElement("div") as El;
+  root.id = "root";
+  t.Kit.attach(bar, { menu: t.menu, items: () => ITEMS, label: "Bar", opener: root });
+  bar.fire("contextmenu", { clientX: 1, clientY: 1 });
+  t.key("Maximize", "Escape");
+  assert.deepEqual([root.focused, bar.focused, t.menu.isOpen()], [1, 0, false]);
+  bar.fire("contextmenu", { clientX: 1, clientY: 1 });
+  t.item("Close").fire("click");
+  assert.deepEqual([root.focused, bar.focused], [2, 0]);
+  const e = attached();
+  e.el.fire("contextmenu", { clientX: 1, clientY: 1 });
+  e.key("Maximize", "Escape");
+  assert.equal(e.el.focused, 1, "default opener is el");
+});
+
 test("attach: contextmenu prevents default and opens at the pointer; pick runs onPick and refocuses the element", () => {
   const t = attached();
   const ev = t.el.fire("contextmenu", { clientX: 55, clientY: 66 });

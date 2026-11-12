@@ -41,6 +41,10 @@ class Node_ {
   [inspect.custom](): string {
     return `<Node_ ${this.tagName} id=${this.attrs.get("id") ?? ""} class="${this.className}" children=${this.children.length}>`.slice(0, 119);
   }
+  // Like a real node: parentNode is what the window manager checks (the fake used to expose only parent).
+  get parentNode(): Node_ | null {
+    return this.parent;
+  }
   get textContent(): string {
     return this.text + this.children.map((c) => c.textContent).join("");
   }
@@ -125,7 +129,13 @@ interface Opts {
 }
 
 interface WmApi {
-  state(): { leaves: { id: string; view: string; params: { agent?: string; report?: string } }[]; focus: string; narrow: boolean; maxLeaves: number };
+  state(): {
+    leaves: { id: string; view: string; params: { agent?: string; report?: string }; hidden: boolean }[];
+    focus: string;
+    maximized: string;
+    narrow: boolean;
+    maxLeaves: number;
+  };
   views(): { id: string; title: string; multi: boolean }[];
   focus(id: string): void;
   focusDom(): void;
@@ -139,6 +149,9 @@ interface WmApi {
   dismiss(key: string): void;
   focusSubject(view: string, params: { agent?: string; report?: string }): boolean;
   closeSubject(view: string, params: { agent?: string; report?: string }): boolean;
+  leafOf(view: string, params: { agent?: string; report?: string }): string | null;
+  windowCommand(command: string, leafId: string | null): boolean;
+  windowMenuItems(leafId: string): { kind: string; command?: string; label?: string; enabled?: boolean; visible?: boolean }[];
   focusDirection(dir: "left" | "right" | "up" | "down"): boolean;
   arrange(preset: "single" | "columns" | "rows" | "grid"): boolean;
   onChange(fn: () => void): () => void;
@@ -360,7 +373,12 @@ function boot(o: Opts = {}) {
   // Results come from the vm realm: copy them so deepEqual compares plain prototypes.
   const rawApi = runInContext("wm.api", ctx) as WmApi;
   const plain = <T>(v: T): T => JSON.parse(JSON.stringify(v));
-  const api: WmApi = { ...rawApi, state: () => plain(rawApi.state()), views: () => plain(rawApi.views()) };
+  const api: WmApi = {
+    ...rawApi,
+    state: () => plain(rawApi.state()),
+    views: () => plain(rawApi.views()),
+    windowMenuItems: (id) => plain(rawApi.windowMenuItems(id)),
+  };
   const root = byId.get("wm-root")!;
   const notices = byId.get("wm-notices")!;
   const tiles = () => root.byClass("tile");
@@ -513,14 +531,14 @@ test("a stored empty layout is restored as empty, not rejected, and an explicit 
   );
 });
 
-test("narrow mode never shows an empty workspace: it falls back to the default view and keeps its close button disabled", () => {
+test("narrow mode never shows an empty workspace: it falls back to the default view, and its close button is enabled by the window model (it closes the desktop window, D11)", () => {
   const empty = JSON.stringify({ version: 1, next: 5, focus: "", root: null });
   const n = boot({ narrow: true, store: { "pomtree.layout": empty } });
   assert.deepEqual(
     n.api.state().leaves.map((l) => l.view),
     ["tree"],
   );
-  assert.equal(n.btn(n.tiles()[0]!, "Close tile").disabled, true);
+  assert.equal(n.btn(n.tiles()[0]!, "Close tile").disabled, false);
   n.api.closeFocused();
   assert.equal(n.tiles().length, 1);
   const w = boot({ store: { "pomtree.layout": empty } });
@@ -1085,7 +1103,13 @@ test("window blur clears the held-key flag, so a keyup lost to Alt+Tab does not 
 
 test("api.state and api.views report the layout and the openable views as plain data", () => {
   const s = boot();
-  assert.deepEqual(s.api.state(), { leaves: [{ id: "t1", view: "tree", params: {} }], focus: "t1", narrow: false, maxLeaves: 16 });
+  assert.deepEqual(s.api.state(), {
+    leaves: [{ id: "t1", view: "tree", params: {}, hidden: false }],
+    focus: "t1",
+    maximized: "",
+    narrow: false,
+    maxLeaves: 16,
+  });
   assert.deepEqual(
     s.api.views().map((v) => [v.id, v.title, v.multi]),
     [
@@ -1234,7 +1258,7 @@ test("shell page inlines MENU_NAV_JS, then WINDOW_CHROME_JS, then LAYOUT_SHELL_J
 test("a registry view with declared menus gets a per-tile model; menus and overflow sit between title and buttons (an item tile has no selector), the footer after the body", () => {
   const s = boot({ hash: "#/terminal/a1", menus: true });
   const t = s.tiles()[0]!;
-  assert.deepEqual(barKinds(t), ["tile-title", "tile-menus", "tile-overflow", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-menus", "tile-overflow", "tile-btn", "tile-btn", "tile-btn", "tile-btn", "tile-btn"]);
   assert.deepEqual(
     t.children.map((c) => c.className),
     ["tile-bar", "tile-body", "tile-foot"],
@@ -1247,7 +1271,7 @@ test("a registry view with declared menus gets a per-tile model; menus and overf
 test("a view with no declared menus or status renders no menu strips and no footer", () => {
   const s = boot({ hash: "#/terminal/a1" });
   const t = s.tiles()[0]!;
-  assert.deepEqual(barKinds(t), ["tile-title", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-btn", "tile-btn", "tile-btn", "tile-btn", "tile-btn"]);
   assert.deepEqual(
     t.children.map((c) => c.className),
     ["tile-bar", "tile-body"],
@@ -1275,7 +1299,7 @@ test("closing a terminal tile destroys its chrome; a second terminal tile gets i
 test("a section declaring only controls still gets chrome: controls and the overflow button sit between title and selector, no menus, no footer", () => {
   const s = boot({ hash: "#/hosts", controlsOnly: true });
   const t = s.tiles()[0]!;
-  assert.deepEqual(barKinds(t), ["tile-title", "tile-controls", "tile-overflow", "tile-view", "tile-btn", "tile-btn", "tile-btn"]);
+  assert.deepEqual(barKinds(t), ["tile-title", "tile-controls", "tile-overflow", "tile-view", "tile-btn", "tile-btn", "tile-btn", "tile-btn", "tile-btn"]);
   assert.deepEqual(
     t.children.map((c) => c.className),
     ["tile-bar", "tile-body"],
@@ -1691,6 +1715,31 @@ test("api.closeSubject may close the last tile into the empty state", () => {
   assert.equal(s.api.state().leaves.length, 0);
 });
 
+// What the drive does for a close: leafOf (params normalised like focusSubject), then window.close.
+const closeBySubject = (s: ReturnType<typeof boot>, view: string, params: { agent?: string; report?: string }) => {
+  const at = s.api.leafOf(view, params);
+  return at !== null && s.api.windowCommand("window.close", at);
+};
+
+test("leafOf + window.close closes that tile once, then returns false", () => {
+  const s = boot();
+  s.api.openView("terminal", "a1");
+  const before = s.api.state().leaves.length;
+  assert.equal(closeBySubject(s, "terminal", { agent: "a1" }), true);
+  assert.equal(s.api.state().leaves.length, before - 1);
+  assert.equal(
+    s.api.state().leaves.some((l) => l.params.agent === "a1"),
+    false,
+  );
+  assert.equal(closeBySubject(s, "terminal", { agent: "a1" }), false);
+});
+
+test("leafOf + window.close may close the last tile into the empty state", () => {
+  const s = boot({ store: { "pomtree.layout": JSON.stringify({ version: 1, next: 2, focus: "t1", root: lf("t1", "terminal", { agent: "a1" }) }) } });
+  assert.equal(closeBySubject(s, "terminal", { agent: "a1" }), true);
+  assert.equal(s.api.state().leaves.length, 0);
+});
+
 test("api.focusDirection moves focus to the neighbour and returns false at the edge", () => {
   const s = boot({
     store: {
@@ -1772,4 +1821,467 @@ test("focus and close normalise params like open: a browsing view with an agent,
   assert.equal(s.api.closeSubject("terminal", { agent: "a1", report: "r9" }), true);
   assert.equal(s.api.closeSubject("terminal", { agent: "a1" }), false);
   assert.equal(s.api.closeSubject("tree", { agent: "a1" }), true);
+});
+
+// ---- window menu, maximize and minimize ----
+const geomOf = (t: Node_) => [t.style.left, t.style.top, t.style.width, t.style.height].join(",");
+// geometry by leaf id: the DOM order of tiles changes when a tile is rebuilt, the geometry per window must not
+const geomById = (s: ReturnType<typeof boot>) =>
+  s
+    .tiles()
+    .map((t) => t.getAttribute("data-tile") + "=" + geomOf(t))
+    .sort();
+const idOf = (s: ReturnType<typeof boot>, view: string, agent?: string) => s.api.state().leaves.find((l) => l.view === view && l.params.agent === agent)!.id;
+const splitters = (s: ReturnType<typeof boot>) => s.root.byClass("splitter");
+const hiddenOf = (s: ReturnType<typeof boot>) =>
+  s.api
+    .state()
+    .leaves.filter((l) => l.hidden)
+    .map((l) => l.view);
+// tree, hosts and terminal a1 in reading order
+const three = () => {
+  const s = boot();
+  s.api.openView("hosts");
+  s.api.openView("terminal", "a1");
+  return s;
+};
+const ctxItemsOf = (s: ReturnType<typeof boot>) => s.body.byClass("ctx-item");
+const ctxLabels = (s: ReturnType<typeof boot>) => ctxItemsOf(s).map((i) => i.textContent);
+const ctxDisabled = (s: ReturnType<typeof boot>) =>
+  ctxItemsOf(s)
+    .filter((i) => i.getAttribute("aria-disabled") === "true")
+    .map((i) => i.textContent);
+const barOf = (t: Node_) => t.byClass("tile-bar")[0]!;
+const closeMenu = (s: ReturnType<typeof boot>) => {
+  for (const m of s.body.byClass("ctx-menu")) m.remove();
+};
+
+test("maximize leaves one tile at full geometry with no splitters; restore returns the same geometry and splitters", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  const before = geomById(s);
+  assert.equal(s.tiles().length, 3);
+  assert.equal(splitters(s).length, 2);
+  assert.equal(s.api.windowCommand("window.maximize", hosts), true);
+  assert.equal(s.tiles().length, 1);
+  assert.equal(s.tiles()[0]!.getAttribute("data-tile"), hosts);
+  assert.equal(geomOf(s.tiles()[0]!), "0%,0%,100%,100%");
+  assert.equal(splitters(s).length, 0);
+  assert.equal(s.api.state().maximized, hosts);
+  assert.equal(stored(s.store).max, hosts, "the maximized state is persisted");
+  assert.equal(s.api.windowCommand("window.restore", null), true);
+  assert.equal(s.tiles().length, 3);
+  assert.deepEqual(geomById(s), before);
+  assert.equal(splitters(s).length, 2);
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(stored(s.store).max, undefined, "negative control: the key is gone after restore");
+});
+
+test("tiles that are not shown are released: a maximized terminal hides the others and its mount survives; restoring remounts them", () => {
+  const s = three();
+  const mounted = s.mounts.length;
+  s.api.windowCommand("window.maximize", idOf(s, "hosts"));
+  assert.equal(s.mounts[mounted - 1]!.unmounted, true, "the terminal behind the zoom is unmounted (wm-restore-remount)");
+  assert.deepEqual(visibleSections(s), ["hosts"]);
+  s.api.windowCommand("window.restore", null);
+  assert.equal(s.mounts.length, mounted + 1, "the terminal is mounted again on restore");
+  assert.deepEqual(visibleSections(s).sort(), ["hosts", "tree"]);
+});
+
+test("closing the maximized window restores the tiling around it", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.api.windowCommand("window.maximize", hosts);
+  assert.equal(s.api.windowCommand("window.close", hosts), true);
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(s.tiles().length, 2);
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["tree", "terminal"],
+  );
+  const t = three();
+  t.api.windowCommand("window.maximize", idOf(t, "hosts"));
+  t.api.windowCommand("window.close", idOf(t, "tree"));
+  assert.equal(t.api.state().maximized, idOf(t, "hosts"), "negative control: closing another window keeps the zoom");
+});
+
+test("minimize removes the tile and keeps the window in the state as hidden; the others re-tile over the freed area", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  assert.equal(s.api.windowCommand("window.minimize", hosts), true);
+  assert.equal(s.tiles().length, 2);
+  assert.deepEqual(hiddenOf(s), ["hosts"]);
+  assert.equal(s.api.state().leaves.length, 3, "still listed");
+  assert.equal(splitters(s).length, 1);
+  assert.equal(
+    s.tiles().reduce((a, t) => a + parseFloat(t.style.width!) * parseFloat(t.style.height!), 0),
+    10000,
+    "two tiles fill the whole area (percent of width times percent of height)",
+  );
+  assert.equal(
+    stored(s.store).root.children.some((c: any) => c.hidden === true || (c.children ?? []).some((d: any) => d.hidden === true)),
+    true,
+  );
+  assert.notEqual(s.api.state().focus, hosts, "focus left the minimized window");
+});
+
+test("focusing a minimized window (the bar entry's click) restores it into the layout and focuses it", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.api.windowCommand("window.minimize", hosts);
+  s.api.focus(hosts);
+  assert.deepEqual(hiddenOf(s), []);
+  assert.equal(s.tiles().length, 3);
+  assert.equal(s.api.state().focus, hosts);
+  assert.equal(s.tileOf(hosts).className, "tile tile-focused");
+});
+
+test("minimizing every window shows the all-minimized hint and clears the hash; a reload keeps them minimized", () => {
+  const s = boot({ hash: "#/tree" });
+  assert.equal(s.root.byClass("wm-empty").length, 0);
+  assert.equal(s.api.windowCommand("window.minimize", "t1"), true);
+  assert.equal(s.tiles().length, 0);
+  assert.equal(s.root.byClass("wm-empty")[0]!.textContent, "All windows are minimized: click one in the bar to restore it.");
+  assert.equal(s.location.hash, "", "the hash is cleared: a reload must not reopen the last window");
+  assert.equal(s.api.state().focus, "");
+  const writesBefore = JSON.stringify(s.store);
+  const r = boot({ store: s.store });
+  assert.equal(r.tiles().length, 0);
+  assert.deepEqual(hiddenOf(r), ["tree"]);
+  assert.match(r.root.byClass("wm-empty")[0]!.textContent, /All windows are minimized/);
+  assert.equal(JSON.stringify(r.store), writesBefore, "reload does not rewrite or unhide the stored layout");
+  assert.equal(r.location.hash, "");
+  s.api.windowCommand("window.close-all", null);
+  assert.match(s.root.byClass("wm-empty")[0]!.textContent, /^No windows open/, "negative control: with no windows the other hint shows");
+});
+
+test("showView while a window is maximized restores the tiling, then places the new window on it", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.api.windowCommand("window.maximize", hosts);
+  s.api.openView("reports");
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(s.tiles().length, 4);
+  assert.deepEqual(
+    s.api
+      .state()
+      .leaves.map((l) => l.view)
+      .sort(),
+    ["hosts", "reports", "terminal", "tree"],
+  );
+  assert.equal(s.api.state().focus, idOf(s, "reports"));
+  assert.equal(stored(s.store).max, undefined);
+});
+
+test("a follow-style open of an agent terminal while maximized restores first and shows the new window", () => {
+  const s = three();
+  s.api.windowCommand("window.maximize", idOf(s, "tree"));
+  s.api.openView("terminal", "a2");
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(s.tiles().length, 4);
+  assert.equal(s.api.state().focus, idOf(s, "terminal", "a2"));
+  assert.equal(s.location.hash, "#/terminal/a2");
+});
+
+test("a hash link to a new item while maximized restores first; one to a shown window moves the zoom to it", () => {
+  const s = three();
+  s.api.windowCommand("window.maximize", idOf(s, "hosts"));
+  s.hashchange("#/terminal/a9");
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(s.tiles().length, 4);
+  const t = three();
+  const hosts = idOf(t, "hosts");
+  t.api.windowCommand("window.maximize", hosts);
+  t.hashchange("#/terminal/a1");
+  assert.equal(t.api.state().maximized, idOf(t, "terminal", "a1"), "an already open subject is focused, so the zoom follows it");
+  assert.equal(t.tiles().length, 1);
+  const u = three();
+  u.api.windowCommand("window.maximize", idOf(u, "terminal", "a1"));
+  u.hashchange("#/reports");
+  assert.equal(u.api.state().maximized, "", "a browsing view not yet shown also restores first");
+  assert.ok(u.api.state().leaves.some((l) => l.view === "reports"));
+});
+
+test("showView refused at the tile limit while maximized leaves the zoom as it was", () => {
+  const s = boot();
+  for (let i = 1; i < 16; i++) s.api.openView("terminal", "a" + i);
+  assert.equal(s.api.state().leaves.length, 16);
+  const id = idOf(s, "terminal", "a3");
+  s.api.windowCommand("window.maximize", id);
+  s.api.openView("terminal", "a99");
+  assert.equal(s.api.state().maximized, id, "the failed open did not commit the restore");
+  assert.equal(s.api.state().leaves.length, 16);
+  assert.match(s.noticeTexts().join("|"), /at most 16 tiles/);
+});
+
+test("showView on an all-minimized layout splits in beside the first window and keeps it minimized", () => {
+  const s = boot();
+  s.api.windowCommand("window.minimize", "t1");
+  s.api.openView("hosts");
+  assert.equal(s.tiles().length, 1);
+  assert.equal(s.tiles()[0]!.getAttribute("data-tile") === "t1", false);
+  assert.deepEqual(hiddenOf(s), ["tree"]);
+  assert.equal(s.api.state().leaves.length, 2);
+  assert.equal(s.api.state().focus, idOf(s, "hosts"));
+  assert.equal(s.location.hash, "#/hosts");
+  assert.equal(s.root.byClass("wm-empty").length, 0);
+});
+
+test("opening a minimized subject focuses and unhides it instead of adding a window", () => {
+  const s = three();
+  const t = idOf(s, "terminal", "a1");
+  s.api.windowCommand("window.minimize", t);
+  assert.deepEqual(hiddenOf(s), ["terminal"]);
+  s.api.openView("terminal", "a1");
+  assert.deepEqual(hiddenOf(s), []);
+  assert.equal(s.api.state().leaves.length, 3);
+  assert.equal(s.api.state().focus, t);
+});
+
+test("api.leafOf finds any window, minimized ones included, normalising params; unknown is null", () => {
+  const s = three();
+  const t = idOf(s, "terminal", "a1");
+  s.api.windowCommand("window.minimize", t);
+  assert.equal(s.api.leafOf("terminal", { agent: "a1" }), t);
+  assert.equal(s.api.leafOf("terminal", { agent: "a1", report: "stray" }), t);
+  assert.equal(s.api.leafOf("hosts", { agent: "zzz" }), idOf(s, "hosts"));
+  assert.equal(s.api.leafOf("terminal", { agent: "other" }), null);
+});
+
+test("a window command that changes nothing returns false with a notice naming the command and the reason", () => {
+  const s = boot();
+  assert.equal(s.api.windowCommand("window.close-others", "t1"), false);
+  assert.match(s.noticeTexts().join("|"), /Close others does nothing here: there is no other window\./);
+  assert.equal(s.api.windowCommand("window.close-left", "t1"), false);
+  assert.match(s.noticeTexts().join("|"), /Close to the left does nothing here: it is the first window in the bar\./);
+  assert.equal(s.api.windowCommand("window.maximize", "t1"), false);
+  assert.match(s.noticeTexts().join("|"), /Maximize does nothing here: it is the only window shown\./);
+  assert.equal(s.api.windowCommand("window.restore", null), false);
+  assert.equal(s.api.windowCommand("window.close", "nope"), false);
+  assert.match(s.noticeTexts().join("|"), /Close does nothing here: that window is not open\./);
+  assert.equal(s.tiles().length, 1, "nothing changed");
+  const w = three();
+  assert.equal(w.api.windowCommand("window.close-right", idOf(w, "hosts")), true);
+  assert.deepEqual(w.noticeTexts(), [], "negative control: a working command shows no notice");
+});
+
+test("the tile bar has Minimize and Maximize buttons before Close; Maximize toggles to Restore; enabled state comes from the window model", () => {
+  const s = boot();
+  const t = s.tileOf("t1");
+  assert.deepEqual(barKinds(t).slice(-3), ["tile-btn", "tile-btn", "tile-btn"], "split buttons are not counted: three controls at the end");
+  const labels = barOf(t)
+    .children.filter((c) => c.tagName === "button")
+    .map((b) => b.getAttribute("aria-label"));
+  assert.deepEqual(labels.slice(-3), ["Minimize", "Maximize", "Close tile"]);
+  assert.equal(s.btn(t, "Maximize").disabled, true, "a single window cannot be maximized");
+  assert.equal(s.btn(t, "Minimize").disabled, false);
+  s.api.openView("hosts");
+  const tree = s.tileOf("t1");
+  assert.equal(s.btn(tree, "Maximize").disabled, false);
+  s.btn(tree, "Maximize").click();
+  assert.equal(s.api.state().maximized, "t1");
+  assert.equal(s.btn(s.tileOf("t1"), "Maximize"), undefined, "the label changed");
+  const restore = s.btn(s.tileOf("t1"), "Restore");
+  assert.equal(restore.getAttribute("title"), "Restore");
+  restore.click();
+  assert.equal(s.api.state().maximized, "");
+  assert.equal(s.btn(s.tileOf("t1"), "Maximize").getAttribute("title"), "Maximize");
+  s.btn(s.tileOf("t1"), "Minimize").click();
+  assert.deepEqual(hiddenOf(s), ["tree"]);
+  assert.equal(s.tiles().length, 1);
+  s.btn(s.tiles()[0]!, "Close tile").click();
+  assert.equal(s.api.state().leaves.length, 1, "Close still closes the window");
+});
+
+test("double-clicking the tile title toggles maximize and restore; with one window it does nothing and shows no notice", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.tileOf(hosts).byClass("tile-title")[0]!.fire("dblclick");
+  assert.equal(s.api.state().maximized, hosts);
+  s.tileOf(hosts).byClass("tile-title")[0]!.fire("dblclick");
+  assert.equal(s.api.state().maximized, "");
+  const one = boot();
+  one.tileOf("t1").byClass("tile-title")[0]!.fire("dblclick");
+  assert.equal(one.api.state().maximized, "");
+  assert.deepEqual(one.noticeTexts(), []);
+});
+
+test("right-click on a tile bar opens the window menu for that tile; items are disabled per window", () => {
+  const s = three();
+  const tree = idOf(s, "tree");
+  assert.equal(ctxItemsOf(s).length, 0);
+  barOf(s.tileOf(tree)).fire("contextmenu", { clientX: 4, clientY: 5 });
+  assert.equal(s.body.byClass("ctx-menu")[0]!.getAttribute("role"), "menu");
+  assert.deepEqual(ctxLabels(s), ["Maximize", "Minimize", "Close", "Close others", "Close to the left", "Close to the right", "Close all"]);
+  assert.deepEqual(ctxDisabled(s), ["Close to the left"], "the first window in the bar has nothing to its left");
+  closeMenu(s);
+  barOf(s.tileOf(idOf(s, "terminal", "a1"))).fire("contextmenu", { clientX: 4, clientY: 5 });
+  assert.deepEqual(ctxDisabled(s), ["Close to the right"]);
+});
+
+test("a maximized window's menu offers Restore first and disables Maximize; api.windowMenuItems lists the enabled commands", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.api.windowCommand("window.maximize", hosts);
+  barOf(s.tileOf(hosts)).fire("contextmenu", { clientX: 0, clientY: 0 });
+  assert.deepEqual(ctxLabels(s).slice(0, 3), ["Restore", "Maximize", "Minimize"]);
+  assert.deepEqual(ctxDisabled(s), ["Maximize"], "an already maximized window cannot be maximized again; Restore is enabled");
+  assert.deepEqual(
+    s.api
+      .windowMenuItems(hosts)
+      .filter((i) => i.kind === "action" && i.visible && i.enabled)
+      .map((i) => i.label),
+    ["Restore", "Minimize", "Close", "Close others", "Close to the left", "Close to the right", "Close all"],
+  );
+});
+
+test("picking Close others from the tile-bar menu closes the others; picking Maximize zooms", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  barOf(s.tileOf(hosts)).fire("contextmenu", { clientX: 0, clientY: 0 });
+  ctxItemsOf(s)
+    .find((i) => i.textContent === "Maximize")!
+    .click();
+  assert.equal(s.api.state().maximized, hosts);
+  assert.equal(s.body.byClass("ctx-menu").length, 0, "the menu closed after the pick");
+  s.api.windowCommand("window.restore", null);
+  barOf(s.tileOf(hosts)).fire("contextmenu", { clientX: 0, clientY: 0 });
+  ctxItemsOf(s)
+    .find((i) => i.textContent === "Close others")!
+    .click();
+  assert.deepEqual(
+    s.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+  );
+  assert.equal(s.tiles().length, 1);
+});
+
+test("the menu opens from the keyboard: the ContextMenu key and Shift+F10 on the bar, the keys on the focused tile itself but not on a view inside it", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  const tile = s.tileOf(hosts);
+  const bar = barOf(tile);
+  bar.fire("keydown", { key: "ContextMenu" });
+  assert.equal(ctxItemsOf(s).length > 0, true);
+  closeMenu(s);
+  bar.fire("keydown", { key: "F10", shiftKey: true });
+  assert.equal(ctxItemsOf(s).length > 0, true);
+  closeMenu(s);
+  tile.fire("keydown", { key: "ContextMenu", target: tile });
+  assert.equal(ctxItemsOf(s).length > 0, true, "the focused tile root opens the menu");
+  closeMenu(s);
+  tile.fire("keydown", { key: "ContextMenu", target: tile.children[1] });
+  tile.fire("keydown", { key: "F10", target: tile });
+  assert.equal(ctxItemsOf(s).length, 0, "negative control: a key aimed at a view inside the tile, or plain F10, opens nothing");
+});
+
+test("Escape closes the window menu and returns focus to the focusable tile root (the bar is not focusable), running nothing", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  const bar = barOf(s.tileOf(hosts));
+  const root = s.tileOf(hosts);
+  bar.fire("contextmenu", { clientX: 1, clientY: 1 });
+  const before = root.focused;
+  const barBefore = bar.focused;
+  ctxItemsOf(s)[0]!.fire("keydown", { key: "Escape" });
+  assert.equal(s.body.byClass("ctx-menu").length, 0);
+  assert.equal(root.focused, before + 1, "focus returns to the tile root");
+  assert.equal(bar.focused, barBefore, "negative control: never the non-focusable bar");
+  assert.equal(s.api.state().leaves.length, 3);
+  assert.equal(s.api.state().maximized, "");
+});
+
+test("narrow: the menu offers Close and Close all only; Close closes the desktop window showing the same subject and the desktop returns on widening", () => {
+  const desktop = (() => {
+    const s = three();
+    return s.store;
+  })();
+  const n = boot({ narrow: true, store: { ...desktop }, hash: "#/hosts" });
+  assert.equal(n.tiles().length, 1);
+  const leaf = n.api.state().leaves[0]!;
+  assert.equal(leaf.view, "hosts");
+  barOf(n.tiles()[0]!).fire("contextmenu", { clientX: 0, clientY: 0 });
+  assert.deepEqual(ctxLabels(n), ["Close", "Close others", "Close to the left", "Close to the right", "Close all"], "the zoom items are hidden");
+  assert.deepEqual(ctxDisabled(n), ["Close others", "Close to the left", "Close to the right"]);
+  ctxItemsOf(n)
+    .find((i) => i.textContent === "Close")!
+    .click();
+  const views = JSON.stringify(stored(n.store));
+  assert.ok(!views.includes('"hosts"'), "hosts is gone from the saved desktop layout");
+  assert.ok(views.includes('"tree"') && views.includes('"terminal"'));
+  assert.equal(n.tiles().length, 1, "still one window shown");
+  assert.notEqual(n.api.state().leaves[0]!.view, "hosts");
+  for (const fn of n.mqListeners) fn({ matches: false });
+  assert.equal(n.tiles().length, 2, "widening shows what is left of the desktop layout");
+});
+
+test("narrow: the tile Close button is enabled and closes the desktop window showing the same subject (by subject, not leaf id)", () => {
+  const n = boot({ narrow: true, store: { ...three().store }, hash: "#/hosts" });
+  const t = n.tiles()[0]!;
+  assert.equal(n.api.state().leaves[0]!.view, "hosts");
+  assert.equal(n.btn(t, "Close tile").disabled, false);
+  n.btn(t, "Close tile").click();
+  const views = JSON.stringify(stored(n.store));
+  assert.ok(!views.includes('"hosts"'), "hosts is gone from the saved desktop layout");
+  assert.ok(views.includes('"tree"') && views.includes('"terminal"'), "the other desktop windows are kept");
+  assert.notEqual(n.api.state().leaves[0]!.view, "hosts");
+});
+
+test("narrow: Close all empties the desktop layout and the screen shows the default view; widening shows the empty state", () => {
+  const n = boot({ narrow: true, store: { ...three().store } });
+  assert.equal(n.api.windowCommand("window.close-all", null), true);
+  assert.equal(stored(n.store).root, null);
+  assert.deepEqual(
+    n.api.state().leaves.map((l) => l.view),
+    ["tree"],
+  );
+  for (const fn of n.mqListeners) fn({ matches: false });
+  assert.equal(n.tiles().length, 0);
+  assert.equal(n.root.byClass("wm-empty").length, 1);
+});
+
+test("narrow: the other window commands do nothing with a notice, the zoom buttons are hidden, the title double-click is ignored", () => {
+  const n = boot({ narrow: true, store: { ...three().store } });
+  const leaf = n.api.state().leaves[0]!.id;
+  const before = JSON.stringify(n.store);
+  for (const c of ["window.minimize", "window.maximize", "window.close-others", "window.close-left", "window.close-right"]) {
+    assert.equal(n.api.windowCommand(c, leaf), false, c);
+  }
+  assert.match(n.noticeTexts().join("|"), /does nothing here: narrow screens show one window at a time\. Make the window wider than 640px\./);
+  const t = n.tiles()[0]!;
+  assert.equal(n.btn(t, "Minimize").hidden, true);
+  assert.equal(n.btn(t, "Maximize").hidden, true);
+  assert.equal(n.btn(t, "Close tile").disabled, false);
+  t.byClass("tile-title")[0]!.fire("dblclick");
+  assert.equal(n.api.state().maximized, "");
+  assert.equal(JSON.stringify(n.store), before, "nothing was written");
+  const w = boot();
+  w.api.openView("hosts");
+  assert.equal(w.btn(w.tileOf("t1"), "Minimize").hidden, false, "negative control: wide screens show the buttons");
+});
+
+test("narrow: closing a window that is not in the saved desktop layout shows a notice and closes nothing", () => {
+  const n = boot({ narrow: true });
+  n.api.openView("hosts");
+  const before = JSON.stringify(n.store);
+  assert.equal(n.api.windowCommand("window.close", n.api.state().leaves[0]!.id), false);
+  assert.match(n.noticeTexts().join("|"), /Close did nothing: this window is not in the saved desktop layout/);
+  assert.equal(JSON.stringify(n.store), before);
+  assert.equal(n.api.state().leaves[0]!.view, "hosts");
+});
+
+test("maximize and restore (and un-minimize through Restore) move DOM focus into the focused tile; minimize and a refused command do not", () => {
+  const s = three();
+  const hosts = idOf(s, "hosts");
+  s.api.windowCommand("window.maximize", hosts);
+  assert.equal(s.tileOf(hosts).focused, 1);
+  s.api.windowCommand("window.restore", null);
+  assert.equal(s.tileOf(hosts).focused, 2);
+  s.api.windowCommand("window.minimize", hosts);
+  s.api.windowCommand("window.restore", hosts);
+  assert.equal(s.tileOf(hosts).focused, 1, "un-minimizing mounts a fresh tile and focuses it");
+  const before = s.tileOf(hosts).focused;
+  s.api.windowCommand("window.maximize", "nope");
+  s.api.windowCommand("window.minimize", idOf(s, "tree"));
+  assert.equal(s.tileOf(hosts).focused, before, "negative control");
 });
