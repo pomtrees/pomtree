@@ -1,6 +1,6 @@
 # wiki-distill: distill a dense Wikipedia article with three templates
 
-Nothing in this directory has been run live; read [What is real and what is stubbed](#what-is-real-and-what-is-stubbed) before you spend anything.
+The demo has run live once (2026-11-12, one article, two readers); read [What is real and what is stubbed](#what-is-real-and-what-is-stubbed) for what that run did and did not show before you spend anything.
 
 ## What this is
 
@@ -25,11 +25,13 @@ pomtreed reads templates from `templates.dir` (`POMTREED_TEMPLATES_DIR`, an abso
 
 ## What is real and what is stubbed
 
-All validation so far is offline. `templates.test.mts` loads the three templates through the real template loader, checks that their prompts equal `prompts/*.md`, that `budgets.env` agrees with the template budgets, that the reader prompt names only the one Wikipedia host and the distiller prompt carries the publish command, with negative controls showing each check can fail. It runs in `pnpm test:examples`.
+Offline, `templates.test.mts` loads the three templates through the real template loader, checks that their prompts equal `prompts/*.md`, that `budgets.env` agrees with the template budgets, that the reader prompt names only the one Wikipedia host and the distiller prompt carries the publish command, with negative controls showing each check can fail. It runs in `pnpm test:examples`.
 
 `stub.test.mts` checks the rehearsal script `stub/wiki-distill.json` against the model stub's validator, that each role matches only its own rules, that the canned shell commands parse, and that each stub template equals its real twin in every field except the system prompt.
 
-Unverified, because nothing has run live (tag `wiki-distill-live-validation`, marked in `templates.test.mts`): the editorial quality of the distillation, whether a small model follows the 24-step reader plan, and that the slice URLs return what the reader prompt expects and fit the interactive browser's result cap.
+Live, there has been one run, on 2026-11-12: the article "Abacus" (revision 1382854372) with two readers, Haiku via OpenRouter (`openrouter/anthropic/claude-haiku-5.5`), a pool of 1800000, driven by `drive.sh` through a signed-in `/ui` tab. It exited 0 in about 144 seconds, spent 53200 micros (0.0532 USD) with no escalations, and the distiller published an HTML report (3854 bytes) with a headline and body paragraphs. Both readers finished in about 25 seconds on 2.4k to 4.3k tokens each, far below the 24-step plan, and their journals show several `page.goto: net::ERR_ABORTED` errors at Wikipedia URLs; no bot challenge appeared and no reader ended `NOT READ`. The run is recorded in [validation](../../docs/validation.md).
+
+Still unverified (tag `wiki-distill-live-validation`, marked in `templates.test.mts`): the editorial quality of the distillation (the report was not fact-checked against the article), whether a small model follows the 24-step reader plan at larger reader counts, and what the slice URLs returned given the aborted navigations.
 
 ## Drive it
 
@@ -76,7 +78,7 @@ Per-role budgets come from `budgets.env`: 400000 micros (0.40 USD) per reader, 6
 | 5 | 2.90 USD | 3000000 |
 | 6 | 3.30 USD | 3400000 |
 
-An agent that runs out of budget parks behind a `budget_raise` approval, and nothing is spent unless you grant it; mechanics are in [economy](../../docs/economy.md). No run of this demo has been measured, so the ceiling is a cap, not a forecast.
+An agent that runs out of budget parks behind a `budget_raise` approval, and nothing is spent unless you grant it; mechanics are in [economy](../../docs/economy.md). The one live run (N=2, one article, Haiku via OpenRouter) spent 53200 micros (0.0532 USD) against the 1.70 USD ceiling; that is a single data point for a single article and model, not a forecast, so the ceiling stays a cap.
 
 ## What needs your explicit go
 

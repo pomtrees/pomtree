@@ -45,7 +45,7 @@ describe("wiki-distill templates", () => {
         assert.equal(loaded.model, "anthropic/claude-haiku-5.5");
       }
       const reader = await t.store.resolve("wiki-reader");
-      // TODO(wiki-distill-live-validation): nothing here has run against a live model or Wikipedia; this only checks the reader keeps a 24-step interactive budget. Unverified: the editorial quality, whether a small model follows the 24-step plan, and the slice URLs against the browser result cap.
+      // TODO(wiki-distill-live-validation): one live run (2026-11-12, two readers) finished far below this 24-step budget; this only checks the reader keeps it. Still unverified: the editorial quality, whether a small model follows the 24-step plan at larger reader counts, and what the slice URLs returned given the aborted navigations.
       assert.deepEqual(reader?.browser, { maxSteps: 24, maxMs: 600000, profile: "interactive" });
       // TODO(wiki-distill-fetch-reader): the reader is an audited-public browser agent (the loader requires it), so the Wikipedia-only rule rests on the reader prompt; a web_fetch-only agent could be host-confined but has no handoff path.
       assert.equal(reader?.egress.kind, "audited-public");
