@@ -16,6 +16,8 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { redact } from "./redact.ts";
 
+// TODO(sandbox-result-header): the one-line JSON header above is a contract no program in the sandbox image emits yet; current behavior: only test
+// doubles print it. A hosted adapter needs the collector program in its image first.
 export interface ExecOutcome {
   exitCode: number;
   stdout: Uint8Array;

@@ -107,7 +107,7 @@ function refuse(found: FoundSandbox, why: string): never {
 }
 
 // Adoption verifies ownership first: a same-key sandbox of another owner (or with a foreign name) is refused, never adopted.
-// Policy question: a leftover sandbox of an earlier generation of the same key (generation tag differs, host matches) is
+// TODO(sandbox-adopt-leftover-policy): a leftover sandbox of an earlier generation of the same key (generation tag differs, host matches) is
 // refused today; whether to adopt it, replace it or keep refusing is the maintainer's decision.
 function adopt(found: FoundSandbox, s: DedupStrategy, derivedId: SandboxId): CreateOnceResult {
   const owner = differing(found, s.ownerTags);

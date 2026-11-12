@@ -47,6 +47,10 @@ export interface KitResponse {
 export type Transport = (url: string, init: RequestInit) => Promise<KitResponse>;
 export type RequestFn = (url: string, init: RequestInit) => Promise<KitResponse>;
 
+// TODO(kit-fetch-identity): one helper so any adapter's fetching uses `workflow.fetch.userAgent`; current behavior: createRequest takes the agent
+// string as a parameter and falls back to DEFAULT_USER_AGENT, so each adapter must pass the configured value itself.
+// TODO(kit-request-assignability): createRequest is not compile-checked against core's SandboxRequestFn types (the kit does not depend on core);
+// the first task importing both adds the assignability check.
 // What `createRequest` returns: the request function plus a WebSocket opener bound to the same User-Agent, so an adapter
 // cannot forget the stamp. `wss` per-call TLS is not supported by the global WebSocket (it has no ca/cert/key options); an
 // adapter that needs client certificates uses the hand-rolled client WebSocket over `request` with `upgrade` instead.

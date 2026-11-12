@@ -466,7 +466,10 @@ export interface ImageIdentity {
   // index/manifest digest on Docker with the containerd store. Needs no `docker save`.
   engineLocalId: string;
   // "sha256:<hex>"; canonical and portable across engines and registries. null = the engine cannot attest it at runtime (Docker with the
-  // containerd store); the config digest from the image build record is wired by a later task.
+  // containerd store).
+  // TODO(image-config-digest): fill the digest from the image build record and decide the artifact key when it is null; current behavior: null on the
+  // containerd store, and checkpoints pin the engine-local id. The `egressProxyImage` comments in sandbox-docker's docker.ts and pomtreed's
+  // safety-boot.ts move to the build-line wording with it.
   configDigest: string | null;
   revision: string | null; // org.opencontainers.image.revision (the key across builds); null = label absent
 }

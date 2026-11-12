@@ -177,6 +177,8 @@ const PODMAN_SIDECAR_NETWORK = "pasta";
 // Known limitation: relabel=shared is applied to read-only bind mounts only, by design. On an enforcing-SELinux Linux host an unlabeled
 // WRITABLE bind (the workspace bind and the sidecar spool log directory) may be denied to the container, so the operator must pre-label
 // those paths or the writable binds need relabel too. Not verified on a real SELinux host (built and tested on macOS).
+// TODO(podman-selinux-writable-bind): verify on a Fedora-class enforcing-SELinux host; current behavior: only read-only binds are relabeled, and an
+// unlabeled writable bind would probably be denied. Built and tested on macOS only.
 const PODMAN_RELABEL = ",relabel=shared";
 
 const isPodman = (profile: EngineProfile) => profile.id === "podman";

@@ -256,6 +256,8 @@ export function admitBackend(d: SandboxDeclaration, probe: ProbeResult | null, n
       fallback: "checkpoints stay workspace-level (git bundle) and resume starts a fresh sandbox under a new generation",
     });
   }
+  // TODO(snapshot-memory-degrade): the admission table has no degrade entry for a backend with `snapshot.memory` only; current behavior: no entry is
+  // added, so the gap is silent.
   if (!has("pause")) degraded.push({ capability: "pause", fallback: "stop, then resume fresh" });
   if (!has("lease.extend")) {
     degraded.push({
@@ -301,7 +303,9 @@ export function checkProbe(d: SandboxDeclaration, r: ProbeResult): void {
 // The facet that realises `capability`, or SandboxCapabilityError when the backend declares it false or declares it true but
 // provides no facet (an adapter bug the conformance case also catches). `need` reads only the static declaration: when a probe
 // has withheld a capability, a call site must also consult the boot admission result (admitBackend), because `need` alone
-// still returns the facet. Wiring admission into boot is a later task.
+// still returns the facet.
+// TODO(sandbox-admission-probe): boot admission runs with no probe result (pomtreed's sandbox-backends.ts passes null), so withheld
+// capabilities are not seen.
 export function need<C extends FacetCapability>(s: Sandbox, capability: C): NonNullable<Sandbox[(typeof FACET_OF)[C]]> {
   const backend = s.declaration.backend;
   if (s.declaration.capabilities[capability] !== true) {
