@@ -452,6 +452,8 @@ The resolver ignores these names under our prefixes (`POMTREED_`, `POMTREE_`, `P
 | `PTREE_EVENTS_SINK` | runtime-injected | in-image events sink path (agent-image pomtree-events) |
 | `POMTREE_REVISION_FILE` | test-seam | the pomtree revision file path, overridden by tests |
 | `PTREE_DOCKER_TESTS` | test-seam | gates Docker test suites |
+| `PTREE_LIVE_PROVIDERS` | test-seam | opt-in list of provider ids for live provider tests (read by the e2e live gate only) |
+| `PTREE_LIVE_MAX_MICROS` | test-seam | spend cap, in millionths of a dollar, for live provider tests (read by the e2e live gate only) |
 | `POMTREE_TEST_TIMEOUT_SCALE` | test-seam | multiplier (>= 1) for test deadlines in the shared timing helpers; CI and the gate set 3 |
 | `PTREE_AGENT_TEST_*` | test-seam | sandbox-docker test image gates |
 | `PTREE_TEST_*` | test-seam | test capture gates |

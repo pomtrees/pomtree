@@ -53,6 +53,8 @@ export const CONFIG_ENV_EXCLUSIONS: readonly EnvExclusion[] = [
   { name: "PTREE_EVENTS_SINK", reason: "runtime-injected", why: "in-image events sink path (agent-image pomtree-events)" },
   { name: "POMTREE_REVISION_FILE", reason: "test-seam", why: "the pomtree revision file path, overridden by tests" },
   { name: "PTREE_DOCKER_TESTS", reason: "test-seam", why: "gates Docker test suites" },
+  { name: "PTREE_LIVE_PROVIDERS", reason: "test-seam", why: "opt-in list of provider ids for live provider tests (read by the e2e live gate only)" },
+  { name: "PTREE_LIVE_MAX_MICROS", reason: "test-seam", why: "spend cap, in millionths of a dollar, for live provider tests (read by the e2e live gate only)" },
   { name: "POMTREE_TEST_TIMEOUT_SCALE", reason: "test-seam", why: "multiplier (>= 1) for test deadlines in the shared timing helpers; CI and the gate set 3" },
   { name: "PTREE_AGENT_TEST_", prefix: true, reason: "test-seam", why: "sandbox-docker test image gates" },
   { name: "PTREE_TEST_", prefix: true, reason: "test-seam", why: "test capture gates" },
