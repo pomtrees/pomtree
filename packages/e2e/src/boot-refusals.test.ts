@@ -20,10 +20,12 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { SANDBOX_CAPABILITIES, SANDBOX_PORT_VERSION } from "@pomtree/core";
 import { openStore } from "@pomtree/store-sqlite";
 import { detectBridgeGateway, planAgentListen } from "../../pomtreed/src/agent-net.ts";
 import { isLoopbackListenHost } from "../../pomtreed/src/config.ts";
 import { buildSafetyBootFacts, safetyBootErrors } from "../../pomtreed/src/safety-boot.ts";
+import { measureExtensionTree } from "../../pomtreed/src/sandbox-provider-load.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const pomtreedMain = join(ROOT, "packages/pomtreed/src/main.ts");
@@ -476,3 +478,117 @@ for (const [label, safe] of [
     });
   });
 }
+
+// ---- Sandbox backend selection and admission (packages/pomtreed/src/sandbox-backends.ts) ----
+// Every case refuses before any state: the backend is resolved and a contributed one's pin checked right after the config load.
+// A contributed backend comes from a scratch extension under extensions.dir; its provider module is never imported.
+
+const BACKEND_LINE = (r: Run): string[] => r.all.split("\n").filter((l) => l.startsWith("pomtreed: refusing to start: "));
+
+// A declaration with every capability false, then the overrides; `connect`, limits and OCI images make it admissible for an agent.
+function backendDeclaration(id: string, caps: Record<string, boolean>, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    backend: id,
+    capabilities: { ...Object.fromEntries(SANDBOX_CAPABILITIES.map((c) => [c, false])), ...caps },
+    region: null,
+    idempotency: "unique-name",
+    idempotencyWindowMs: null,
+    tagging: "metadata",
+    output: "poll",
+    maxLifetimeMs: null,
+    preemptible: false,
+    billing: { unit: "none", whileStopped: false, whilePaused: false },
+    ...extra,
+  };
+}
+const ADMISSIBLE_CAPS = { connect: true, "resources.limits": true, "image.ociPull": true };
+
+// Writes extensions.dir/toybox (manifest, entry, provider module) and returns the env selecting it plus the directory's pin.
+function toyboxExtension(s: Scratch, declaration: Record<string, unknown>): { env: Record<string, string>; dir: string; pin: string; marker: string } {
+  const extensionsDir = join(s.dir, "extensions");
+  const dir = join(extensionsDir, "toybox");
+  const marker = join(s.dir, "toybox-imported");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      apiVersion: 2,
+      name: "toybox",
+      entry: "entry.mjs",
+      capabilities: {},
+      deps: [],
+      provides: [{ kind: "sandbox", id: "toybox", entry: "provider.mjs", portVersion: SANDBOX_PORT_VERSION }],
+    }),
+  );
+  writeFileSync(join(dir, "entry.mjs"), "export default {};\n");
+  writeFileSync(
+    join(dir, "provider.mjs"),
+    // Importing the module leaves a marker file in the scratch dir (outside the pinned directory), so a test can prove no import.
+    `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "imported");\nexport const portVersion = ${SANDBOX_PORT_VERSION};\nexport const declaration = ${JSON.stringify(declaration)};\nexport function create(deps) { return { declaration }; }\n`,
+  );
+  const tree = measureExtensionTree(dir);
+  return { env: { POMTREED_EXTENSIONS_DIR: extensionsDir, POMTREED_SANDBOX_BACKEND: "toybox" }, dir: tree.dir, pin: tree.hash, marker };
+}
+
+test("backend: a built-in backend this build does not carry (kubernetes) exits 1 listing the available ids, before any state", async () => {
+  await withScratch(async (s) => {
+    const r = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), POMTREED_SANDBOX_BACKEND: "kubernetes" });
+    assertRefused(r, { code: 1, names: [] });
+    assert.deepEqual(BACKEND_LINE(r), [
+      "pomtreed: refusing to start: built-in backend kubernetes is not available in this build; available: auto, docker, podman; set sandbox.backend to one of them",
+    ]);
+    assertNothingCreated(s);
+  });
+});
+
+test("backend: an unknown id exits 2 listing the allowed ids, each contributed one with its extension; the contributed id passes `config show`", async () => {
+  await withScratch(async (s) => {
+    const toy = toyboxExtension(s, backendDeclaration("toybox", ADMISSIBLE_CAPS));
+    const r = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), ...toy.env, POMTREED_SANDBOX_BACKEND: "nosuch" });
+    assertRefused(r, {
+      code: CONFIG_EXIT,
+      names: [
+        '"nosuch" is not a known sandbox backend',
+        'allowed: auto, docker, podman, kubernetes, sail, e2b, toybox (extension toybox). Set one of them, or install the extension that provides "nosuch" in extensions.dir',
+      ],
+    });
+    assertNothingCreated(s);
+    const control = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), ...toy.env }, ["config", "show"]);
+    assert.equal(control.code, 0, `config show accepts the contributed id:\n${control.all}`);
+    assert.match(control.out, /^sandbox\.backend="toybox"$/m);
+    assertNothingCreated(s);
+  });
+});
+
+test("backend: an unpinned contributed backend exits 1 with its hash and the reviewedBackends action, and a mismatched pin likewise", async () => {
+  await withScratch(async (s) => {
+    const toy = toyboxExtension(s, backendDeclaration("toybox", ADMISSIBLE_CAPS));
+    const r = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), ...toy.env });
+    assertRefused(r, { code: 1, names: [] });
+    assert.deepEqual(BACKEND_LINE(r), [
+      `pomtreed: refusing to start: sandbox backend toybox is not reviewed: ${toy.dir} hashes to ${toy.pin}; review the directory, then add toybox=${toy.pin} to sandbox.reviewedBackends`,
+    ]);
+    assertNothingCreated(s);
+    const other = `sha256:${"1".repeat(64)}`;
+    const m = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), ...toy.env, POMTREED_SANDBOX_REVIEWED_BACKENDS: `toybox=${other}` });
+    assertRefused(m, { code: 1, names: [] });
+    assert.deepEqual(BACKEND_LINE(m), [
+      `pomtreed: refusing to start: sandbox backend toybox does not match its pin: ${toy.dir} hashes to ${toy.pin} but sandbox.reviewedBackends pins ${other}; a file was changed, added, renamed or removed. Review the directory, then replace the pin with toybox=${toy.pin}`,
+    ]);
+    assert.equal(existsSync(toy.marker), false, "an unpinned or mismatched module is never imported");
+    assertNothingCreated(s);
+  });
+});
+
+test("backend: a pinned contributed backend exits 1 because this build runs agents only on the local engines, and its module is never imported", async () => {
+  await withScratch(async (s) => {
+    const toy = toyboxExtension(s, backendDeclaration("toybox", ADMISSIBLE_CAPS));
+    const r = await pomtreed(s.dir, { ...s.base, ...SAFE_ENV, ...socketEnv(s), ...toy.env, POMTREED_SANDBOX_REVIEWED_BACKENDS: `toybox=${toy.pin}` });
+    assertRefused(r, { code: 1, names: [] });
+    assert.equal(existsSync(toy.marker), false, "the provider module was imported (it writes the marker when loaded)");
+    assert.deepEqual(BACKEND_LINE(r), [
+      "pomtreed: refusing to start: sandbox backend toybox (extension toybox) is selected, but this daemon build runs agents only on the local engines (docker, podman); set sandbox.backend to docker, podman or auto",
+    ]);
+    assertNothingCreated(s);
+  });
+});

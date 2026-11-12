@@ -314,13 +314,13 @@ async function bootRefused(extra: (root: string) => Record<string, string>): Pro
   }
 }
 
-test("sandbox.backend outside the local engines (kubernetes) refuses the start with the cause and the action, before any state", async () => {
+test("sandbox.backend naming a built-in this build does not carry (kubernetes) refuses the start with the cause and the action, before any state", async () => {
   const r = await bootRefused(() => ({ POMTREED_SANDBOX_BACKEND: "kubernetes" }));
   try {
     assert.equal(r.code, 1, r.log);
     assert.match(
       r.log,
-      /^pomtreed: refusing to start: sandbox\.backend is kubernetes; this daemon build only starts the local engines \(docker, podman, auto\) until the backend registry is wired in; set sandbox\.backend to docker, podman or auto$/m,
+      /^pomtreed: refusing to start: built-in backend kubernetes is not available in this build; available: auto, docker, podman; set sandbox\.backend to one of them$/m,
     );
     assert.equal(existsSync(join(r.root, "s")), false, "a refused start creates no state dir");
   } finally {

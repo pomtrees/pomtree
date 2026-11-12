@@ -14,11 +14,12 @@ import {
   EXT_NAMESPACE,
   type ExtensionConfigView,
   type ParamDef,
+  composeRegistry,
   configEnvIgnore,
   containerConfigDoc,
   containerConfigValues,
+  contributedBackends,
   describeConfig,
-  extendRegistry,
   isSensitive,
   type ResolvedConfig,
   resolveConfig,
@@ -27,6 +28,7 @@ import {
 import { type ListenSpec, assertLoopbackOrAllowed, parseListen } from "./config.ts";
 import { checkModelBaseUrl } from "./model-proxy/upstream.ts";
 import type { ManifestScan } from "./extension-manifest.ts";
+import type { LoadedSandboxExtension } from "./sandbox-provider-load.ts";
 import { StatePolicy } from "./state-policy.ts";
 import { WorkflowRuntimePolicy } from "./workflow-policy.ts";
 import { parseTestFetchHosts, testFetchRefusal } from "./test-fetch.ts";
@@ -141,6 +143,10 @@ export interface LoadedDaemonConfig {
   extensionsDir: string; // extensions.dir, or <state.dir>/extensions
   // Each extension's frozen read-only config view (ExtensionHost.config), by extension name; core-only for any other name.
   extensionConfig: (extension: string) => ExtensionConfigView;
+  // The extensions that provide sandbox backends (their keys are composed in `registry`), for the backend registry.
+  sandboxExtensions: readonly LoadedSandboxExtension[];
+  // A sandbox backend's frozen config: every non-sensitive core key plus its own composed `sandbox.<segment>.*` keys, by path.
+  backendConfig: (id: string) => Readonly<Record<string, unknown>>;
   statePolicy: StatePolicy;
   workflowPolicy: WorkflowRuntimePolicy;
   uiSpec: ListenSpec | null; // null = off
@@ -166,16 +172,32 @@ function withoutExtensionInputs(file: unknown, set: readonly string[]): { file?:
   };
 }
 
+// Every non-sensitive core key (no extension or sandbox backend key), by path.
+function coreView(registry: ConfigRegistry, values: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const composed = new Set(registry.sandboxBackends.flatMap((b) => b.paths));
+  return Object.fromEntries(
+    registry.params.filter((p) => !p.path.startsWith(`${EXT_NAMESPACE}.`) && !composed.has(p.path) && !isSensitive(p)).map((p) => [p.path, values[p.path]]),
+  );
+}
+
 // The view an extension gets: every non-sensitive core key plus its own keys, frozen.
 function extensionViews(registry: ConfigRegistry, values: Readonly<Record<string, unknown>>): (extension: string) => ExtensionConfigView {
-  const core = Object.fromEntries(
-    registry.params.filter((p) => !p.path.startsWith(`${EXT_NAMESPACE}.`) && !isSensitive(p)).map((p) => [p.path, values[p.path]]),
-  );
+  const core = coreView(registry, values);
   const views = new Map(
     registry.extensions.map((e) => [e.name, Object.freeze({ ...core, ...Object.fromEntries(e.paths.map((path) => [path, values[path]])) })] as const),
   );
   const coreOnly = Object.freeze(core);
   return (extension) => views.get(extension) ?? coreOnly;
+}
+
+// The same for a sandbox backend: every non-sensitive core key plus its own `sandbox.<segment>.*` keys, frozen.
+function backendViews(registry: ConfigRegistry, values: Readonly<Record<string, unknown>>): (id: string) => Readonly<Record<string, unknown>> {
+  const core = coreView(registry, values);
+  const views = new Map(
+    registry.sandboxBackends.map((b) => [b.id, Object.freeze({ ...core, ...Object.fromEntries(b.paths.map((path) => [path, values[path]])) })] as const),
+  );
+  const coreOnly = Object.freeze(core);
+  return (id) => views.get(id) ?? coreOnly;
 }
 
 export function loadDaemonConfig(input: DaemonConfigInput): LoadedDaemonConfig | { ok: false; errors: string[] } {
@@ -209,11 +231,18 @@ export function loadDaemonConfig(input: DaemonConfigInput): LoadedDaemonConfig |
   const extensionsDir = first.values["extensions.dir"] || join(first.values["state.dir"] || input.defaultStateDir, "extensions");
   // Phase 2: scan the manifests (JSON only), compose the registry, and resolve everything once over the merged table, so origins,
   // ceilings, relations and the unknown-name refusals are uniform. A bad `params` declaration or composition is a config error.
+  // One composition takes the extensions' keys and the sandbox backends their `provides` entries contribute, so `sandbox.backend`
+  // accepts a contributed id and refuses an unknown one with the list. The docker and podman socket keys are declared by a manifest
+  // (packages/sandbox-docker/manifest.json) but not yet composed or read by the daemon, so they stay unknown names here.
   const scan = input.scanExtensions(extensionsDir);
   if (scan.errors.length > 0) return { ok: false, errors: scan.errors };
+  const sandboxExtensions = scan.sandboxExtensions ?? [];
   let registry: ConfigRegistry;
   try {
-    registry = extendRegistry(CONFIG_REGISTRY, scan.extensions);
+    registry = composeRegistry(CONFIG_REGISTRY, {
+      extensions: scan.extensions,
+      sandboxBackends: sandboxExtensions.flatMap((e) => contributedBackends(e.manifest.name, e.manifest.provides)),
+    });
   } catch (e) {
     if (e instanceof ConfigRegistryError) return { ok: false, errors: [...e.errors] };
     throw e;
@@ -296,6 +325,8 @@ export function loadDaemonConfig(input: DaemonConfigInput): LoadedDaemonConfig |
     resolved: r,
     extensionsDir,
     extensionConfig: extensionViews(registry, r.values),
+    sandboxExtensions,
+    backendConfig: backendViews(registry, r.values),
     statePolicy,
     workflowPolicy,
     uiSpec,

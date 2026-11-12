@@ -4,7 +4,7 @@ import { SandboxUnavailableError } from "@pomtree/core";
 import { DockerSandbox, type Exec, type ExecFileFn } from "./docker.ts";
 import { EngineMismatchError, type EngineProbes, type PingInfo, type VersionInfo } from "./engine-detect.ts";
 import { DOCKER_PROFILE, PODMAN_PROFILE } from "./engine-profile.ts";
-import { gatewayInspectArgs, hostGatewayArgs, legacyContainerBootCheck, localEngineSelection, openLocalEngine } from "./local-engine.ts";
+import { gatewayInspectArgs, hostGatewayArgs, legacyContainerBootCheck, openLocalEngine } from "./local-engine.ts";
 import { scriptedLocalEngine } from "./local-engine-fake.ts";
 import { stubMounts } from "./test-mounts.ts";
 
@@ -181,16 +181,4 @@ test("a Docker socket from the CLI's context (Colima or Desktop style) reaches t
     seen.every((v) => v === `unix://${ctxSocket}`),
     JSON.stringify(seen),
   );
-});
-
-test("localEngineSelection: docker, podman and auto select; any other backend refuses with the cause and the action", () => {
-  for (const id of ["docker", "podman", "auto"]) assert.deepEqual(localEngineSelection(id), { selection: id });
-  for (const id of ["kubernetes", "e2b", "my-box"]) {
-    const r = localEngineSelection(id);
-    assert.ok("refuse" in r);
-    assert.equal(
-      r.refuse,
-      `sandbox.backend is ${id}; this daemon build only starts the local engines (docker, podman, auto) until the backend registry is wired in; set sandbox.backend to docker, podman or auto`,
-    );
-  }
 });

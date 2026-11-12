@@ -210,6 +210,9 @@ export interface ManifestScan {
   extensions: ExtensionConfigDecl[]; // every extension subdirectory whose manifest parsed, with its params and credentials
   errors: string[]; // invalid `params` declarations (config errors); other manifest faults only fail that extension's load
   unloaded?: string[]; // those other faults, one line per manifest (`<dir>: <why>`), so a config name that finds no owner can say why
+  // The extensions whose manifest provides a sandbox backend, with their realpathed directory, for the config composer and the
+  // backend registry. Absent when none does.
+  sandboxExtensions?: { dir: string; manifest: ExtensionManifest }[];
 }
 
 // The boot-time scan behind config resolution: reads each `<dir>/<sub>/manifest.json` as JSON, executes nothing. A missing dir is
@@ -231,8 +234,13 @@ export function scanExtensionManifests(dir: string): ManifestScan {
   }
   for (const sub of subs) {
     try {
-      const m = parseManifest(readFileSync(join(realpathSync(join(root, sub)), "manifest.json"), "utf8"));
+      const extDir = realpathSync(join(root, sub));
+      const m = parseManifest(readFileSync(join(extDir, "manifest.json"), "utf8"));
       out.extensions.push({ name: m.name, params: m.params ?? [], credentials: m.credentials ?? [] });
+      if ((m.provides ?? []).some((p) => p.kind === "sandbox")) {
+        out.sandboxExtensions ??= [];
+        out.sandboxExtensions.push({ dir: extDir, manifest: m });
+      }
     } catch (e) {
       if (e instanceof ManifestParamsError) out.errors.push(...e.errors);
       else if ((e as NodeJS.ErrnoException).code !== "ENOENT") out.unloaded.push(`${sub}: ${e instanceof Error ? e.message : String(e)}`);

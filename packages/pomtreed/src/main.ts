@@ -10,12 +10,21 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import {
   DEFAULT_CONTAINER_CPUS,
   DiskEgressAudit,
-  DockerSandbox,
+  type DockerSandbox,
   legacyContainerBootCheck,
   type LocalEngine,
-  localEngineSelection,
   openLocalEngine,
 } from "@pomtree/sandbox-docker";
+import {
+  admitAtBoot,
+  backendDeps,
+  bootNeeds,
+  createBackendRegistry,
+  createLocalSandbox,
+  remoteBootRefusal,
+  type ResolvedBackend,
+  resolveBackend,
+} from "./sandbox-backends.ts";
 import { EgressAuditCollector, ingestEgressAuditSafely } from "./egress-audit.ts";
 import { nearCapTransition } from "./health.ts";
 import { openStateStore } from "@pomtree/store-sqlite";
@@ -159,23 +168,38 @@ if (sendersError) {
   console.error(sendersError);
   process.exit(1);
 }
-// The local container engine (sandbox-docker LocalEngine), built once from the detector and the configuration: every engine call
-// and every engine name in operator text below goes through it. sandbox.backend selects docker, podman or auto; any other backend
-// refuses the start (localEngineSelection; replaced by the backend registry task). A configuration the detector refuses (an engine
-// answering as another id, a remote socket) refuses the start; an engine that is simply not running is a printed finding, as the
-// daemon has always booted with its engine down.
-const backendChoice = localEngineSelection(cfg["sandbox.backend"]);
-if ("refuse" in backendChoice) {
-  console.error(`pomtreed: refusing to start: ${backendChoice.refuse}`);
+// The sandbox backend (sandbox-backends.ts): sandbox.backend selects one entry of the registry (the built-ins this build carries plus
+// the backends installed extensions provide), and nothing else is looked up or constructed. A contributed backend is checked against
+// its pin in sandbox.reviewedBackends without importing its module, then refused (remoteBootRefusal), because this build runs agents
+// only on the local engines. A local engine (docker, podman, or auto, which considers only those two) is the sandbox-docker
+// LocalEngine, built once from the detector and the configuration: every engine call and every engine name in operator text below
+// goes through it. A configuration the detector refuses (an engine answering as another id, a remote socket) refuses the start; an
+// engine that is simply not running is a printed finding, as the daemon has always booted with its engine down. Every refusal here
+// comes before any state is created.
+function refuseStart(why: string): never {
+  console.error(`pomtreed: refusing to start: ${why}`);
   process.exit(1);
 }
-let engine: LocalEngine;
+let backend: ResolvedBackend;
 try {
-  engine = await openLocalEngine({ selection: backendChoice.selection, env: process.env });
+  backend = await resolveBackend({
+    configured: cfg["sandbox.backend"],
+    registry: createBackendRegistry({ extensions: loaded.sandboxExtensions, reviewedBackends: cfg["sandbox.reviewedBackends"] }),
+    openLocal: (selection) => openLocalEngine({ selection, env: process.env }),
+  });
 } catch (e) {
-  console.error(`pomtreed: refusing to start: ${(e as Error).message}`);
-  process.exit(1);
+  refuseStart((e as Error).message);
 }
+if (!backend.localEngine) refuseStart(remoteBootRefusal(backend));
+// The local engines have no readiness probe: their static declaration is admitted here, before any state; the adapter is built later
+// by wireLocalHost, which needs the node's mount provider.
+{
+  const refusals = admitAtBoot(backend.provider.declaration, bootNeeds(backend, cfg["sandbox.secretsInEnv"]));
+  for (const r of refusals) console.error(`pomtreed: refusing to start: ${r}`);
+  if (refusals.length > 0) process.exit(1);
+}
+const localBackend = backend;
+const engine: LocalEngine = localBackend.engine;
 for (const finding of engine.findings) console.error(`pomtreed: ${finding}`);
 // "off" disables the agent TCP endpoint (agents then mount the unix socket); otherwise host:port, port 0 = ephemeral.
 // Default (TODO(agent-endpoint)): Linux binds the engine's bridge gateway (+ loopback), others loopback; see agent-net.ts.
@@ -444,10 +468,30 @@ const { node, sandbox, placement } = wireLocalHost({
   capacity: { maxSessions: maxSessions.value, cpus: cpus().length, memoryBytes: totalmem() },
   // egress-image: the daemon pins the egress-proxy image (agent.egressProxyImage, validated by the registry); relay traffic to the
   // daemon is capped at the push limit (relay-class).
-  makeSandbox: (mounts) =>
-    (built.sandbox = new DockerSandbox(
-      dockerSandboxDeps({ mounts, egressAuditRoot, cfg, engine, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) }),
-    )),
+  makeSandbox: (mounts) => {
+    // The provider adds the engine's profile and socket itself; the adapter's other host dependencies are dockerSandboxDeps'.
+    const {
+      profile: _profile,
+      socket: _socket,
+      ...docker
+    } = dockerSandboxDeps({
+      mounts,
+      egressAuditRoot,
+      cfg,
+      engine,
+      warn: (message) => console.error(stamp(`pomtreed: ${message}`)),
+    });
+    const deps = backendDeps({
+      id: localBackend.id,
+      credentials: localBackend.provider.credentials,
+      config: loaded.backendConfig(localBackend.id),
+      userAgent: cfg["workflow.fetch.userAgent"],
+      env: process.env,
+      log: (event, fields) => console.error(stamp(`pomtreed: sandbox backend ${localBackend.id}: ${event} ${JSON.stringify(fields)}`)),
+    });
+    built.sandbox = createLocalSandbox(localBackend.provider, deps, { engine, docker });
+    return built.sandbox;
+  },
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
 // Containers from before the host and generation labels refuse the start, before this host registers or anything adopts,

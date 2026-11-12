@@ -2,16 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { SandboxUnavailableError } from "@pomtree/core";
 import { normalizeImageId, REQUIRED_SANDBOX_TAGS } from "./engine-dialect.ts";
 import { detectLocalEngine, type EngineProbes, EngineUnreachableError, type EngineSelection, realEngineProbes } from "./engine-detect.ts";
-import {
-  cliSocketEnv,
-  DOCKER_PROFILE,
-  type EngineId,
-  type EngineProfile,
-  engineProfile,
-  isEngineId,
-  type ResolvedSocket,
-  SocketNotFoundError,
-} from "./engine-profile.ts";
+import { cliSocketEnv, DOCKER_PROFILE, type EngineId, type EngineProfile, engineProfile, type ResolvedSocket, SocketNotFoundError } from "./engine-profile.ts";
 
 // The one object pomtreed reaches its local container engine through: the selected profile, the resolved socket, the CLI binary and
 // the engine's dialect helpers. Built once at the composition root (openLocalEngine) and passed to every pomtreed call site that used
@@ -174,23 +165,13 @@ export function localEngineFrom(parts: LocalEngineParts): LocalEngine {
 }
 
 export interface OpenLocalEngineInput {
-  // The configured backend: an engine id or `auto` (localEngineSelection of sandbox.backend). Default docker.
+  // The configured backend: an engine id or `auto` (pomtreed resolves it from sandbox.backend). Default docker.
   selection?: EngineSelection;
   env: Readonly<Record<string, string | undefined>>;
   // Configured socket per engine id (sandbox.docker.socket, sandbox.podman.socket).
   configured?: Partial<Record<EngineId, string | undefined>>;
   probes?: EngineProbes;
   exec?: EngineExec;
-}
-
-// The engine selection for a resolved sandbox.backend: a local engine id or `auto` selects; any other backend (kubernetes, sail, e2b,
-// an extension's id) refuses, naming the cause and the action, because this daemon build starts only the local engines. This
-// refusal is replaced by the backend registry task.
-export function localEngineSelection(backend: string): { selection: EngineSelection } | { refuse: string } {
-  if (backend === "auto" || isEngineId(backend)) return { selection: backend };
-  return {
-    refuse: `sandbox.backend is ${backend}; this daemon build only starts the local engines (docker, podman, auto) until the backend registry is wired in; set sandbox.backend to docker, podman or auto`,
-  };
 }
 
 // Builds the LocalEngine from the detector and the configuration, the one place this happens. An explicit engine that is not running

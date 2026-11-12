@@ -8,7 +8,7 @@ import { DEFAULT_WATCHDOG } from "@pomtree/sched";
 import { AGENT_TOKEN_TTL_MS } from "./auth.ts";
 import { DEFAULT_BUDGET_RAISE_MS, DEFAULT_BUDGET_RAISE_PCT } from "./budget-raise.ts";
 import { DEFAULT_MAX_SESSION_MS, DEFAULT_SESSION_MS } from "./daemon.ts";
-import type { ManifestScan } from "./extension-manifest.ts";
+import { type ManifestScan, parseManifest } from "./extension-manifest.ts";
 import { fetchIdentityLine, formatConfigShow, loadDaemonConfig, parseDaemonArgv, type DaemonConfigInput } from "./daemon-config.ts";
 import { DEFAULT_CONTAINER_MEMORY_BYTES } from "./host-guards.ts";
 import { DEFAULT_LIMITS } from "./lifecycle.ts";
@@ -373,6 +373,59 @@ test("test.fetchHosts is off by default and refused outside test mode; test mode
         f.errors({ env: { POMTREED_TEST_MODE: "true", POMTREED_TEST_FETCH_HOSTS: JSON.stringify(bad) } }).length > 0,
         `${JSON.stringify(bad)} is refused`,
       );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("sandbox backends an extension provides compose in the same registry: the id is selectable, its keys resolve, and the backend sees only its own", () => {
+  const f = fixture();
+  try {
+    const manifest = parseManifest(
+      JSON.stringify({
+        apiVersion: 2,
+        name: "toybox",
+        entry: "entry.mjs",
+        capabilities: {},
+        deps: [],
+        params: [{ key: "mode", kind: "string", default: "a", doc: "Extension key." }],
+        provides: [
+          {
+            kind: "sandbox",
+            id: "toybox",
+            entry: "provider.mjs",
+            portVersion: 1,
+            params: [{ key: "baseUrl", kind: "string", default: "http://127.0.0.1:0", doc: "Provider API base URL." }],
+            credentials: ["apiKey"],
+          },
+        ],
+      }),
+    );
+    const scan: ManifestScan = {
+      extensions: [{ name: "toybox", params: manifest.params ?? [], credentials: [] }],
+      errors: [],
+      sandboxExtensions: [{ dir: "/ext/toybox", manifest }],
+    };
+    const r = f.load({ scan, env: { POMTREED_SANDBOX_BACKEND: "toybox", POMTREED_SANDBOX_TOYBOX_BASE_URL: "http://127.0.0.1:9" } });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    if (!r.ok) return;
+    assert.equal(r.config["sandbox.backend"], "toybox");
+    assert.deepEqual(r.sandboxExtensions, scan.sandboxExtensions);
+    const view = r.backendConfig("toybox");
+    assert.equal(view["sandbox.toybox.baseUrl"], "http://127.0.0.1:9");
+    assert.equal(view["sandbox.toybox.maxSandboxes"], 0, "the standard keys are the backend's too");
+    assert.equal(view["ext.toybox.mode"], undefined, "an extension key is not a backend key");
+    assert.equal(view["model.upstreamKey"], undefined, "no sensitive core key");
+    assert.equal(view["workflow.fetch.userAgent"], "pomtree");
+    assert.equal(r.extensionConfig("toybox")["sandbox.toybox.baseUrl"], undefined, "the extension's view does not carry its backend's keys");
+    assert.ok(Object.isFrozen(view));
+    // Without the extension, the id is unknown: the composed check refuses it with the list.
+    const errs = f.errors({ env: { POMTREED_SANDBOX_BACKEND: "toybox" } });
+    assert.equal(errs.length, 1);
+    assert.match(
+      errs[0] as string,
+      /"toybox" is not a known sandbox backend.*allowed: auto, docker, podman, kubernetes, sail, e2b\. Set one of them, or install the extension that provides "toybox" in extensions\.dir/,
+    );
   } finally {
     f.cleanup();
   }

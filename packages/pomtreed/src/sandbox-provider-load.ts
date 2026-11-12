@@ -308,15 +308,15 @@ export interface LoadedSandboxProvider {
   run: boolean; // the manifest declares the `run` dep
 }
 
-interface Indexed {
+export interface IndexedSandboxProvider {
   ext: LoadedSandboxExtension;
   entry: NonNullable<ExtensionManifest["provides"]>[number];
 }
 
 // Index every `provides` entry across the extensions without importing anything. Refuses an id provided by two extensions (naming both),
 // an id that collides with a built-in, and an invalid id.
-export function indexSandboxProviders(extensions: readonly LoadedSandboxExtension[], builtinIds: readonly string[] = []): Map<string, Indexed> {
-  const out = new Map<string, Indexed>();
+export function indexSandboxProviders(extensions: readonly LoadedSandboxExtension[], builtinIds: readonly string[] = []): Map<string, IndexedSandboxProvider> {
+  const out = new Map<string, IndexedSandboxProvider>();
   for (const ext of extensions) {
     for (const entry of ext.manifest.provides ?? []) {
       if (entry.kind !== "sandbox") continue;
@@ -334,8 +334,74 @@ export function indexSandboxProviders(extensions: readonly LoadedSandboxExtensio
   return out;
 }
 
+// Everything the loader checks about a contributed backend without importing anything: the id is installed, the manifest's port
+// version and deps, the entry stays inside the extension directory (lexically and by realpath), and the directory's content hash
+// equals its pin in sandbox.reviewedBackends. Throws with the cause and the action; the daemon uses it alone while it cannot run a
+// contributed backend, and the loader runs it before every import.
+export interface VerifiedSandboxProvider extends IndexedSandboxProvider {
+  dirReal: string;
+  entryReal: string;
+  tree: PinnedTree;
+}
+export function verifyContributedProvider(
+  id: string,
+  index: ReadonlyMap<string, IndexedSandboxProvider>,
+  pins: ReadonlyMap<string, string>,
+  fs: LoaderFs = nodeLoaderFs,
+  limits?: Partial<TreeLimits>,
+): VerifiedSandboxProvider {
+  const found = index.get(id);
+  if (found === undefined) {
+    const known = [...index.keys()];
+    throw new Error(
+      `no installed extension provides sandbox backend ${id} (contributed: ${known.length === 0 ? "none" : known.join(", ")}); install the extension in extensions.dir or fix sandbox.backend`,
+    );
+  }
+  const { ext, entry } = found;
+  const extName = ext.manifest.name;
+  checkPortVersion(id, entry.portVersion);
+  for (const d of entry.deps ?? [])
+    if ((d as string) !== "run")
+      throw new Error(
+        `sandbox backend ${id} (extension ${extName}) declares dep ${JSON.stringify(d)}; a sandbox backend may declare only "run"; remove it from provides[].deps`,
+      );
+
+  // Entry containment: lexical, then by realpath, so a link out of the directory is caught.
+  const dirReal = fs.realpath(ext.dir);
+  const entryAbs = resolve(dirReal, entry.entry);
+  if (!isInside(dirReal, entryAbs))
+    throw new Error(
+      `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} escapes the extension directory ${dirReal}; keep the provider module inside it`,
+    );
+  let entryReal: string;
+  try {
+    entryReal = fs.realpath(entryAbs);
+  } catch (e) {
+    throw new Error(
+      `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} cannot be resolved (${e instanceof Error ? e.message : String(e)}); create the file or fix provides[].entry`,
+    );
+  }
+  if (!isInside(dirReal, entryReal))
+    throw new Error(
+      `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} escapes the extension directory ${dirReal} through a symlink (it resolves to ${entryReal}); keep the provider module inside it`,
+    );
+
+  // The pin, checked before the module is imported.
+  const tree = measureExtensionTree(dirReal, fs, limits);
+  const pinned = pins.get(id);
+  if (pinned === undefined)
+    throw new Error(
+      `sandbox backend ${id} is not reviewed: ${dirReal} hashes to ${tree.hash}; review the directory, then add ${id}=${tree.hash} to sandbox.reviewedBackends`,
+    );
+  if (pinned !== tree.hash)
+    throw new Error(
+      `sandbox backend ${id} does not match its pin: ${dirReal} hashes to ${tree.hash} but sandbox.reviewedBackends pins ${pinned}; a file was changed, added, renamed or removed. Review the directory, then replace the pin with ${id}=${tree.hash}`,
+    );
+  return { ext, entry, dirReal, entryReal, tree };
+}
+
 export class SandboxProviderLoader {
-  private readonly index: Map<string, Indexed>;
+  private readonly index: Map<string, IndexedSandboxProvider>;
   private readonly fs: LoaderFs;
   private readonly pins: Map<string, string>;
   private readonly loaded = new Map<string, Promise<LoadedSandboxProvider>>();
@@ -374,54 +440,8 @@ export class SandboxProviderLoader {
   }
 
   private async loadOnce(id: string): Promise<LoadedSandboxProvider> {
-    const found = this.index.get(id);
-    if (found === undefined) {
-      const known = [...this.index.keys()];
-      throw new Error(
-        `no installed extension provides sandbox backend ${id} (contributed: ${known.length === 0 ? "none" : known.join(", ")}); install the extension in extensions.dir or fix sandbox.backend`,
-      );
-    }
-    const { ext, entry } = found;
+    const { ext, entry, dirReal, entryReal, tree } = verifyContributedProvider(id, this.index, this.pins, this.fs, this.opts.limits);
     const extName = ext.manifest.name;
-    checkPortVersion(id, entry.portVersion);
-    for (const d of entry.deps ?? [])
-      if ((d as string) !== "run")
-        throw new Error(
-          `sandbox backend ${id} (extension ${extName}) declares dep ${JSON.stringify(d)}; a sandbox backend may declare only "run"; remove it from provides[].deps`,
-        );
-
-    // Entry containment: lexical, then by realpath, so a link out of the directory is caught.
-    const dirReal = this.fs.realpath(ext.dir);
-    const entryAbs = resolve(dirReal, entry.entry);
-    if (!isInside(dirReal, entryAbs))
-      throw new Error(
-        `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} escapes the extension directory ${dirReal}; keep the provider module inside it`,
-      );
-    let entryReal: string;
-    try {
-      entryReal = this.fs.realpath(entryAbs);
-    } catch (e) {
-      throw new Error(
-        `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} cannot be resolved (${e instanceof Error ? e.message : String(e)}); create the file or fix provides[].entry`,
-      );
-    }
-    if (!isInside(dirReal, entryReal))
-      throw new Error(
-        `sandbox backend ${id} (extension ${extName}): entry ${JSON.stringify(entry.entry)} escapes the extension directory ${dirReal} through a symlink (it resolves to ${entryReal}); keep the provider module inside it`,
-      );
-
-    // The pin, checked before the module is imported.
-    const tree = measureExtensionTree(dirReal, this.fs, this.opts.limits);
-    const pinned = this.pins.get(id);
-    if (pinned === undefined)
-      throw new Error(
-        `sandbox backend ${id} is not reviewed: ${dirReal} hashes to ${tree.hash}; review the directory, then add ${id}=${tree.hash} to sandbox.reviewedBackends`,
-      );
-    if (pinned !== tree.hash)
-      throw new Error(
-        `sandbox backend ${id} does not match its pin: ${dirReal} hashes to ${tree.hash} but sandbox.reviewedBackends pins ${pinned}; a file was changed, added, renamed or removed. Review the directory, then replace the pin with ${id}=${tree.hash}`,
-      );
-
     this.opts.guard?.pin(tree);
     const imp = this.opts.importModule ?? ((u: string) => import(u));
     let mod: Partial<SandboxBackendModule>;
