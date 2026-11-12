@@ -1,4 +1,5 @@
 import type { Sandbox, SandboxEgress, SandboxSpec } from "@pomtree/core";
+import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 // Reachability of the scoped model proxy from a worker's network, checked before any spend. The live scripts bind the proxy on the
 // host and hand workers `baseUrl`; a mismatch between the two (or an egress policy that grants no relay to it) makes Pi retry
@@ -61,7 +62,7 @@ export function sandboxModelRouteProbe(
       for await (const part of h.output()) out += part.chunk;
       await h.wait().catch(() => {});
     } finally {
-      await sandbox.kill(h.id).catch(() => {});
+      await sandbox.kill(h.id, sandboxOpKey("kill", h.id)).catch(() => {});
     }
     const m = /STATUS (\d+)/.exec(out);
     if (!m) throw new Error(out.match(/ERR (.*)/)?.[1] ?? "no response");

@@ -73,7 +73,7 @@ test("recover force-resumes a checkpointed running agent whose container is dead
     "stale",
   );
   await reg.setSandbox(a.id, a.generation, stale.id, "stale-set");
-  await t.fakes.hooks.raw.sandbox.kill(stale.id); // the container died with the daemon down
+  await t.fakes.hooks.raw.sandbox.kill(stale.id, `test-kill:${stale.id}`); // the container died with the daemon down
   await t.daemon.deps.checkpoints.write(
     {
       agent: a.id,

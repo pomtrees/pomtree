@@ -13,6 +13,7 @@ import { DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
 import { CAPTURE_REPORT_NAMES } from "../../agent-image/src/browser-capture.ts";
 import { CLI_POMTREE_TIMEOUT_MS } from "../../agent-image/src/container-contract.gen.ts";
 import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
+import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
 import { pinnedImage } from "./live-model.ts";
 
@@ -248,7 +249,7 @@ test("browser worker pomtree paths reach a fake daemon through the real egress p
     const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
     for (const f of walk(auditRoot)) assert.ok(!readFileSync(f).includes(TOKEN), `token leaked into ${f}`);
   } finally {
-    if (id) await sandbox.kill(id as Parameters<typeof sandbox.kill>[0]).catch(() => {});
+    if (id) await sandbox.kill(id as Parameters<typeof sandbox.kill>[0], sandboxOpKey("kill", id)).catch(() => {});
     server.closeAllConnections();
     server.close();
     rmSync(root, { recursive: true, force: true });

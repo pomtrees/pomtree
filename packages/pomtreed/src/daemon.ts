@@ -82,6 +82,7 @@ import type { WaitCtx } from "./daemon-util.ts";
 import { Locks } from "./daemon/ctx.ts";
 import type { DaemonCtx, ForceResumeCause, UserMessageExtra } from "./daemon/ctx.ts";
 import { Budget } from "./daemon/budget.ts";
+import { sandboxOwner } from "./daemon/sandbox-ops.ts";
 import { Escalation as EscalationModule } from "./daemon/escalation.ts";
 import { Merge } from "./daemon/merge.ts";
 import { Messaging } from "./daemon/messaging.ts";
@@ -1171,7 +1172,7 @@ export class Daemon implements Driver {
     let sandboxes = 0;
     let sandboxOk = true;
     try {
-      sandboxes = (await this.deps.sandbox.list()).length;
+      sandboxes = (await this.deps.sandbox.list(sandboxOwner(this.deps, this.epoch))).length;
     } catch (e) {
       sandboxOk = false;
       if (e instanceof SandboxUnavailableError) {
@@ -1237,7 +1238,7 @@ export class Daemon implements Driver {
   // so admission holds.
   async probeSandbox(): Promise<void> {
     try {
-      await this.deps.sandbox.list();
+      await this.deps.sandbox.list(sandboxOwner(this.deps, this.epoch));
       if (!this.sandboxUp) await this.markSandboxUp();
     } catch (e) {
       if (e instanceof SandboxUnavailableError) await this.markSandboxDown();

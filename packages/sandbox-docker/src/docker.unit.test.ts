@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { IMAGE_REBUILD_ACTION, SandboxStartError, SandboxUnavailableError } from "@pomtree/core";
+import { IMAGE_REBUILD_ACTION, SandboxStartError, SandboxUnavailableError, validateDeclaration, type Sandbox, type SandboxOwner } from "@pomtree/core";
 import { classifyDockerError, classifyStartError, egressProbeFailure, removalRace } from "./docker.ts";
 import { NetSandbox } from "./test-network.ts";
 import type { Exec, SpawnFn } from "./docker.ts";
 import { EGRESS_PROXY_MEMORY_BYTES, EGRESS_PROXY_PATH } from "./egress.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
+const OWNER: SandboxOwner = { host: "host-1", storeId: "s1", epoch: 1 };
 const spec = { agent: "a", image: "i", env: {}, mounts: [wsMount("/w")] };
 
 function fakeProc() {
@@ -118,7 +119,7 @@ test("kill: concurrent wait resolves with the exit code, container removed, insp
   const sb = new NetSandbox({ mounts: stubMounts(), exec });
   const h = await sb.start(spec, "k-kill-concurrent");
   const waiting = h.wait();
-  await sb.kill(h.id);
+  await sb.kill(h.id, `test-kill:${h.id}`);
   assert.deepEqual(await waiting, { exitCode: 137 });
   assert.deepEqual(await h.wait(), { exitCode: 137 });
   // OOMKilled must be captured by an inspect BEFORE rm -f (the flag is gone after removal).
@@ -132,7 +133,7 @@ test("kill captures oomKilled via inspect before rm, so wait/inspect remember it
   const { exec, calls } = scripted({ oom: true });
   const sb = new NetSandbox({ mounts: stubMounts(), exec });
   const h = await sb.start(spec, "k-kill-oom");
-  await sb.kill(h.id);
+  await sb.kill(h.id, `test-kill:${h.id}`);
   assert.deepEqual(await h.wait(), { exitCode: 137, oomKilled: true });
   assert.deepEqual(await sb.inspect(h.id), { running: false, exitCode: 137, oomKilled: true, status: "exited" });
   const cmds = calls.map((c) => c[0]).filter((c) => c !== "run");
@@ -177,7 +178,7 @@ test("stop: waits for exit and removes, so no stopped zombie remains; unknown co
   const { exec, calls } = scripted();
   const sb = new NetSandbox({ mounts: stubMounts(), exec });
   const h = await sb.start(spec, "k-stop");
-  await sb.stop(h.id, 1500);
+  await sb.stop(h.id, 1500, `test-stop:${h.id}`);
   assert.deepEqual(calls.filter((c) => c[0] === "stop")[0], ["stop", "-t", "2", `pomtree-${h.id}`]);
   assert.ok(calls.some((c) => c[0] === "rm"));
   const ghost = new NetSandbox({
@@ -186,45 +187,101 @@ test("stop: waits for exit and removes, so no stopped zombie remains; unknown co
       throw new Error("Error: No such container: x");
     },
   });
-  await ghost.kill("nope");
+  await ghost.kill("nope", "test-kill:nope");
   assert.equal(await ghost.inspect("nope"), null);
 });
 
-test("resolveImageDigest: returns the repo digest when present", async () => {
+const CLASSIC = '[["Backing Filesystem","extfs"]]';
+const CONTAINERD = '[["driver-type","io.containerd.snapshotter.v1"]]';
+const ID = `sha256:${"a".repeat(64)}`;
+
+test("imageIdentity: classic store reports the image id as config digest and engine id, plus the revision label", async () => {
   const calls: string[][] = [];
   const sb = new NetSandbox({
     mounts: stubMounts(),
     exec: async (args) => {
       calls.push(args);
-      return "alpine@sha256:abc";
+      return args[0] === "info" ? CLASSIC : `${ID}\tb3fe8f9`;
     },
   });
-  assert.equal(await sb.resolveImageDigest("alpine:3"), "alpine@sha256:abc");
-  assert.deepEqual(calls[0], ["image", "inspect", "--format", "{{index .RepoDigests 0}}", "alpine:3"]);
+  assert.deepEqual(await sb.imageIdentity("alpine:3"), { engineLocalId: ID, configDigest: ID, revision: "b3fe8f9" });
+  assert.deepEqual(calls[1], ["image", "inspect", "--format", '{{.Id}}\t{{index .Config.Labels "org.opencontainers.image.revision"}}', "alpine:3"]);
 });
 
-test("resolveImageDigest: falls back to the image id when there are no repo digests", async () => {
+test("imageIdentity: the image store is read once per instance, and a failed read is retried", async () => {
+  let infos = 0;
+  let fail = true;
+  const sb = new NetSandbox({
+    mounts: stubMounts(),
+    exec: async (args) => {
+      if (args[0] !== "info") return `${ID}\t`;
+      infos++;
+      if (fail) throw new Error("Cannot connect");
+      return CLASSIC;
+    },
+  });
+  await assert.rejects(sb.imageIdentity("a:1"), /docker info failed/);
+  fail = false;
+  await sb.imageIdentity("a:1");
+  await sb.imageIdentity("b:2");
+  assert.equal(infos, 2, "one failed read, one successful read; the third call reuses it");
+});
+
+test("imageIdentity: an absent revision label is null", async () => {
+  for (const out of [`${ID}\t`, `${ID}\t<no value>`]) {
+    const sb = new NetSandbox({ mounts: stubMounts(), exec: async (args) => (args[0] === "info" ? CLASSIC : out) });
+    assert.equal((await sb.imageIdentity("alpine:3")).revision, null);
+  }
+});
+
+test("imageIdentity: the containerd image store reports the index digest as engine-local id and a null config digest, without throwing", async () => {
+  const INDEX = `sha256:${"d".repeat(64)}`;
   const calls: string[][] = [];
   const sb = new NetSandbox({
     mounts: stubMounts(),
     exec: async (args) => {
       calls.push(args);
-      return args[3] === "{{index .RepoDigests 0}}" ? "" : "sha256:def";
+      return args[0] === "info" ? CONTAINERD : `${INDEX}\tb3fe8f9`;
     },
   });
-  assert.equal(await sb.resolveImageDigest("alpine:3"), "sha256:def");
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1], ["image", "inspect", "--format", "{{.Id}}", "alpine:3"]);
+  assert.deepEqual(await sb.imageIdentity("alpine:3"), { engineLocalId: INDEX, configDigest: null, revision: "b3fe8f9" });
+  assert.ok(!calls.some((c) => c[0] === "save"), "no docker save on the containerd store");
 });
 
-test("resolveImageDigest: throws a clear error when the image cannot be resolved", async () => {
-  const sb = new NetSandbox({
+test("imageIdentity: an unresolvable image or a non-digest id throws with cause and action", async () => {
+  const missing = new NetSandbox({
     mounts: stubMounts(),
-    exec: async () => {
+    exec: async (args) => {
+      if (args[0] === "info") return CLASSIC;
       throw new Error("docker image failed: no such image");
     },
   });
-  await assert.rejects(sb.resolveImageDigest("nope:1"), /resolve image digest failed for nope:1/);
+  await assert.rejects(missing.imageIdentity("nope:1"), /cannot read the image identity of nope:1: .*no such image; pull or build the image locally/);
+  const odd = new NetSandbox({ mounts: stubMounts(), exec: async (args) => (args[0] === "info" ? CLASSIC : "garbage\t") });
+  await assert.rejects(odd.imageIdentity("x:1"), /not sha256:<64 hex>; use a Docker with the classic image store/);
+  const down = new NetSandbox({
+    mounts: stubMounts(),
+    exec: async () => {
+      throw new Error("docker info failed: Cannot connect");
+    },
+  });
+  await assert.rejects(down.imageIdentity("x:1"), /docker info failed.*start the container engine and retry/);
+});
+
+test("declaration: validates, and snapshot, fork and pause capabilities are false (docker commit is not a sandbox snapshot)", () => {
+  const { declaration } = new NetSandbox({ mounts: stubMounts() });
+  assert.deepEqual(validateDeclaration(declaration), []);
+  assert.equal(declaration.backend, "docker");
+  for (const c of ["snapshot.disk", "snapshot.memory", "fork", "pause", "lease.extend", "image.template", "connect", "files.put", "files.get"] as const) {
+    assert.equal(declaration.capabilities[c], false, c);
+  }
+  // A facet is present iff declared: terminal is the only one this adapter provides.
+  const sb = new NetSandbox({ mounts: stubMounts() });
+  assert.equal(declaration.capabilities.terminal, true);
+  assert.equal(typeof sb.terminal.open, "function");
+  for (const f of ["connect", "files", "snapshots", "lease", "pause", "images"] as const) assert.equal((sb as Sandbox)[f], undefined, f);
+  // Negative control: validateDeclaration refuses fork without a snapshot capability, so the check can fail.
+  assert.notDeepEqual(validateDeclaration({ ...declaration, capabilities: { ...declaration.capabilities, fork: true } }), []);
 });
 
 const egressSpec = { ...spec, agent: "ag-eg", egress: { allow: [{ host: "pypi.org" }, { host: "host.docker.internal", port: 4321 }] } };
@@ -268,7 +325,7 @@ test("egress enforcement stands up network + proxy before the sandbox and tears 
   assert.equal(proxyArgs[proxyArgs.indexOf("--user") + 1], `${process.getuid?.() || 1000}:1000`);
   // The sidecar joins the one shared ICC-off network, never the default bridge.
   assert.equal(proxyArgs[proxyArgs.indexOf("--network") + 1], "pomtree-egress");
-  await sb.kill(h.id);
+  await sb.kill(h.id, `test-kill:${h.id}`);
   assert.ok(calls.some((c) => c[0] === "rm" && c[2] === `pomtree-egress-proxy-${h.id}`));
   assert.ok(calls.some((c) => c[0] === "volume" && c[1] === "rm" && c[2] === `pomtree-egress-socket-${h.id}`));
   // Per-sandbox teardown leaves the shared network alone (the wrapper answers only its inspect).
@@ -441,21 +498,27 @@ test("egress cleanup derives names from the sandbox id, so a restarted instance 
   const h = await new NetSandbox({ mounts: stubMounts(), enforceEgress: true, exec }).start(egressSpec, "k-egress-reclaim");
   // A fresh instance models a daemon restart: nothing remembers the proxy/network, but the names are
   // deterministic, so kill() still removes them.
-  await new NetSandbox({ mounts: stubMounts(), enforceEgress: true, exec }).kill(h.id);
+  await new NetSandbox({ mounts: stubMounts(), enforceEgress: true, exec }).kill(h.id, `test-kill:${h.id}`);
   assert.ok(calls.some((c) => c[0] === "rm" && c[2] === `pomtree-egress-proxy-${h.id}`));
   assert.ok(calls.some((c) => c[0] === "volume" && c[1] === "rm" && c[2] === `pomtree-egress-socket-${h.id}`));
 });
 
 test("list: tab-delimited labels survive empty and spaced values", async () => {
-  const rows: Record<string, string> = { "container-1": "sb-1\tag with space\t{}", "container-2": "sb-2\t\t{}", "container-3": "\tag-3\t{}" };
+  const mine = '{"store_id":"s1","daemon_epoch":"1"}';
+  const rows: Record<string, string> = {
+    "container-1": `sb-1\tag with space\t${mine}`,
+    "container-2": `sb-2\t\t${mine}`,
+    "container-3": `\tag-3\t${mine}`,
+  };
   const sb = new NetSandbox({
     mounts: stubMounts(),
     exec: async (args) => (args[0] === "ps" ? "container-1\ncontainer-2\ncontainer-3" : rows[args.at(-1)!]!),
   });
-  assert.deepEqual(await sb.list(), [
-    { id: "sb-1", agent: "ag with space" },
-    { id: "sb-2", agent: "" },
-    { id: "", agent: "ag-3" },
+  const base = { backend: "docker", host: null, generation: null, state: "unknown", labels: { store_id: "s1", daemon_epoch: "1" } };
+  assert.deepEqual(await sb.list(OWNER), [
+    { id: "sb-1", agent: "ag with space", ...base },
+    { id: "sb-2", agent: "", ...base },
+    { id: "", agent: "ag-3", ...base },
   ]);
 });
 
@@ -467,19 +530,19 @@ test("list: exposes caller labels (not reserved ones) and run applies spec.label
       calls.push(args);
       if (args[0] === "ps") return "container-1\ncontainer-2";
       return args.at(-1) === "container-1"
-        ? 'sb-1\tag\t{"pomtree":"1","pomtree.sandbox":"sb-1","daemon_epoch":"e1","store_id":"s1,part2"}'
-        : 'sb-2\tag2\t{"pomtree":"1"}';
+        ? 'sb-1\tag\t{"pomtree":"1","pomtree.sandbox":"sb-1","daemon_epoch":"1","store_id":"s1","note":"a,b"}'
+        : 'sb-2\tag2\t{"pomtree":"1","daemon_epoch":"1","store_id":"s1"}';
     },
   });
-  assert.deepEqual(await sb.list(), [
-    { id: "sb-1", agent: "ag", labels: { daemon_epoch: "e1", store_id: "s1,part2" } },
-    { id: "sb-2", agent: "ag2" },
+  assert.deepEqual(await sb.list(OWNER), [
+    { id: "sb-1", agent: "ag", backend: "docker", host: null, generation: null, state: "unknown", labels: { daemon_epoch: "1", store_id: "s1", note: "a,b" } },
+    { id: "sb-2", agent: "ag2", backend: "docker", host: null, generation: null, state: "unknown", labels: { daemon_epoch: "1", store_id: "s1" } },
   ]);
   assert.deepEqual(calls[0], ["ps", "-aq", "--filter", "label=pomtree=1"]);
   assert.deepEqual(calls[1]?.slice(0, 3), [
     "inspect",
     "--format",
-    '{{index .Config.Labels "pomtree.sandbox"}}\t{{index .Config.Labels "pomtree.agent"}}\t{{json .Config.Labels}}\t{{.Image}}',
+    '{{index .Config.Labels "pomtree.sandbox"}}\t{{index .Config.Labels "pomtree.agent"}}\t{{json .Config.Labels}}\t{{.Image}}\t{{.State.Status}}',
   ]);
   assert.equal(calls[1]?.[3], "container-1");
   assert.equal(calls[2]?.[3], "container-2");
@@ -514,14 +577,14 @@ test("list: image-inherited labels are not caller labels; a caller override of a
     exec: async (args) => {
       if (args[0] === "ps") return "c1\nc2";
       if (args[0] === "image") return JSON.stringify(image);
-      const labels = { pomtree: "1", ...image, daemon_epoch: "e1", ...(args.at(-1) === "c2" ? { maintainer: "caller" } : {}) };
+      const labels = { pomtree: "1", ...image, daemon_epoch: "1", store_id: "s1", ...(args.at(-1) === "c2" ? { maintainer: "caller" } : {}) };
       return `sb\tag\t${JSON.stringify(labels)}\tsha256:img`;
     },
   });
-  const [a, b] = await sb.list();
-  assert.deepEqual(a?.labels, { daemon_epoch: "e1" });
+  const [a, b] = await sb.list(OWNER);
+  assert.deepEqual(a?.labels, { daemon_epoch: "1", store_id: "s1" });
   assert.equal(Object.hasOwn(a?.labels ?? {}, "org.opencontainers.image.revision"), false);
-  assert.deepEqual(b?.labels, { daemon_epoch: "e1", maintainer: "caller" });
+  assert.deepEqual(b?.labels, { daemon_epoch: "1", store_id: "s1", maintainer: "caller" });
 });
 
 test("list: a container disappearing during inspect does not hide survivors", async () => {
@@ -530,13 +593,54 @@ test("list: a container disappearing during inspect does not hide survivors", as
     exec: async (args) => {
       if (args[0] === "ps") return "gone\nsurvivor";
       if (args.at(-1) === "gone") throw new Error("docker inspect failed: Error: No such object: gone");
-      return 'sb-live\tag-live\t{"pomtree":"1","daemon_epoch":"e1"}';
+      return 'sb-live\tag-live\t{"pomtree":"1","daemon_epoch":"1","store_id":"s1"}\timg\trunning';
     },
   });
-  assert.deepEqual(await sb.list(), [{ id: "sb-live", agent: "ag-live", labels: { daemon_epoch: "e1" } }]);
+  assert.deepEqual(await sb.list(OWNER), [
+    { id: "sb-live", agent: "ag-live", backend: "docker", host: null, generation: null, state: "running", labels: { daemon_epoch: "1", store_id: "s1" } },
+  ]);
 });
 
-test("egress proxy and network carry the egress label; reclaimEgressOrphans removes only orphaned ones", async () => {
+test("list: Docker status maps to state, and other owners' containers are dropped", async () => {
+  const rows: Record<string, string> = {
+    c1: 'a\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\tcreated',
+    c2: 'b\tag\t{"store_id":"s1","daemon_epoch":"0"}\timg\trunning',
+    c3: 'c\tag\t{"store_id":"s1","daemon_epoch":"2"}\timg\trunning',
+    c4: 'd\tag\t{"store_id":"s2","daemon_epoch":"1"}\timg\trunning',
+    c5: 'e\tag\t{"daemon_epoch":"1"}\timg\trunning',
+    c6: "f\tag\t{}\timg\trunning",
+    c7: 'g\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\tpaused',
+    c8: 'h\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\tdead',
+    c9: 'i\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\tremoving',
+    c10: 'j\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\trestarting',
+  };
+  const sb = new NetSandbox({
+    mounts: stubMounts(),
+    exec: async (args) => (args[0] === "ps" ? Object.keys(rows).join("\n") : args[0] === "image" ? "{}" : rows[args.at(-1)!]!),
+  });
+  const listed = await sb.list(OWNER);
+  assert.deepEqual(
+    listed.map((l) => [l.id, l.state]),
+    [
+      ["a", "creating"],
+      ["b", "running"],
+      ["e", "running"],
+      ["f", "running"],
+      ["g", "paused"],
+      ["h", "exited"],
+      ["i", "stopped"],
+      ["j", "unknown"],
+    ],
+  );
+  // A different owner: only unlabelled-by-store containers (e, f) and none of the others' store s1/s2 ones remain.
+  assert.deepEqual(
+    (await sb.list({ ...OWNER, storeId: "s3" })).map((l) => l.id),
+    ["e", "f"],
+  );
+  assert.deepEqual((await sb.list({ ...OWNER, epoch: 2 })).map((l) => l.id).sort(), ["a", "b", "c", "e", "f", "g", "h", "i", "j"]);
+});
+
+test("egress proxy and network carry the egress label; reclaim removes only orphaned ones", async () => {
   const calls: string[][] = [];
   const exec: Exec = async (args) => {
     calls.push(args);
@@ -548,12 +652,12 @@ test("egress proxy and network carry the egress label; reclaimEgressOrphans remo
     if (args[0] === "volume" && args[1] === "ls") return "orph2\ts1\t1\nlive1\ts1\t1";
     return "";
   };
-  const sb = new NetSandbox({ mounts: stubMounts(), enforceEgress: true, exec, owner: { storeId: "s1", epoch: "1" } });
+  const sb = new NetSandbox({ mounts: stubMounts(), enforceEgress: true, exec });
   await sb.start(egressSpec, "k-egress-label");
   assert.ok(calls.some((c) => c[0] === "volume" && c[1] === "create" && c.includes("pomtree.egress=1")));
   assert.ok(calls.some((c) => c[0] === "run" && c[3]?.startsWith("pomtree-egress-proxy-") && c.includes("pomtree.egress=1")));
   calls.length = 0;
-  assert.deepEqual((await sb.reclaimEgressOrphans()).sort(), ["orph1", "orph2"]);
+  assert.deepEqual((await sb.reclaim(OWNER)).sort(), ["orph1", "orph2"]);
   assert.ok(calls.some((c) => c[0] === "rm" && c[2] === "pomtree-egress-proxy-orph1"));
   assert.ok(calls.some((c) => c[0] === "volume" && c[1] === "rm" && c[2] === "pomtree-egress-socket-orph2"));
   assert.ok(!calls.some((c) => c.includes("pomtree-egress-proxy-live1")));
@@ -571,9 +675,9 @@ test("exited cache is bounded: oldest delivered-exit entries are evicted past th
   const h1 = await sb.start(spec, "k-cache-1");
   const h2 = await sb.start(spec, "k-cache-2");
   const h3 = await sb.start(spec, "k-cache-3");
-  await sb.kill(h1.id);
-  await sb.kill(h2.id);
-  await sb.kill(h3.id);
+  await sb.kill(h1.id, `test-kill:${h1.id}`);
+  await sb.kill(h2.id, `test-kill:${h2.id}`);
+  await sb.kill(h3.id, `test-kill:${h3.id}`);
   assert.equal(await sb.inspect(h1.id), null); // evicted (oldest)
   assert.deepEqual(await sb.inspect(h2.id), { running: false, exitCode: 0, status: "exited" });
   assert.deepEqual(await sb.inspect(h3.id), { running: false, exitCode: 0, status: "exited" });
@@ -969,4 +1073,21 @@ test("removalRace: matches Docker's removal-in-progress message from rm, and not
     "",
   ])
     assert.equal(removalRace(new Error(other)), false, other);
+});
+
+test("list: includes own and store-unlabelled containers; excludes another store's and a newer epoch's", async () => {
+  const rows: Record<string, string> = {
+    c1: 'own\tag\t{"store_id":"s1","daemon_epoch":"1"}\timg\trunning',
+    c2: "unlabelled\tag\t{}\timg\trunning",
+    c3: 'other-store\tag\t{"store_id":"s2","daemon_epoch":"1"}\timg\trunning',
+    c4: 'newer-epoch\tag\t{"store_id":"s1","daemon_epoch":"2"}\timg\trunning',
+  };
+  const sb = new NetSandbox({
+    mounts: stubMounts(),
+    exec: async (args) => (args[0] === "ps" ? Object.keys(rows).join("\n") : args[0] === "image" ? "{}" : rows[args.at(-1)!]!),
+  });
+  assert.deepEqual(
+    (await sb.list(OWNER)).map((l) => l.id),
+    ["own", "unlabelled"],
+  );
 });

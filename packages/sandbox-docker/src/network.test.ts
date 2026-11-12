@@ -165,7 +165,7 @@ test("start: network is ensured before any per-sandbox resource; a wrong network
   assert.ok(create !== -1 && create < at((c) => c[0] === "volume" && c[1] === "create"));
   const proxy = good.calls.find((c) => c[0] === "run" && c[3] === `pomtree-egress-proxy-${h.id}`)!;
   assert.equal(proxy[proxy.indexOf("--network") + 1], EGRESS_NETWORK);
-  await sb.kill(h.id);
+  await sb.kill(h.id, `test-kill:${h.id}`);
   assert.equal(good.calls.filter((c) => c[0] === "network" && c[1] !== "inspect").length, 1, "kill never removes the shared network");
 
   const wrong = fakeNet({ inspect: variant({ Options: {} }) });

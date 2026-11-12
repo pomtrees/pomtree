@@ -1,6 +1,6 @@
 import { FakeModelCatalog, TEST_MODEL, keyed, tmpDir, until as sharedUntil } from "@pomtree/testing";
 import { createFakes } from "@pomtree/testing";
-import type { AgentRecord, JournalEntry, SpawnSpec } from "@pomtree/core";
+import type { AgentRecord, JournalEntry, SandboxOwner, SpawnSpec } from "@pomtree/core";
 import type { OtlpExporterOptions } from "@pomtree/observe";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +22,9 @@ import { createObserveExtension } from "./builtin/observe.ts";
 import { createReportsExtension } from "./builtin/reports.ts";
 import { createCronExtension } from "./builtin/cron.ts";
 import { TEST_USER_AGENT } from "./test-capture.ts";
+
+// The owner tests pass to Sandbox.list and Sandbox.reclaim: the test daemons run as host h1 with no store id.
+export const TEST_OWNER: SandboxOwner = { host: "h1", storeId: "", epoch: 0 };
 
 export const SECRET = "test-secret";
 export const op = issueToken(SECRET, { scope: "operator" });

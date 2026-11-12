@@ -1,7 +1,7 @@
 // Per-agent terminal fan-out, pure: one TerminalSession per agent shared by every attached viewer, a
 // daemon-side RingBuffer for late joiners, reference counting (the last viewer leaving detaches the
 // session; the container keeps running) and the resize policy. No sockets: a viewer is a callback bag
-// and `open` is injected (Sandbox.openTerminal in production, a fake in tests). The hub is a cache of
+// and `open` is injected (the sandbox terminal facet in production, a fake in tests). The hub is a cache of
 // live attaches; losing it only drops viewers (no state lives only in daemon memory).
 
 import type { TerminalClose, TerminalSession } from "@pomtree/core";

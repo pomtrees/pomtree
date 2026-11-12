@@ -20,6 +20,7 @@ import { DirReportStore } from "@pomtree/report-dir";
 import { demoWorkspace } from "./demo-workspace.ts";
 import { LocalOrchestrator } from "@pomtree/pomtreed";
 import { startLiveModel } from "../live-model.ts";
+import { sandboxOpKey, sandboxOwner } from "../../../pomtreed/src/daemon/sandbox-ops.ts";
 import { listenAgentEndpoint } from "./agent-endpoint.ts";
 
 const env = process.env;
@@ -155,7 +156,7 @@ When the command has finished, run exactly: pomtree result --summary "code=<your
   const a = await daemon.spawn(top.id, { name: "midturn", task, idempotencyKey: "yr-mid" });
   const id = a.id;
   console.log(`spawned ${id}; code word ${code}`);
-  const containers = async () => (await sandbox.list()).filter((s) => s.agent === id).map((s) => s.id);
+  const containers = async () => (await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch))).filter((s) => s.agent === id).map((s) => s.id);
   const evs = async () =>
     (await daemon.events({ agent: id })).map((e) => e.payload as { kind: string; callId?: string; input?: unknown; output?: string; ok?: boolean });
   const sleepCalls = async () => (await evs()).filter((p) => p.kind === "tool_call" && JSON.stringify(p.input).includes("sleep 45"));
@@ -264,7 +265,7 @@ try {
     const a = await daemon.spawn(top.id, { name: "yielder", task: TASK, idempotencyKey: "yr-agent" });
     const id = a.id;
     console.log(`spawned ${id}; code word ${code}`);
-    const containers = async () => (await sandbox.list()).filter((s) => s.agent === id).map((s) => s.id);
+    const containers = async () => (await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch))).filter((s) => s.agent === id).map((s) => s.id);
     const kinds = async () => (await daemon.events({ agent: id })).map((e) => e.payload.kind as string);
     const states: string[] = [];
     const stateOf = async () => {
@@ -392,7 +393,8 @@ try {
   console.error(`yield/resume demo failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
   console.error(`temp dir: ${tempDir}`);
 } finally {
-  for (const s of await sandbox.list().catch(() => [])) await sandbox.kill(s.id).catch(() => {});
+  for (const s of await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch)).catch(() => []))
+    await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
   for (const w of await workspace.list().catch(() => [])) await workspace.evict(w).catch(() => {});
   await live.close().catch(() => {});
   store.close();

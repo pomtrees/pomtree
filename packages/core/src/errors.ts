@@ -1,4 +1,5 @@
-import type { AgentId, AgentState } from "./types.ts";
+import type { SandboxCapability } from "./sandbox-capabilities.ts";
+import type { AgentId, AgentState, SandboxBackendId, SandboxId } from "./types.ts";
 
 // All error classes the ports and adapters share live here, re-exported through index.ts.
 // Keep them dependency-free: they carry only fields, never behavior.
@@ -31,11 +32,107 @@ export class IllegalTransitionError extends Error {
   }
 }
 
+// Default text per reason: the cause and the action. No reason keeps the bare "sandbox unavailable".
+const UNAVAILABLE_BY_REASON = {
+  "engine-unreachable": "sandbox unavailable (engine-unreachable): the sandbox engine did not answer; start or restart it and check its socket permissions",
+  auth: "sandbox unavailable (auth): the provider rejected the credential; check the configured sandbox credential and its permissions",
+  "provider-outage": "sandbox unavailable (provider-outage): the provider is failing; wait and retry, or check the provider's status page",
+  "not-found": "sandbox unavailable (not-found): the sandbox no longer exists; start a new one, or let reconcile find its successor",
+} as const;
+
 export class SandboxUnavailableError extends Error {
   kind = "unavailable" as const;
-  constructor() {
-    super("sandbox unavailable");
+  // Why it is unavailable, when the adapter knows. Named `reason`: `Error.cause` is the standard chained-error field.
+  reason: "engine-unreachable" | "auth" | "provider-outage" | "not-found" | undefined;
+  constructor(reason?: SandboxUnavailableError["reason"], message?: string) {
+    super(message ?? (reason === undefined ? "sandbox unavailable" : UNAVAILABLE_BY_REASON[reason]));
     this.name = "SandboxUnavailableError";
+    this.reason = reason;
+  }
+}
+
+// `Sandbox.start` timed out or lost its reply, so it is unknown whether the provider created the sandbox. The id is
+// deterministic (sandboxIdForKey), so the caller retries `start` with the same key (idempotent by contract); if that cannot
+// complete, boot reconcile finds the sandbox through `list(owner)`.
+export class SandboxOutcomeUnknownError extends Error {
+  id: SandboxId;
+  idempotencyKey: string;
+  constructor(id: SandboxId, idempotencyKey: string, cause?: unknown) {
+    super(
+      `the outcome of starting sandbox ${id} is unknown (no reply from the backend); retry start with the same idempotency key, which is safe, or let startup reconcile find the sandbox`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "SandboxOutcomeUnknownError";
+    this.id = id;
+    this.idempotencyKey = idempotencyKey;
+  }
+}
+
+// A capability the caller needs is declared false (or its facet is missing) on the active backend.
+export class SandboxCapabilityError extends Error {
+  backend: SandboxBackendId;
+  capability: SandboxCapability;
+  action: string;
+  constructor(backend: SandboxBackendId, capability: SandboxCapability, action: string) {
+    super(`sandbox backend ${backend} does not support ${capability}; ${action}`);
+    this.name = "SandboxCapabilityError";
+    this.backend = backend;
+    this.capability = capability;
+    this.action = action;
+  }
+}
+
+// A probe reported something it may not: probes only narrow a declaration (a capability declared false cannot be withheld, a
+// capability absent from the declaration cannot appear), and their result must be well formed. `widened` names every offence,
+// widening or malformed.
+export class SandboxProbeError extends Error {
+  backend: SandboxBackendId;
+  widened: string[];
+  constructor(backend: SandboxBackendId, widened: string[]) {
+    super(
+      `sandbox backend ${backend} probe result is malformed or widens its declaration: ${widened.join(", ")}; a probe must return withheld, problems and account, and may only withhold capabilities the declaration marks true, so fix the adapter's probe or declaration`,
+    );
+    this.name = "SandboxProbeError";
+    this.backend = backend;
+    this.widened = widened;
+  }
+}
+
+// 429, concurrency cap or plan limit: admission holds and backs off the budget named by `scope`; never a crash.
+export class SandboxQuotaError extends Error {
+  backend: SandboxBackendId;
+  scope: "rate" | "concurrency" | "plan";
+  retryAfterMs: number | null;
+  constructor(backend: SandboxBackendId, scope: SandboxQuotaError["scope"], retryAfterMs: number | null) {
+    super(
+      `sandbox backend ${backend} refused the request over its ${scope} limit; ${
+        scope === "plan" ? "raise the provider plan or stop other sandboxes" : "wait and retry"
+      }${retryAfterMs === null ? "" : ` (retry after ${retryAfterMs} ms)`}`,
+    );
+    this.name = "SandboxQuotaError";
+    this.backend = backend;
+    this.scope = scope;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+// A file transfer into or out of a sandbox failed its integrity or size check. Nothing partial is kept by the caller.
+export class SandboxTransferError extends Error {
+  id: SandboxId;
+  reason: "hash-mismatch" | "partial" | "too-large";
+  constructor(id: SandboxId, reason: SandboxTransferError["reason"]) {
+    super(
+      `file transfer for sandbox ${id} failed: ${
+        reason === "hash-mismatch"
+          ? "sha256 did not match, so the data was discarded; retry the transfer"
+          : reason === "partial"
+            ? "the transfer ended early, so the data was discarded; retry the transfer"
+            : "the data exceeds the allowed size; raise the limit or send less"
+      }`,
+    );
+    this.name = "SandboxTransferError";
+    this.id = id;
+    this.reason = reason;
   }
 }
 

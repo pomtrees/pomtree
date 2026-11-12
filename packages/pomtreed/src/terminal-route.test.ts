@@ -291,6 +291,25 @@ test("terminal ws: a running agent whose sandbox is gone is a 409 with state run
   }
 });
 
+test("terminal ws: a backend whose terminal facet is unavailable is a 409 carrying the cause and action, not a 500 (negative control: a capable one upgrades)", async () => {
+  const f = await fixture();
+  try {
+    const live = await f.open();
+    assert.equal(status(live), 101);
+    live.socket.destroy();
+    await until(() => f.term().closes === 1);
+    f.sb.terminal = undefined; // declared but not provided: need() throws SandboxCapabilityError
+    const refused = await f.open();
+    assert.equal(status(refused), 409);
+    const body = JSON.parse(refused.body) as { error: string; state: string };
+    assert.match(body.error, /declares terminal but provides no terminal facet; fix the adapter/);
+    assert.equal(body.state, "running");
+  } finally {
+    f.server.closeAllConnections();
+    f.server.close();
+  }
+});
+
 test("terminal ws: container exit sends a closed frame then closes the socket", async () => {
   const f = await fixture({ closeWaitMs: 100 });
   try {

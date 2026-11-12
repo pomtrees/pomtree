@@ -274,7 +274,7 @@ test("model-free capture worker records a cross-host redirect and script-rendere
     assert.deepEqual(pi, [], "no Pi process in the capture container");
   } finally {
     await stopSampling();
-    await sb.kill(h.id).catch(() => {});
+    await sb.kill(h.id, `test-kill:${h.id}`).catch(() => {});
     server.closeAllConnections();
     server.close();
     rmSync(root, { recursive: true, force: true });

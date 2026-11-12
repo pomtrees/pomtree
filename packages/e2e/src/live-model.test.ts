@@ -17,6 +17,7 @@ import { pinnedImage, startLiveModel } from "./live-model.ts";
 import { assertModelProxyReachable, modelRouteProblem, sandboxModelRouteProbe } from "./model-preflight.ts";
 import { buildOpenAiJson } from "@pomtree/testing";
 import { SECRET, tmp } from "./harness.ts";
+import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 const UPSTREAM_KEY = "stub-upstream-key-0123456789";
 // One non-stream chat completion from the shared fake-model wire builder (3 in, 2 out), plus OpenRouter's provider-reported
@@ -198,7 +199,7 @@ async function runIn(
     for await (const part of h.output()) out += part.chunk;
     await h.wait().catch(() => {});
   } finally {
-    await sandbox.kill(h.id).catch(() => {});
+    await sandbox.kill(h.id, sandboxOpKey("kill", h.id)).catch(() => {});
   }
   return out;
 }

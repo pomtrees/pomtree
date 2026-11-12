@@ -92,6 +92,7 @@ import {
 import type { WaitCtx } from "../daemon-util.ts";
 import type { DaemonCtx, ForceResumeCause, InterruptMode } from "./ctx.ts";
 import type { Budget } from "./budget.ts";
+import { sandboxOpKey } from "./sandbox-ops.ts";
 import type { Merge } from "./merge.ts";
 import type { Messaging } from "./messaging.ts";
 import type { Reconcile } from "./reconcile.ts";
@@ -1174,8 +1175,8 @@ export class Lifecycle {
         void e.session?.stop().catch(() => {});
         if (e.sandbox)
           void this.ctx.deps.sandbox
-            .stop(e.sandbox.id, this.ctx.deps.graceMs)
-            .catch(() => this.ctx.deps.sandbox.kill(e.sandbox!.id))
+            .stop(e.sandbox.id, this.ctx.deps.graceMs, sandboxOpKey("stop", e.sandbox.id))
+            .catch(() => this.ctx.deps.sandbox.kill(e.sandbox!.id, sandboxOpKey("kill", e.sandbox!.id)))
             .catch(() => {});
       },
       Math.min(MAX_TIMER_MS, Math.max(0, remaining)),
@@ -1223,7 +1224,7 @@ export class Lifecycle {
     }
     e.cancelled = true;
     if (e.sandbox) {
-      await this.ctx.deps.sandbox.kill(e.sandbox.id);
+      await this.ctx.deps.sandbox.kill(e.sandbox.id, sandboxOpKey("kill", e.sandbox.id));
       await e.session?.stop().catch(() => {});
     }
     // No sandbox yet: drive() observes e.cancelled and lets settle finish, instead of finishing here and
@@ -1461,7 +1462,7 @@ export class Lifecycle {
   private armKill(e: Live, graceMs: number) {
     clearTimeout(e.killTimer);
     e.killTimer = setTimeout(() => {
-      if (e.sandbox) this.ctx.deps.sandbox.kill(e.sandbox.id).catch(() => {});
+      if (e.sandbox) this.ctx.deps.sandbox.kill(e.sandbox.id, sandboxOpKey("kill", e.sandbox.id)).catch(() => {});
     }, graceMs);
     e.killTimer.unref?.();
   }
@@ -1481,7 +1482,7 @@ export class Lifecycle {
         e.timedOut = true;
         e.cancelled = true; // reuse the cancel early-exits so a deadline that lands mid-start still settles
         if (e.deterministic) return e.abort?.abort(); // the run loop settles it as timed_out
-        if (e.sandbox) this.ctx.deps.sandbox.kill(e.sandbox.id).catch(() => {});
+        if (e.sandbox) this.ctx.deps.sandbox.kill(e.sandbox.id, sandboxOpKey("kill", e.sandbox.id)).catch(() => {});
         void e.session?.stop().catch(() => {});
       },
       Math.min(ms, MAX_TIMER_MS),
@@ -1917,7 +1918,7 @@ export class Lifecycle {
       await e.session?.stop().catch(() => {});
       // Stop the runtime before snapshotting spend so a post-stop usage event cannot land after
       // the read and be excluded from the resumed budget key.
-      if (e.sandbox) await d.sandbox.stop(e.sandbox.id, d.graceMs).catch(() => {});
+      if (e.sandbox) await d.sandbox.stop(e.sandbox.id, d.graceMs, sandboxOpKey("stop", e.sandbox.id)).catch(() => {});
       checkpoint = await this.stopCheckpoint(r, `${agent}:${r.generation}:yield:${o.idempotencyKey}`, o.wait, e.workspace);
       await this.ctx
         .record(r, { kind: YIELD_INBOX_KIND, checkpoint: checkpoint.id, signals: seen } as never, `${agent}:${r.generation}:yield-inbox:${checkpoint.id}`)
@@ -2018,7 +2019,8 @@ export class Lifecycle {
       sessionRef = await this.refusedSession(r, key, e);
     }
     const spend = await d.gateway.spend(r.id);
-    const imageDigest = await d.sandbox.resolveImageDigest(containerSpec(r).image);
+    // The pin is the engine-local image id on every store; an identity error propagates.
+    const imageDigest = (await d.sandbox.imageIdentity(containerSpec(r).image)).engineLocalId;
     const ws = workspace ?? (await folderId(this.ctx.deps, r.id));
     if (ws === null) throw new LifecycleError(409, `agent ${r.id} has no workspace folder to checkpoint`);
     return d.checkpoints.write(
@@ -2372,7 +2374,7 @@ export class Lifecycle {
       }
       if (prior) {
         prior.cancelled = true;
-        if (prior.sandbox) await d.sandbox.kill(prior.sandbox.id).catch(() => {});
+        if (prior.sandbox) await d.sandbox.kill(prior.sandbox.id, sandboxOpKey("kill", prior.sandbox.id)).catch(() => {});
         await prior.session?.stop().catch(() => {});
       } else if (rec.sandbox) {
         // After a daemon restart no live entry exists to kill the registry's container, so reclaim it before
@@ -2468,7 +2470,7 @@ export class Lifecycle {
     e.interruptTimer = setTimeout(() => {
       const sb = e.sandbox?.id;
       if (sb)
-        this.ctx.deps.sandbox.kill(sb).catch(async (err) => {
+        this.ctx.deps.sandbox.kill(sb, sandboxOpKey("kill", sb)).catch(async (err) => {
           // Not fatal (stopping the session below ends the run and settle() stops the sandbox again), but a container that
           // survives both is the operator's to remove: say so once per generation.
           const r = await this.ctx.deps.registry.get(agent).catch(() => null);
@@ -2944,7 +2946,7 @@ export class Lifecycle {
       await e.session?.stop().catch(() => {});
       // No `sandbox exited` row: the journal refuses a write at the superseded generation, and a row at the current one would read
       // as the current run's exit. The resumed generation's `resumed` and `sandbox started` rows record the supersession.
-      if (e.sandbox) await d.sandbox.stop(e.sandbox.id, d.graceMs).catch(() => {});
+      if (e.sandbox) await d.sandbox.stop(e.sandbox.id, d.graceMs, sandboxOpKey("stop", e.sandbox.id)).catch(() => {});
       if (this.live.get(id) === e) this.live.delete(id);
       return;
     }
@@ -2954,7 +2956,7 @@ export class Lifecycle {
     let w: { exitCode: number; oomKilled?: boolean } | undefined;
     let expected = false;
     if (e.sandbox) {
-      await d.sandbox.stop(e.sandbox.id, d.graceMs).catch(() => {});
+      await d.sandbox.stop(e.sandbox.id, d.graceMs, sandboxOpKey("stop", e.sandbox.id)).catch(() => {});
       // Classify the sandbox exit: a container taken by the OOM killer (exit 137 + oomKilled) is
       // `oom_killed`; an unexplained 137/143 with no deliberate cancel by us is `host_stopped`.
       w = await e.sandbox.wait().catch(() => undefined);
@@ -3099,7 +3101,7 @@ export class Lifecycle {
     clearTimeout(e.interruptTimer);
     await e.session?.stop().catch(() => {});
     if (e.sandbox) {
-      await d.sandbox.stop(e.sandbox.id, d.graceMs).catch(() => {});
+      await d.sandbox.stop(e.sandbox.id, d.graceMs, sandboxOpKey("stop", e.sandbox.id)).catch(() => {});
       await d.registry.setSandbox(id, gen, null, `${id}:${gen}:yield-clear`).catch(() => {});
       const yr = await d.registry.get(id).catch(() => null);
       // A resume that overtook this teardown already moved the generation: the journal refuses a write at `gen`, so skip it.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { templateDigest } from "@pomtree/core";
+import { SandboxCapabilityError, templateDigest } from "@pomtree/core";
 import type { AgentRecord, SpawnSpec, Template } from "@pomtree/core";
 import { handle } from "./api.ts";
 import { setup } from "./test-setup.ts";
@@ -202,4 +202,48 @@ test("the spec image is recorded in a yield checkpoint", async () => {
   assert.equal(rec.state, "yielded");
   const cp = (await t.daemon.deps.checkpoints.latest(aId))!;
   assert.equal(cp.imageDigest, "img@sha256:timg@sha256:fake");
+});
+
+test("a containerd-store identity (index digest, no config digest) checkpoints the engine-local id", async () => {
+  let aId = "";
+  const t = setup(async (c) => {
+    aId = c.agent;
+    await c.api("POST", "/v1/agents/self/yield", { wait: { kind: "message" }, idempotencyKey: "y1" });
+  });
+  const index = `sha256:${"b".repeat(64)}`;
+  t.fakes.hooks.raw.sandbox.imageIdentity = async () => ({ engineLocalId: index, configDigest: null, revision: null });
+  t.fakes.hooks.raw.templates.templates.set("timg", tpl("timg", { image: "img:tag" }));
+  await t.spawn("k7", { template: "timg" });
+  await t.orchestrator.idle();
+  assert.equal((await t.daemon.get(aId))!.state, "yielded");
+  assert.equal((await t.daemon.deps.checkpoints.latest(aId))!.imageDigest, index);
+});
+
+test("a classic-store identity (config digest equals the engine-local id) checkpoints the same pin", async () => {
+  let aId = "";
+  const t = setup(async (c) => {
+    aId = c.agent;
+    await c.api("POST", "/v1/agents/self/yield", { wait: { kind: "message" }, idempotencyKey: "y1" });
+  });
+  const id = `sha256:${"c".repeat(64)}`;
+  t.fakes.hooks.raw.sandbox.imageIdentity = async () => ({ engineLocalId: id, configDigest: id, revision: null });
+  t.fakes.hooks.raw.templates.templates.set("timg", tpl("timg", { image: "img:tag" }));
+  await t.spawn("k9", { template: "timg" });
+  await t.orchestrator.idle();
+  assert.equal((await t.daemon.deps.checkpoints.latest(aId))!.imageDigest, id);
+});
+
+test("an imageIdentity failure, including image.digestAttest, fails the checkpoint", async () => {
+  let aId = "";
+  const t = setup(async (c) => {
+    aId = c.agent;
+    await c.api("POST", "/v1/agents/self/yield", { wait: { kind: "message" }, idempotencyKey: "y1" });
+  });
+  t.fakes.hooks.raw.sandbox.imageIdentity = async () => {
+    throw new SandboxCapabilityError("docker", "image.digestAttest", "this backend cannot attest image identity");
+  };
+  t.fakes.hooks.raw.templates.templates.set("timg", tpl("timg", { image: "img:tag" }));
+  await t.spawn("k8", { template: "timg" });
+  await t.orchestrator.idle();
+  assert.equal(await t.daemon.deps.checkpoints.latest(aId), null, "no checkpoint is written when the identity lookup fails");
 });

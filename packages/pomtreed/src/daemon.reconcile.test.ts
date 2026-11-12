@@ -88,7 +88,7 @@ async function seed(
       `${name}-sb`,
     );
     await reg.setSandbox(a.id, a.generation, h.id, `${name}-sb-set`);
-    if (o.sandbox === "dead") await t.fakes.hooks.raw.sandbox.kill(h.id);
+    if (o.sandbox === "dead") await t.fakes.hooks.raw.sandbox.kill(h.id, `test-kill:${h.id}`);
   }
   if (o.marker)
     await t.journal.append({
@@ -574,7 +574,7 @@ test("a yield that throws after the pausing marker, then a crash with the contai
   // Daemon crash with the container dead: no live entry, the container gone, the folder kept.
   const sb = (await get(t, a.id)).sandbox as string;
   (t.daemon as unknown as { live: Map<string, unknown> }).live.delete(a.id);
-  await t.fakes.hooks.raw.sandbox.kill(sb);
+  await t.fakes.hooks.raw.sandbox.kill(sb, `test-kill:${sb}`);
   try {
     await t.daemon.recover();
     await sleep(50);
@@ -608,7 +608,7 @@ function failAfterMarker(t: T) {
 async function crashDead(t: T, id: string) {
   const sb = (await get(t, id)).sandbox as string;
   (t.daemon as unknown as { live: Map<string, unknown> }).live.delete(id);
-  await t.fakes.hooks.raw.sandbox.kill(sb);
+  await t.fakes.hooks.raw.sandbox.kill(sb, `test-kill:${sb}`);
 }
 
 async function startRunning(t: T) {

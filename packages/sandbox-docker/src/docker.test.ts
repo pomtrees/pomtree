@@ -67,7 +67,7 @@ test("Docker network-none worker lifecycle uses the packaged bridge and nonroot 
       "none",
     );
   } finally {
-    await f.sb.kill(h.id);
+    await f.sb.kill(h.id, `test-kill:${h.id}`);
     f.clean();
   }
 });
@@ -93,7 +93,7 @@ test("Docker wait captures OOM state before cleanup", { skip, timeout: 150000 },
       assert.equal(r.oomKilled, true, `expected an OOM kill, got exit code ${r.exitCode} and oomKilled ${String(r.oomKilled)}`);
       return;
     } finally {
-      await f.sb.kill(h.id);
+      await f.sb.kill(h.id, `test-kill:${h.id}`);
       f.clean();
     }
   }
@@ -148,7 +148,7 @@ test("real Docker confines TCP/IPv6/DNS/UDP and socket mutation; scoped relay an
       { timeout: 5000 },
     );
   } finally {
-    await f.sb.kill(h.id);
+    await f.sb.kill(h.id, `test-kill:${h.id}`);
     server.closeAllConnections();
     server.close();
     f.clean();
@@ -189,7 +189,7 @@ test("audited-public Docker: public HTTP/HTTPS fetch is allowed and audited; met
     for (const authority of ["169.254.169.254:80", "10.0.0.1:80", "host.docker.internal:8080"]) assert.ok(admission(authority, "denied"), authority);
     assert.ok(rows.every((r) => r.agent === "local-gate" && r.host === "local-host" && r.generation === 2));
   } finally {
-    await f.sb.kill(h.id).catch(() => {});
+    await f.sb.kill(h.id, `test-kill:${h.id}`).catch(() => {});
     f.clean();
   }
 });
@@ -276,10 +276,10 @@ test("browser worker: page script is denied and audited at a relay authority tha
     assert.ok(admission(authority, "denied").length >= 1, "the page's request through the browser listener is a denied, audited row");
     assert.ok(admission("127.0.0.1:9222", "denied").length >= 1, "page-originated loopback CDP request reaches proxy denial, not Chromium's implicit bypass");
     assert.ok(rows.every((r) => r.agent === "local-gate" && r.host === "local-host" && r.generation === 7));
-    await f.sb.kill(h.id);
+    await f.sb.kill(h.id, `test-kill:${h.id}`);
     assert.ok((await disk.read(h.id, 0)).length >= rows.length, "audit survives cleanup");
   } finally {
-    await f.sb.kill(h.id).catch(() => {});
+    await f.sb.kill(h.id, `test-kill-cleanup:${h.id}`).catch(() => {});
     server.closeAllConnections();
     server.close();
     f.clean();

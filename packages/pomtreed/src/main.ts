@@ -27,6 +27,7 @@ import { buildChannelRegistry, messagingSendersError, type ChannelRegistry } fro
 import { accessLogMode } from "./accesslog.ts";
 import { backupPruneLines, WORKSPACE_GIT_EXCLUDES } from "./daemon-util.ts";
 import { Daemon, sessionDeadlineConfig } from "./daemon.ts";
+import { sandboxOwner } from "./daemon/sandbox-ops.ts";
 import { CONFIG_EXIT, DAEMON_USAGE, fetchIdentityLine, formatConfigShow, loadDaemonConfig, parseDaemonArgv } from "./daemon-config.ts";
 import { LocalOrchestrator } from "./orchestrator.ts";
 import { checkEgressImage } from "./image-check.ts";
@@ -415,7 +416,7 @@ const { node, sandbox, placement } = wireLocalHost({
   // egress-image: the daemon pins the egress-proxy image (agent.egressProxyImage, validated by the registry); relay traffic to the
   // daemon is capped at the push limit (relay-class).
   makeSandbox: (mounts) =>
-    new DockerSandbox(dockerSandboxDeps({ mounts, egressAuditRoot, storeId, bootEpoch, cfg, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) })),
+    new DockerSandbox(dockerSandboxDeps({ mounts, egressAuditRoot, cfg, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) })),
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
 // The host row is written before recovery so the first sync/admit sees it; the running set and queue live in the store.
@@ -436,7 +437,7 @@ const resourceGate = async (): Promise<{ ok: boolean; reason?: string }> => {
   if (stat.bavail * stat.bsize < minDiskFreeBytes) return { ok: false, reason: "insufficient disk space" };
   let listed: Awaited<ReturnType<typeof sandbox.list>>;
   try {
-    listed = await sandbox.list();
+    listed = await sandbox.list(sandboxOwner({ hostId, storeId }, bootEpoch));
   } catch (e) {
     if (e instanceof SandboxUnavailableError) return { ok: false, reason: "sandbox unavailable" };
     throw e;

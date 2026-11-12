@@ -33,6 +33,7 @@ import { DockerSandbox } from "../../packages/sandbox-docker/src/index.ts";
 import type { Store } from "../../packages/store-sqlite/src/index.ts";
 import { GitWorkspace } from "../../packages/workspace-git/src/index.ts";
 import { boundedStep, type CloseLedger, redactMessage } from "./runtime.mts";
+import { sandboxOpKey, sandboxOwner } from "../../packages/pomtreed/src/daemon/sandbox-ops.ts";
 
 export const MODEL_PROVIDER = "deepseek";
 export const MODEL_ID = "deepseek-flash";
@@ -419,11 +420,11 @@ export async function openModelRuntime(o: ModelRuntimeOptions): Promise<ModelRun
       await Promise.all(recorded.map((a) => step(`cancel ${a.id}`, () => daemon.cancel(a.id, CANCEL_GRACE_MS))));
       if (recordedSandboxes.size > 0) {
         // A failed list is a recorded failure and leaves nothing killed: we cannot prove which containers are ours.
-        const listed = await step("list sandboxes", () => sandbox.list());
+        const listed = await step("list sandboxes", () => sandbox.list(sandboxOwner({ hostId, storeId: "" }, daemon.epoch)));
         if (listed) {
           const physical = new Set<string>(listed.map((s) => s.id));
           for (const id of recordedSandboxes) {
-            if (physical.has(id)) await step(`kill ${id}`, () => sandbox.kill(id));
+            if (physical.has(id)) await step(`kill ${id}`, () => sandbox.kill(id, sandboxOpKey("kill", id)));
           }
         }
       }

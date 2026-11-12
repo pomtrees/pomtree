@@ -55,10 +55,10 @@ test("a throwing sandbox.list stops admission and reconciles on return", async (
   let down = true;
   let listCalls = 0;
   const sb = Object.create(raw.sandbox) as typeof raw.sandbox;
-  sb.list = async () => {
+  sb.list = async (owner) => {
     listCalls++;
     if (down) throw new SandboxUnavailableError();
-    return raw.sandbox.list();
+    return raw.sandbox.list(owner);
   };
   const d = new Daemon({ ...t.daemon.deps, sandbox: sb, admitRetryMs: 5 });
   const root = await d.root();

@@ -40,10 +40,10 @@ test("closing a sandbox marks its spool closed only once the proxy is confirmed 
     const handle = await sb.start(spec, "closed-marker");
     const marker = join(auditRoot, handle.id, "closed.json");
     assert.equal(existsSync(marker), false, "a running sandbox's spool is open");
-    await sb.kill(handle.id);
+    await sb.kill(handle.id, `${handle.id}:kill-fails`);
     assert.equal(existsSync(marker), false, "the proxy could not be removed: it may still append, so the spool stays open");
     fail = false;
-    await sb.kill(handle.id);
+    await sb.kill(handle.id, `${handle.id}:kill-retry`); // a distinct key: a backend that dedupes keys must still act on the retry
     const { closedAt } = JSON.parse(readFileSync(marker, "utf8")) as { closedAt: number };
     assert.ok(Number.isSafeInteger(closedAt) && closedAt > 0);
     await sb.start(spec, "closed-marker");

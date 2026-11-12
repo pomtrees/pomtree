@@ -156,7 +156,7 @@ test("session: redraw nudges cols+1 then back; without a known size it rejects",
   s.close();
 });
 
-// --- DockerSandbox.openTerminal over an injected engine ---
+// --- DockerSandbox.terminal.open over an injected engine ---
 function fakeEngine(opts: { fail?: Error; resizeStatus?: number } = {}) {
   const f = fakeSocket();
   const requests: EngineRequest[] = [];
@@ -179,9 +179,9 @@ const inspectExec =
   async (args) =>
     args[0] === "inspect" ? `${running} 0 false` : "";
 
-test("openTerminal: attaches by container name, applies initial size, streams head and writes", async () => {
+test("terminal.open: attaches by container name, applies initial size, streams head and writes", async () => {
   const e = fakeEngine();
-  const s = await new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).openTerminal("sid", { cols: 90, rows: 30 });
+  const s = await new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).terminal.open("sid", { cols: 90, rows: 30 });
   assert.ok(e.upgrades[0]!.path.startsWith("/containers/pomtree-sid/attach?"));
   assert.equal(e.requests[0]!.path, "/containers/pomtree-sid/resize?h=30&w=90");
   assert.equal(Buffer.from((await s.output()[Symbol.asyncIterator]().next()).value).toString(), "hi");
@@ -191,31 +191,31 @@ test("openTerminal: attaches by container name, applies initial size, streams he
   assert.ok(e.f.destroyed() >= 1);
 });
 
-test("openTerminal: stopped or missing container -> SandboxUnavailableError, no attach", async () => {
+test("terminal.open: stopped or missing container -> SandboxUnavailableError, no attach", async () => {
   const e = fakeEngine();
-  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(false), engine: e.api }).openTerminal("sid"), SandboxUnavailableError);
+  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(false), engine: e.api }).terminal.open("sid"), SandboxUnavailableError);
   const gone: Exec = async () => {
     throw new Error("docker inspect failed: Error: No such object: x");
   };
-  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: gone, engine: e.api }).openTerminal("sid"), SandboxUnavailableError);
+  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: gone, engine: e.api }).terminal.open("sid"), SandboxUnavailableError);
   assert.equal(e.upgrades.length, 0);
 });
 
-test("openTerminal: attach failure propagates; failed initial resize closes the session", async () => {
+test("terminal.open: attach failure propagates; failed initial resize closes the session", async () => {
   await assert.rejects(
-    new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: fakeEngine({ fail: new Error("409") }).api }).openTerminal("sid"),
+    new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: fakeEngine({ fail: new Error("409") }).api }).terminal.open("sid"),
     /409/,
   );
   const e = fakeEngine({ resizeStatus: 500 });
-  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).openTerminal("sid", { cols: 80, rows: 24 }), /500/);
+  await assert.rejects(new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).terminal.open("sid", { cols: 80, rows: 24 }), /500/);
   assert.ok(e.f.destroyed() >= 1);
 });
 
-test("openTerminal: multiple sessions allowed", async () => {
+test("terminal.open: multiple sessions allowed", async () => {
   const e = fakeEngine();
   const d = new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api });
-  await d.openTerminal("sid");
-  await d.openTerminal("sid");
+  await d.terminal.open("sid");
+  await d.terminal.open("sid");
   assert.equal(e.upgrades.length, 2);
 });
 
@@ -235,7 +235,7 @@ test("start with tty: runs -i -t and sizes the pty; a resize failure does not fa
   assert.match(e.requests[0]!.path, /resize\?h=30&w=100/);
 });
 
-// --- DockerSandbox.openLoopbackStream over an injected engine ---
+// --- DockerSandbox.loopback.open over an injected engine ---
 function loopbackEngine() {
   const f = fakeSocket();
   const requests: EngineRequest[] = [];
@@ -247,9 +247,9 @@ function loopbackEngine() {
   return { api, f, requests, upgrades };
 }
 
-test("openLoopbackStream: execs the bridge on the CDP port by container name and streams demuxed bytes", async () => {
+test("loopback.open: execs the bridge on the CDP port by container name and streams demuxed bytes", async () => {
   const e = loopbackEngine();
-  const s = await new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).openLoopbackStream("sid", 9222);
+  const s = await new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api }).loopback.open("sid", 9222);
   assert.match(e.requests[0]!.path, /^\/containers\/pomtree-[^/]*\/exec$/);
   assert.deepEqual(JSON.parse(e.requests[0]!.body!).Cmd, ["/usr/local/bin/node", "/opt/pomtree/loopback-bridge.ts", "9222"]);
   assert.equal(e.upgrades[0]!.path, "/exec/ex1/start");
@@ -259,12 +259,12 @@ test("openLoopbackStream: execs the bridge on the CDP port by container name and
   s.close();
 });
 
-test("openLoopbackStream: a port outside LOOPBACK_PORTS is a RangeError and touches nothing; a stopped container is unavailable", async () => {
+test("loopback.open: a port outside LOOPBACK_PORTS is a RangeError and touches nothing; a stopped container is unavailable", async () => {
   const e = loopbackEngine();
   const d = new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(true), engine: e.api });
-  await assert.rejects(d.openLoopbackStream("sid", 22 as 9222), RangeError);
+  await assert.rejects(d.loopback.open("sid", 22 as 9222), RangeError);
   assert.equal(e.requests.length, 0);
   const stopped = new DockerSandbox({ mounts: stubMounts(), exec: inspectExec(false), engine: e.api });
-  await assert.rejects(stopped.openLoopbackStream("sid", 9222), SandboxUnavailableError);
+  await assert.rejects(stopped.loopback.open("sid", 9222), SandboxUnavailableError);
   assert.equal(e.requests.length, 0);
 });

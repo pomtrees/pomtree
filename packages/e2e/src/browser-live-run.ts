@@ -49,6 +49,7 @@ import { imageRevisionSkip } from "./image-gate.ts";
 import { pinnedImage, readUpstreamKeyFile, startLiveModel } from "./live-model.ts";
 import { assertModelProxyReachable, sandboxModelRouteProbe } from "./model-preflight.ts";
 import { SECRET } from "./harness.ts";
+import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 // interactive: the EXPERIMENTAL interactive browser profile (PTREE_BROWSER_PROFILE=interactive): the model drives pi-browser's
 // page tools (BROWSER_INTERACTIVE_TOOLS) and ends with capture_finish, whose `pomtree result` the report relay records as finish.json.
@@ -645,7 +646,7 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
     }
     return { exitCode: 3, message: `error after the sandbox started (no verdict; spend may have occurred): ${message}` };
   } finally {
-    if (sandbox && sandboxId) await sandbox.kill(sandboxId).catch(() => {});
+    if (sandbox && sandboxId) await sandbox.kill(sandboxId, sandboxOpKey("kill", sandboxId)).catch(() => {});
     await live?.close();
     server?.closeAllConnections();
     server?.close();

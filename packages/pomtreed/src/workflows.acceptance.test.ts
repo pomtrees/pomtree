@@ -149,13 +149,13 @@ test("shutdown then drain: running and pending owned rows end cancelled, an unre
   const calls = { stop: 0, kill: 0 };
   const origStop = t.sandbox.stop.bind(t.sandbox);
   const origKill = t.sandbox.kill.bind(t.sandbox);
-  t.sandbox.stop = (id, g) => {
+  t.sandbox.stop = (id, g, key) => {
     calls.stop += 1;
-    return origStop(id, g);
+    return origStop(id, g, key);
   };
-  t.sandbox.kill = (id) => {
+  t.sandbox.kill = (id, key) => {
     calls.kill += 1;
-    return origKill(id);
+    return origKill(id, key);
   };
   try {
     await t.daemon.shutdown(Date.now() + 60_000); // production order: container admission closes first

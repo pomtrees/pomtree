@@ -1,6 +1,5 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -10,14 +9,19 @@ import {
   IMAGE_REBUILD_ACTION,
   SandboxStartError,
   SandboxUnavailableError,
+  sandboxIdForKey,
   type AgentId,
   type ByteStream,
+  type ImageIdentity,
   type LoopbackPort,
   type MountProvider,
   type ResolvedMount,
   type Sandbox,
+  type SandboxDeclaration,
   type SandboxHandle,
   type SandboxId,
+  type SandboxListing,
+  type SandboxOwner,
   type SandboxSpec,
   type TerminalSession,
 } from "@pomtree/core";
@@ -90,9 +94,6 @@ export interface DockerDeps {
   engine?: EngineApi;
   // Name of the shared ICC-off egress sidecar network (network.ts). Default EGRESS_NETWORK; tests use a pomtree-test- name.
   egressNetwork?: string;
-  // The daemon this instance serves: its store id and boot epoch, the values it stamps as store_id/daemon_epoch on every
-  // sandbox. reclaimEgressOrphans removes only egress resources with this owner (egressOwnedBy); unset, it removes nothing.
-  owner?: EgressOwner;
   // Operator-facing warnings for failures that do not fail the call (an egress sidecar or socket volume left behind). Default console.warn.
   warn?: (message: string) => void;
 }
@@ -148,11 +149,6 @@ const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
 // Default cap on the delivered-exit cache.
 const DEFAULT_MAX_EXITED_CACHE = 1024;
-
-// Deterministic sandbox id for a caller's idempotency key: repeating a start() key resolves to
-// the same container name (pomtree-<hash>) and the same handle without launching a second container.
-// The key must be unique per logical start, matching the ports' idempotency convention.
-const idForKey = (key: string) => createHash("sha256").update(key).digest("hex");
 
 // Docker CLI diagnostics that classify a `start` failure. A missing manifest / nonexistent image
 // is permanent (image_unavailable, not retryable); a transient registry/network failure (pull
@@ -262,7 +258,80 @@ function realpathLoose(path: string): string {
   return join(realpathSync(current), ...missing);
 }
 
+// What Docker does today, restricted to what the adapter implements through the facet
+// shape. `docker commit` is not a sandbox snapshot, so snapshot.* and fork are false; pause, connect and files exist as Docker verbs
+// but have no facet here yet. loopback is true: the loopback facet runs the baked bridge over the streaming exec. egress.allowHost is true although the engine alone only offers network none: the adapter enforces the
+// host:port allowlist with its egress sidecar and throws when it cannot (start). image.digestAttest is true because imageIdentity
+// always reports the engine-local image id (the OCI config digest too on the classic store, null on the containerd store).
+export const DOCKER_DECLARATION: SandboxDeclaration = {
+  backend: "docker",
+  capabilities: {
+    terminal: true,
+    connect: false,
+    loopback: true,
+    "files.put": false,
+    "files.get": false,
+    "files.volume": false,
+    "mounts.host": true,
+    "image.ociPull": true,
+    "image.template": false,
+    "image.digestAttest": true,
+    "snapshot.disk": false,
+    "snapshot.memory": false,
+    fork: false,
+    pause: false,
+    "list.byTag": true,
+    "egress.denyAll": true,
+    "egress.allowHost": true,
+    "egress.allowCidr": false,
+    "reach.outbound": true,
+    "reach.exposedPort": false,
+    "reach.hostAlias": true,
+    "secrets.env": true,
+    "secrets.proxySwap": false,
+    "resources.limits": true,
+    "isolation.gvisor": true,
+    "isolation.microvm": false,
+    "lease.extend": false,
+  },
+  region: null,
+  idempotency: "unique-name",
+  idempotencyWindowMs: null,
+  tagging: "metadata",
+  output: "stream",
+  maxLifetimeMs: null,
+  preemptible: false,
+  billing: { unit: "none", whileStopped: false, whilePaused: false },
+  local: { seccompProfile: true, sysctlIpv6Disable: true },
+};
+
+// Docker's container status mapped to the port's listing state.
+function listingState(status: string): SandboxListing["state"] {
+  switch (status) {
+    case "created":
+      return "creating";
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "exited":
+    case "dead":
+      return "exited";
+    case "removing":
+      return "stopped";
+    default:
+      return "unknown";
+  }
+}
+
+// The classic image store (graph drivers) reports the OCI config digest as the image id; the containerd image store reports the
+// manifest or index digest instead.
+const CONTAINERD_STORE = /io\.containerd\.snapshotter/;
+
+const egressOwner = (o: SandboxOwner): EgressOwner => ({ storeId: o.storeId, epoch: String(o.epoch) });
+
 export class DockerSandbox implements Sandbox {
+  readonly declaration: SandboxDeclaration = DOCKER_DECLARATION;
   resultWork(id: SandboxId, opts?: { save?: boolean; expectedFingerprint?: string; maxBytes?: number }) {
     return collectResultWork(this.spawnFn, name(id), opts);
   }
@@ -279,7 +348,6 @@ export class DockerSandbox implements Sandbox {
   private egressFallbackWarned = false;
   private readonly egressAuditRoot: string | undefined;
   private readonly egressNetwork: string;
-  private readonly owner: EgressOwner | undefined;
   private readonly warn: (message: string) => void;
   // Sandbox ids whose start() is running in this instance: the orphan sweep leaves their egress resources (a sidecar exists
   // before its worker does). A transient guard only; ownership itself is the durable label set.
@@ -309,7 +377,6 @@ export class DockerSandbox implements Sandbox {
     this.egressRelayMaxBytes = deps.egressRelayMaxBytes;
     this.egressAuditRoot = deps.egressAuditRoot;
     this.egressNetwork = deps.egressNetwork ?? EGRESS_NETWORK;
-    this.owner = deps.owner;
     this.warn = deps.warn ?? ((message) => console.warn(message));
     this.hostAddresses = deps.hostAddresses ?? hostAddressList;
     this.startTimeoutMs = deps.startTimeoutMs ?? 300_000;
@@ -319,7 +386,7 @@ export class DockerSandbox implements Sandbox {
   }
 
   async start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle> {
-    const id = idForKey(idempotencyKey);
+    const id = sandboxIdForKey(idempotencyKey);
     let egressStarted = false;
     this.starting.set(id, (this.starting.get(id) ?? 0) + 1);
     try {
@@ -488,7 +555,9 @@ export class DockerSandbox implements Sandbox {
     return this.engineApi;
   }
 
-  async openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession> {
+  readonly terminal = { open: (id: SandboxId, size?: { cols: number; rows: number }) => this.openTerminal(id, size) };
+
+  private async openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession> {
     const state = await this.readState(id);
     if (!state || !state.running) throw new SandboxUnavailableError();
     const api = this.engine();
@@ -506,7 +575,9 @@ export class DockerSandbox implements Sandbox {
     return session;
   }
 
-  async openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream> {
+  readonly loopback = { open: (id: SandboxId, port: LoopbackPort) => this.openLoopbackStream(id, port) };
+
+  private async openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream> {
     if (!(LOOPBACK_PORTS as readonly number[]).includes(port))
       throw new RangeError(`loopback port ${port} is not one of ${LOOPBACK_PORTS.join(", ")}; open only a port listed in LOOPBACK_PORTS`);
     const state = await this.readState(id);
@@ -822,14 +893,15 @@ export class DockerSandbox implements Sandbox {
     await this.cleanupEgress(id);
   }
 
-  async stop(id: SandboxId, graceMs: number): Promise<void> {
+  // The key is accepted for the port contract; stop and kill are idempotent by nature ("already gone" is success).
+  async stop(id: SandboxId, graceMs: number, _idempotencyKey: string): Promise<void> {
     await this.exec(["stop", "-t", String(stopTimeoutSeconds(graceMs)), name(id)]).catch((e) => {
       if (!gone(e)) throw e;
     });
     await this.finish(id);
   }
 
-  async kill(id: SandboxId): Promise<void> {
+  async kill(id: SandboxId, _idempotencyKey: string): Promise<void> {
     await this.exec(["kill", name(id)]).catch((e) => {
       if (!gone(e)) throw e;
     });
@@ -845,13 +917,14 @@ export class DockerSandbox implements Sandbox {
     return cached === undefined ? null : { running: false, exitCode: cached.exitCode, ...(cached.oomKilled ? { oomKilled: true } : {}), status: "exited" };
   }
 
-  async list(): Promise<{ id: SandboxId; agent: AgentId; labels?: Record<string, string> }[]> {
+  // Every labelled container with its raw labels, caller labels and Docker status; list and reclaim filter it.
+  private async scan(): Promise<{ id: SandboxId; agent: string; raw: Record<string, string>; labels: Record<string, string>; status: string }[]> {
     const containers = await this.exec(["ps", "-aq", "--filter", `label=${LABEL}=1`]);
     if (!containers) return [];
     // `docker ps` exposes .Labels as an ambiguous comma-separated string. Inspect the canonical
     // map instead so commas and other valid characters in caller label values remain intact.
-    const sandboxes: { id: SandboxId; agent: AgentId; labels?: Record<string, string> }[] = [];
-    const format = `{{index .Config.Labels "${ID_LABEL}"}}\t{{index .Config.Labels "${AGENT_LABEL}"}}\t{{json .Config.Labels}}\t{{.Image}}`;
+    const sandboxes: Awaited<ReturnType<DockerSandbox["scan"]>> = [];
+    const format = `{{index .Config.Labels "${ID_LABEL}"}}\t{{index .Config.Labels "${AGENT_LABEL}"}}\t{{json .Config.Labels}}\t{{.Image}}\t{{.State.Status}}`;
     // A container also carries its image's labels (e.g. org.opencontainers.image.*), which the caller did not supply: subtract them.
     const imageLabels = new Map<string, Record<string, unknown>>();
     const labelsOfImage = async (image: string): Promise<Record<string, unknown>> => {
@@ -875,20 +948,48 @@ export class DockerSandbox implements Sandbox {
         if (gone(e)) continue;
         throw e;
       }
-      const [id = "", agent = "", json, image] = out.split("\t");
+      const [id = "", agent = "", json, image, status = ""] = out.split("\t");
       const inherited = image ? await labelsOfImage(image) : {};
       const labels: Record<string, string> = {};
+      const raw: Record<string, string> = {};
       try {
         const parsed: unknown = JSON.parse(json || "{}");
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          for (const [k, v] of Object.entries(parsed)) if (!k.startsWith("pomtree") && typeof v === "string" && inherited[k] !== v) labels[k] = v;
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === "string") raw[k] = v;
+            if (!k.startsWith("pomtree") && typeof v === "string" && inherited[k] !== v) labels[k] = v;
+          }
         }
       } catch {
         /* unparseable label map: report none */
       }
-      sandboxes.push({ id, agent, ...(Object.keys(labels).length ? { labels } : {}) });
+      sandboxes.push({ id, agent, raw, labels, status });
     }
     return sandboxes;
+  }
+
+  // The sandboxes `owner`'s daemon may have created: everything except containers positively owned by someone else, i.e. a
+  // store_id label that differs from owner.storeId, or a daemon_epoch label newer than owner.epoch. Containers with no store_id
+  // label (a daemon without a store id stamps none) are included, so a storeless daemon still lists its own. This is looser than
+  // reclaim's egressOwnedBy, which needs a matching store label because it deletes. Docker writes no host or generation label, so
+  // both are null.
+  async list(owner: SandboxOwner): Promise<SandboxListing[]> {
+    return (await this.scan())
+      .filter((c) => {
+        const store = c.raw[OWNER_STORE_LABEL];
+        if (store !== undefined && store !== owner.storeId) return false;
+        const epoch = Number(c.raw[OWNER_EPOCH_LABEL]);
+        return !(Number.isFinite(epoch) && epoch > owner.epoch);
+      })
+      .map((c) => ({
+        id: c.id,
+        agent: c.agent,
+        backend: "docker",
+        host: null,
+        generation: null,
+        state: listingState(c.status),
+        ...(Object.keys(c.labels).length ? { labels: c.labels } : {}),
+      }));
   }
 
   // TODO(rec8-egress-volume): find why REC-8 leaks an egress volume. Current behavior: this sweep runs once per boot.
@@ -897,12 +998,11 @@ export class DockerSandbox implements Sandbox {
   // e.g. a crash between startEgress and the agent `docker run`. Only this instance's owner's resources are candidates
   // (egressOwnedBy: our store_id, not a newer daemon_epoch), never another daemon's on the same engine, and never one whose
   // start is in flight here. A resource without our owner labels (another daemon's, or one created before the labels existed)
-  // is not ours and is left for its owner or the operator. With no owner configured nothing is reclaimed. Another daemon of
+  // is not ours and is left for its owner or the operator. The passed owner governs, not the constructor's. Another daemon of
   // the same store and an older epoch is presumed dead (one daemon per store). Returns reclaimed ids.
-  async reclaimEgressOrphans(): Promise<SandboxId[]> {
-    const owner = this.owner;
-    if (!owner) return [];
-    const live = new Set((await this.list()).map((s) => s.id));
+  async reclaim(passed: SandboxOwner): Promise<SandboxId[]> {
+    const owner = egressOwner(passed);
+    const live = new Set((await this.scan()).map((s) => s.id));
     const ids = new Set<SandboxId>();
     const fmt = `{{.Label "${ID_LABEL}"}}\t{{.Label "${OWNER_STORE_LABEL}"}}\t{{.Label "${OWNER_EPOCH_LABEL}"}}`;
     for (const args of [
@@ -920,13 +1020,33 @@ export class DockerSandbox implements Sandbox {
     return [...ids];
   }
 
-  async resolveImageDigest(image: string): Promise<string> {
-    const repoDigest = await this.exec(["image", "inspect", "--format", "{{index .RepoDigests 0}}", image]).catch(() => "");
-    if (repoDigest) return repoDigest;
+  // `docker info` DriverStatus, read once per instance; a failure clears the memo so the next call retries.
+  private imageStore: Promise<string> | undefined;
+  private imageStoreInfo(ref: string): Promise<string> {
+    this.imageStore ??= this.exec(["info", "--format", "{{json .DriverStatus}}"]).catch((e) => {
+      this.imageStore = undefined;
+      throw new Error(`cannot read the image identity of ${ref}: docker info failed (${errmsg(e)}); start the container engine and retry`);
+    });
+    return this.imageStore;
+  }
+
+  async imageIdentity(ref: string): Promise<ImageIdentity> {
+    const info = await this.imageStoreInfo(ref);
+    const containerd = CONTAINERD_STORE.test(info);
+    let out: string;
     try {
-      return await this.exec(["image", "inspect", "--format", "{{.Id}}", image]);
+      out = await this.exec(["image", "inspect", "--format", '{{.Id}}\t{{index .Config.Labels "org.opencontainers.image.revision"}}', ref]);
     } catch (e) {
-      throw new Error(`resolve image digest failed for ${image}: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`cannot read the image identity of ${ref}: ${errmsg(e)}; pull or build the image locally, or fix the reference`);
     }
+    const [id = "", label = ""] = out.split("\t");
+    if (!/^sha256:[0-9a-f]{64}$/.test(id)) {
+      throw new Error(
+        `cannot read the image identity of ${ref}: docker reported the image id ${JSON.stringify(id)}, not sha256:<64 hex>; use a Docker with the classic image store`,
+      );
+    }
+    const revision = label && label !== "<no value>" ? label : null;
+    // On the containerd store the id is the index/manifest digest, not the OCI config digest, which `docker save` alone would reveal.
+    return { engineLocalId: id, configDigest: containerd ? null : id, revision };
   }
 }

@@ -82,6 +82,7 @@ import { catalogRouteEntry, liveUpstreamBaseUrl } from "./content-live-upstream.
 import { storyNumberOf } from "./content-story.mts";
 import { APPROVED_IMAGE, joinLifecycle, modelCatalogEnv, SHUTDOWN_BOUND_MS, teardownPartialOpen, teardownResources } from "./model-runtime.mts";
 import { boundedStep, type CloseLedger, redactMessage } from "./runtime.mts";
+import { sandboxOpKey, sandboxOwner } from "../../packages/pomtreed/src/daemon/sandbox-ops.ts";
 
 export const LIVE_PROVIDER = "openrouter";
 export const LIVE_MODEL = "anthropic/claude-haiku-5.5";
@@ -808,10 +809,10 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
       const recordedSandboxes = new Set<SandboxRef>(recorded.map((a) => a.sandbox).filter((s): s is SandboxRef => s != null));
       await Promise.all(recorded.map((a) => step(`cancel ${a.id}`, () => daemon.cancel(a.id, CANCEL_GRACE_MS))));
       if (recordedSandboxes.size > 0) {
-        const listed = await step("list sandboxes", () => wiring.sandbox.list());
+        const listed = await step("list sandboxes", () => wiring.sandbox.list(sandboxOwner({ hostId, storeId: "" }, daemon.epoch)));
         if (listed) {
           const physical = new Set<string>(listed.map((s) => s.id));
-          for (const id of recordedSandboxes) if (physical.has(id)) await step(`kill ${id}`, () => wiring.sandbox.kill(id));
+          for (const id of recordedSandboxes) if (physical.has(id)) await step(`kill ${id}`, () => wiring.sandbox.kill(id, sandboxOpKey("kill", id)));
         }
       }
       const joined = await joinLifecycle(orchestrator, deadline, ledger, secrets);
@@ -933,7 +934,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
                 const { exitCode } = await h.wait();
                 return { code: exitCode, output };
               } finally {
-                await sandbox.kill(h.id).catch(() => {});
+                await sandbox.kill(h.id, sandboxOpKey("kill", h.id)).catch(() => {});
               }
             } finally {
               rmSync(work, { recursive: true, force: true });

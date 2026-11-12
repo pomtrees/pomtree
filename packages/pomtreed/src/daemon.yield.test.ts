@@ -327,10 +327,10 @@ function lateYieldSettle() {
   let first: string | null = null;
   let heldStops = 0;
   const realStop = t.sandbox.stop.bind(t.sandbox);
-  t.sandbox.stop = async (id, graceMs) => {
+  t.sandbox.stop = async (id, graceMs, key) => {
     first ??= id;
     if (id === first && heldStops++ > 0) await held;
-    return realStop(id, graceMs);
+    return realStop(id, graceMs, key);
   };
   const errors: string[] = [];
   const realError = console.error;
@@ -662,12 +662,12 @@ for (const sameMs of [false, true]) {
 function duringPause(t: ReturnType<typeof setup>, during: () => Promise<unknown>): void {
   const realStop = t.sandbox.stop.bind(t.sandbox);
   let fired = false;
-  t.sandbox.stop = async (id, graceMs) => {
+  t.sandbox.stop = async (id, graceMs, key) => {
     if (!fired) {
       fired = true;
       await during();
     }
-    return realStop(id, graceMs);
+    return realStop(id, graceMs, key);
   };
 }
 
@@ -802,7 +802,7 @@ for (const listed of [false, true]) {
     await t.daemon.deps.workspace.create(a.id, {});
     const sb = await t.fakes.hooks.raw.sandbox.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
     await reg.setSandbox(a.id, a.generation, sb.id, "a-sb-set");
-    await t.fakes.hooks.raw.sandbox.kill(sb.id); // the daemon died after the stop
+    await t.fakes.hooks.raw.sandbox.kill(sb.id, `test-kill:${sb.id}`); // the daemon died after the stop
     await t.daemon.deps.mailbox.send(a.id, { kind: "message", from: root.id, body: "hello" }, "m1");
     const msgId = (await t.daemon.deps.mailbox.peek(a.id))[0]!.id;
     await t.journal.append({
@@ -870,7 +870,7 @@ for (const wakeAtYielded of [true, false]) {
     await d.deps.workspace.create(a.id, {});
     const sb = await t.fakes.hooks.raw.sandbox.start({ agent: a.id, image: "img", env: {}, mounts: [] }, "a-sb");
     await reg.setSandbox(a.id, a.generation, sb.id, "a-sb-set");
-    await t.fakes.hooks.raw.sandbox.kill(sb.id); // the daemon died after the stop
+    await t.fakes.hooks.raw.sandbox.kill(sb.id, `test-kill:${sb.id}`); // the daemon died after the stop
     // The crashed run's key, staged credentials and slot, live at the crash: completing the pause must release them.
     const old = await gw.issueKey(a.id, 100_000);
     staged.add(a.id);

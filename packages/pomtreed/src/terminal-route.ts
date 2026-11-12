@@ -5,7 +5,7 @@
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
-import { SandboxUnavailableError } from "@pomtree/core";
+import { SandboxCapabilityError, SandboxUnavailableError, need } from "@pomtree/core";
 import type { Daemon } from "./daemon.ts";
 import type { ReqCtx } from "./server.ts";
 import { verifyToken, verifyUiCookie } from "./auth.ts";
@@ -43,7 +43,7 @@ function stateFor(daemon: Daemon, opts: TerminalRouteOpts): State {
       open: async (agent, size) => {
         const r = await daemon.deps.registry.get(agent);
         if (!r?.sandbox) throw new SandboxUnavailableError();
-        return daemon.deps.sandbox.openTerminal(r.sandbox, size);
+        return need(daemon.deps.sandbox, "terminal").open(r.sandbox, size);
       },
       onEsc: (agent) => daemon.userEsc(agent),
       ...(opts.ringCapacity !== undefined && { ringCapacity: opts.ringCapacity }),
@@ -144,6 +144,8 @@ export async function handleTerminalUpgrade(
     lease = await st.hub.acquire(id, DEFAULT_TERMINAL_SIZE);
   } catch (e) {
     if (e instanceof SandboxUnavailableError) return refuse(409, `agent ${id} has no attachable terminal`, { state: rec.state });
+    // The backend cannot give this agent a terminal (a fixed property of the configuration): the message names the cause and the action.
+    if (e instanceof SandboxCapabilityError) return refuse(409, e.message, { state: rec.state });
     console.error(`pomtreed: terminal ${id} open failed: ${e instanceof Error ? e.message : String(e)}`);
     return refuse(500, "internal error");
   }

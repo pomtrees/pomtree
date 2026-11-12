@@ -1,6 +1,7 @@
 export * from "./types.ts";
 export * from "./errors.ts";
 export * from "./ports.ts";
+export * from "./sandbox-capabilities.ts";
 export * from "./approval.ts";
 export * from "./extension.ts";
 export * from "./exit.ts";

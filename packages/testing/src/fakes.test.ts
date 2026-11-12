@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IllegalTransitionError, SandboxUnavailableError, StaleGenerationError } from "@pomtree/core";
-import { SandboxStartError } from "@pomtree/core";
+import { SandboxStartError, validateDeclaration } from "@pomtree/core";
 import type { SpawnSpec, NewApproval, NewEscalation, NewReport, Schedule, Template, WatchdogState } from "@pomtree/core";
 import {
   journalRetentionContractBody,
@@ -18,6 +18,9 @@ import {
   FakeWorkspace,
   fakeBundle,
   workspaceContractBody,
+  assertFacetPresence,
+  assertProbeSubset,
+  FakeSandbox,
   sandboxContractBody,
   scheduleContractBody,
   hostStoreContractBody,
@@ -183,7 +186,10 @@ test("checkpoints: idempotent write, latest", async () => {
 test("sandbox + harness scripted", async () => {
   const f = createFakes({ sandboxExitCodes: [3], harnessEvents: { a: [{ kind: "error", message: "x" }] } });
   const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] }, "sb1");
-  assert.deepEqual(await f.sandbox.list(), [{ id: h.id, agent: "a" }]);
+  assert.deepEqual(
+    (await f.sandbox.list(OWNER)).map(({ state: _state, ...rest }) => rest), // state races the scripted exit
+    [{ id: h.id, agent: "a", backend: "fake", host: null, generation: null }],
+  );
   assert.deepEqual(await h.wait(), { exitCode: 3 });
   const h2 = await f.sandbox.start(
     { agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] },
@@ -287,7 +293,8 @@ test("sandbox: list keeps exited sandboxes (docker ps -a), inspect still works",
   const spec = { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] };
   const h = await f.sandbox.start(spec, "sb1");
   f.hooks.exitSandbox(h.id, 1);
-  assert.deepEqual(await f.sandbox.list(), [{ id: h.id, agent: "a" }]);
+  assert.deepEqual(await f.sandbox.list(OWNER), [{ id: h.id, agent: "a", backend: "fake", host: null, generation: null, state: "exited" }]);
+  assert.deepEqual(f.hooks.raw.sandbox.listOwners, [OWNER]);
   assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 1, status: "exited" });
 });
 
@@ -706,13 +713,105 @@ test("schedules: upsert replaces and clears tz when omitted", async () => {
   assert.equal((await f.schedules.get("s1"))!.cron, "0 0 * * *");
 });
 
-test("sandbox: resolveImageDigest is deterministic, scriptable, and call-logged", async () => {
+test("sandbox: imageIdentity is deterministic, scriptable, and call-logged", async () => {
   const f = createFakes();
-  assert.equal(await f.sandbox.resolveImageDigest("alpine:3"), "alpine:3@sha256:fake");
-  f.hooks.raw.sandbox.imageDigests.set("alpine:3", "alpine@sha256:real");
-  assert.equal(await f.sandbox.resolveImageDigest("alpine:3"), "alpine@sha256:real");
-  assert.equal(await f.sandbox.resolveImageDigest("other"), "other@sha256:fake");
-  assert.equal(f.calls.filter((c) => c.port === "Sandbox" && c.method === "resolveImageDigest").length, 3);
+  const first = await f.sandbox.imageIdentity("alpine:3");
+  assert.equal(first.engineLocalId, "alpine:3@sha256:fake");
+  assert.match(first.configDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.equal(first.revision, null);
+  assert.deepEqual(await f.sandbox.imageIdentity("alpine:3"), first);
+  f.hooks.raw.sandbox.engineLocalIds.set("alpine:3", "alpine@sha256:real");
+  assert.equal((await f.sandbox.imageIdentity("alpine:3")).engineLocalId, "alpine@sha256:real");
+  const other = await f.sandbox.imageIdentity("other");
+  assert.equal(other.engineLocalId, "other@sha256:fake");
+  assert.notEqual(other.configDigest, first.configDigest);
+  assert.equal(f.calls.filter((c) => c.port === "Sandbox" && c.method === "imageIdentity").length, 4);
+});
+
+test("sandbox: list(owner) excludes other stores and newer epochs, keeps own and unlabelled", async () => {
+  const f = createFakes();
+  const start = async (key: string, labels?: Record<string, string>) => (await f.sandbox.start({ ...sbSpec(), ...(labels && { labels }) }, key)).id;
+  const own = await start("own", { store_id: OWNER.storeId, daemon_epoch: String(OWNER.epoch) });
+  const older = await start("older", { store_id: OWNER.storeId, daemon_epoch: "0" });
+  const bare = await start("bare");
+  const otherStore = await start("other-store", { store_id: "someone-else", daemon_epoch: "1" });
+  const newer = await start("newer", { store_id: OWNER.storeId, daemon_epoch: String(OWNER.epoch + 1) });
+  const ids = (await f.sandbox.list(OWNER)).map((x) => x.id);
+  assert.deepEqual(ids.sort(), [own, older, bare].sort());
+  assert.ok(!ids.includes(otherStore) && !ids.includes(newer));
+});
+
+test("sandbox: reclaim returns the scripted ids once and records the owner", async () => {
+  const f = createFakes();
+  f.hooks.raw.sandbox.egressOrphans.push("sbx-x");
+  assert.deepEqual(await f.sandbox.reclaim(OWNER), ["sbx-x"]);
+  assert.deepEqual(await f.sandbox.reclaim(OWNER), []);
+  assert.deepEqual(f.hooks.raw.sandbox.reclaimOwners, [OWNER, OWNER]);
+  assert.equal(f.hooks.raw.sandbox.reclaimEgressCalls, 2);
+});
+
+test("sandbox: stop and kill record the idempotency key", async () => {
+  const f = createFakes();
+  const h = await f.sandbox.start(sbSpec(), "sb1");
+  await f.sandbox.stop(h.id, 10, "stop-key");
+  await f.sandbox.kill(h.id, "kill-key");
+  assert.deepEqual(f.hooks.raw.sandbox.stopCalls, [{ id: h.id, graceMs: 10, idempotencyKey: "stop-key" }]);
+  assert.deepEqual(f.hooks.raw.sandbox.killCalls, [{ id: h.id, idempotencyKey: "kill-key" }]);
+  assert.ok(f.calls.some((c) => c.port === "Sandbox" && c.method === "kill" && c.args[1] === "kill-key"));
+});
+
+test("sandbox: default declaration is valid, named fake, and its facets match it", async () => {
+  const sb = new FakeSandbox();
+  assert.deepEqual(validateDeclaration(sb.declaration), []);
+  assert.equal(sb.declaration.backend, "fake");
+  assert.equal(sb.declaration.capabilities.terminal, true);
+  for (const c of ["connect", "files.put", "files.get", "snapshot.disk", "snapshot.memory", "fork", "pause", "image.template", "lease.extend"] as const) {
+    assert.equal(sb.declaration.capabilities[c], false, c);
+  }
+  assert.ok(sb.terminal);
+  assert.equal(sb.probe, undefined);
+  const custom = new FakeSandbox([], "graceful", { declaration: { backend: "other", capabilities: { connect: true } }, facets: { terminal: undefined } });
+  assert.equal(custom.declaration.backend, "other");
+  assert.equal(custom.declaration.capabilities.connect, true);
+  assert.equal(custom.declaration.capabilities.terminal, true); // merged onto the default, not replaced
+  assert.equal(custom.terminal, undefined);
+});
+
+test("sandbox: probe is scriptable, records the runtime block, and absent unless configured", async () => {
+  const none = new FakeSandbox();
+  assert.equal(none.probe, undefined);
+  const result = { withheld: ["resources.limits" as const], problems: [], account: null };
+  const sb = new FakeSandbox([], "graceful", { probe: result });
+  assert.deepEqual(await sb.probe!(), result);
+  assert.deepEqual(await sb.probe!({ ociRuntime: "runsc" }), result);
+  assert.deepEqual(sb.probeCalls, [undefined, { ociRuntime: "runsc" }]);
+});
+
+test("sandbox contract: facet presence matches FACET_OF (negative: a capability declared false with its facet present fails)", () => {
+  assertFacetPresence(new FakeSandbox());
+  assertFacetPresence(new FakeSandbox([], "graceful", { declaration: { capabilities: { terminal: false } }, facets: { terminal: undefined } }));
+  assert.throws(
+    () => assertFacetPresence(new FakeSandbox([], "graceful", { declaration: { capabilities: { terminal: false } } })),
+    /facet terminal is present/,
+  );
+  assert.throws(() => assertFacetPresence(new FakeSandbox([], "graceful", { facets: { terminal: undefined } })), /facet terminal is absent/);
+  const connectOnly = {
+    connect: {
+      open: async () => {
+        throw new Error("unused");
+      },
+    },
+  };
+  assert.throws(() => assertFacetPresence(new FakeSandbox([], "graceful", { facets: connectOnly })), /facet connect is present/);
+});
+
+test("sandbox contract: a probe only narrows the declaration (negative: withholding an undeclared capability fails)", async () => {
+  await assertProbeSubset(new FakeSandbox());
+  await assertProbeSubset(new FakeSandbox([], "graceful", { probe: { withheld: ["terminal"], problems: [], account: "acct" } }));
+  await assert.rejects(
+    assertProbeSubset(new FakeSandbox([], "graceful", { probe: { withheld: ["pause"], problems: [], account: null } })),
+    /withheld pause, which is not declared true/,
+  );
 });
 
 test("extension gateway: scripted results and call logging", async () => {
@@ -737,6 +836,7 @@ test("extension gateway: createFakes wires the fake into the call log", async ()
   assert.equal(f.hooks.raw.extensions.calls.length, 1);
 });
 
+const OWNER = { host: "host-1", storeId: "store-1", epoch: 1 };
 const sbSpec = (agent = "a") => ({ agent, image: "i", env: {}, mounts: [{ kind: "workspace" as const, workspace: "ws-a", containerPath: "/w" }] });
 
 test("escalations: id replay with a new key returns the live (stored) record, defensively", async () => {
@@ -754,18 +854,18 @@ test("escalations: id replay with a new key returns the live (stored) record, de
 test("sandbox: stop honors stopPolicy and graceMs (graceful 0, sigterm 143, sigkill 137)", async () => {
   const graceful = createFakes();
   const hg = await graceful.sandbox.start(sbSpec(), "g");
-  await graceful.sandbox.stop(hg.id, 100);
+  await graceful.sandbox.stop(hg.id, 100, "k1");
   assert.deepEqual(await hg.wait(), { exitCode: 0 });
 
   const sigterm = createFakes({ sandboxStop: "sigterm" });
   const hs = await sigterm.sandbox.start(sbSpec(), "s");
-  await sigterm.sandbox.stop(hs.id, 100);
+  await sigterm.sandbox.stop(hs.id, 100, "k2");
   assert.deepEqual(await hs.wait(), { exitCode: 143 });
 
   const sigkill = createFakes({ sandboxStop: "sigkill" });
   const hk = await sigkill.sandbox.start(sbSpec(), "k");
   const before = Date.now();
-  await sigkill.sandbox.stop(hk.id, 25);
+  await sigkill.sandbox.stop(hk.id, 25, "k3");
   assert.deepEqual(await hk.wait(), { exitCode: 137 });
   assert.ok(Date.now() - before >= 20); // SIGKILL only after graceMs
 });
@@ -774,7 +874,7 @@ test("sandbox: stop/kill never overwrite an already-scripted exit", async () => 
   const f = createFakes();
   const h = await f.sandbox.start(sbSpec(), "sb1");
   f.hooks.exitSandbox(h.id, 143);
-  await f.sandbox.stop(h.id, 10); // already exited: no-op, like Docker
+  await f.sandbox.stop(h.id, 10, "k4"); // already exited: no-op, like Docker
   assert.deepEqual(await h.wait(), { exitCode: 143 });
   assert.deepEqual(await f.sandbox.inspect(h.id), { running: false, exitCode: 143, status: "exited" });
 });

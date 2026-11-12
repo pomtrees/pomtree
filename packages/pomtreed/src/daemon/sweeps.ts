@@ -14,6 +14,7 @@ import { LifecycleError, findZombies, isDone } from "../lifecycle.ts";
 import { planEvictions, type FolderCandidate } from "../folder-retention.ts";
 import { DEADLINE_KIND, HOST_HEALTH_KIND, QUARANTINED_KIND, foldBlocked, intensityRetries, newBlockedScan, openCallSince } from "../watchdog.ts";
 import type { Budget } from "./budget.ts";
+import { sandboxOpKey } from "./sandbox-ops.ts";
 import { isTerminalExitMessage } from "./lifecycle.ts";
 import type { DaemonCtx } from "./ctx.ts";
 import type { Tree } from "./tree.ts";
@@ -539,7 +540,7 @@ export class Sweeps {
             // settle finishes "failed" instead of racing a direct finish() against its own "cancelled".
             e.result = { status: "failed", result: undefined };
             e.cancelled = true;
-            if (e.sandbox) await this.ctx.deps.sandbox.kill(e.sandbox.id).catch(() => {});
+            if (e.sandbox) await this.ctx.deps.sandbox.kill(e.sandbox.id, sandboxOpKey("kill", e.sandbox.id)).catch(() => {});
             await e.session?.stop().catch(() => {});
           } else {
             await this.ctx.hub.reconcile.reclaimSandbox(a, true);

@@ -294,7 +294,7 @@ test("Docker result collection uses the actual workspace and base environment", 
     f.git("bundle", "verify", bundle);
     assert.match(f.git("log", "-1", "--format=%s"), /Save remaining work/);
   } finally {
-    await sandbox.kill(handle.id);
+    await sandbox.kill(handle.id, `test-kill:${handle.id}`);
     f.close();
   }
 });

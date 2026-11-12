@@ -98,12 +98,12 @@ test("two sidecars on the shared ICC-off network: policy-path and direct outboun
     // The sidecar's own outbound route (bridge gateway / host alias) is unaffected.
     assert.equal(await probeFrom(b, "host.docker.internal", port), "OPEN:HTTP/1.1 200 OK");
     // Per-sandbox teardown leaves the shared network; only the explicit helper removes it.
-    for (const id of ids.splice(0)) await sb.kill(id);
+    for (const id of ids.splice(0)) await sb.kill(id, `test-kill:${id}`);
     assert.equal(docker(["network", "inspect", "--format", "{{.Name}}", network]), network);
     assert.equal(await removeEgressNetwork(exec, network), true);
     assert.equal(docker(["network", "ls", "-q", "--filter", `name=^${network}$`]), "");
   } finally {
-    for (const id of ids) await sb.kill(id).catch(() => {});
+    for (const id of ids) await sb.kill(id, `test-kill:${id}`).catch(() => {});
     await removeEgressNetwork(exec, network).catch(() => {});
     await exec(["network", "rm", controlNet]).catch(() => {});
     server.closeAllConnections();

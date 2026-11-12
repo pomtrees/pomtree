@@ -13,6 +13,7 @@ import { DirReportStore } from "@pomtree/report-dir";
 import { GitWorkspace } from "@pomtree/workspace-git";
 import { SECRET, gitRepo, tmp } from "./harness.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
+import { sandboxOwner } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 const IMAGE = process.env.PTREE_E2E_IMAGE ?? "pomtree/agent:dev";
 
@@ -170,7 +171,7 @@ test("real Docker, no model: scripted root spawns two children, waits, reaps, re
   const agents = await listenAgents(daemon, plan.host, 0);
   apiUrl = `http://host.docker.internal:${agents.port}`;
   // Containers from other stacks (a live pomtreed on this Docker host) are not this test's to assert on.
-  const preexisting = new Set((await sandbox.list()).map((c) => c.id));
+  const preexisting = new Set((await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch))).map((c) => c.id));
   const preexistingDocker = new Set(dockerPs());
   try {
     const top = await daemon.root();
@@ -199,7 +200,7 @@ test("real Docker, no model: scripted root spawns two children, waits, reaps, re
     // its live containers are not leftovers of this test.
     const tree = new Set([root.id, ...kids]);
     assert.deepEqual(
-      (await sandbox.list()).filter((c) => tree.has(c.agent) && !preexisting.has(c.id)),
+      (await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch))).filter((c) => tree.has(c.agent) && !preexisting.has(c.id)),
       [],
       "no containers left",
     );

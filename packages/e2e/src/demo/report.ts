@@ -12,6 +12,7 @@ import { createReportsExtension } from "../../../pomtreed/src/builtin/reports.ts
 import { buildChannelRegistry } from "../../../pomtreed/src/channels.ts";
 import { createExtensionRegistry } from "../../../pomtreed/src/extensions.ts";
 import { startLiveModel } from "../live-model.ts";
+import { sandboxOpKey, sandboxOwner } from "../../../pomtreed/src/daemon/sandbox-ops.ts";
 import { listenAgentEndpoint } from "./agent-endpoint.ts";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
@@ -165,7 +166,8 @@ try {
   console.error(`report demo failed: ${e instanceof Error ? e.message : String(e)}`);
   console.error(`temp dir: ${tempDir}`);
 } finally {
-  for (const s of await sandbox.list().catch(() => [])) await sandbox.kill(s.id).catch(() => {});
+  for (const s of await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch)).catch(() => []))
+    await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
   for (const id of await workspace.list().catch(() => [])) await workspace.evict(id).catch(() => {});
   server.close();
   endpoint.close();

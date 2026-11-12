@@ -9,6 +9,7 @@ import { PI_SINK_FILE, PI_TTY_ENV, createPiHarness, fileTailSource, piArgv } fro
 import { Daemon, LocalOrchestrator, listen, wireLocalHost } from "@pomtree/pomtreed";
 import { buildChannelRegistry } from "../../../pomtreed/src/channels.ts";
 import { startLiveModel } from "../live-model.ts";
+import { sandboxOpKey, sandboxOwner } from "../../../pomtreed/src/daemon/sandbox-ops.ts";
 import { listenAgentEndpoint } from "./agent-endpoint.ts";
 import { agentHeadsPrefix } from "@pomtree/workspace-git";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
@@ -151,7 +152,8 @@ try {
   console.error(`demo failed: ${e instanceof Error ? e.message : String(e)}`);
   console.error(`temp dir: ${tempDir}`);
 } finally {
-  for (const s of await sandbox.list().catch(() => [])) await sandbox.kill(s.id).catch(() => {});
+  for (const s of await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch)).catch(() => []))
+    await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
   for (const id of await workspace.list().catch(() => [])) await workspace.evict(id).catch(() => {});
   server.close();
   endpoint.close();

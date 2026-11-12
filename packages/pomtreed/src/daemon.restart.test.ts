@@ -57,10 +57,37 @@ test("container ownership: containers of another store or a newer epoch and unla
   assert.notEqual(sb.running.get(own)!.exitCode, null, "own older-epoch container reconciled");
 });
 
+test("container ownership: a daemon with no store id leaves a container labelled with another store alone, neither killing nor adopting it", async () => {
+  const t = setup(async () => {}, { epoch: "100" }); // no storeId: list(owner) carries storeId "" and must still exclude another store's container
+  const root = await t.daemon.root();
+  const reg = t.daemon.deps.registry;
+  const sb = t.fakes.hooks.raw.sandbox;
+  // A registered agent besides the root, so reconcile is allowed to reclaim records-less containers at all.
+  await reg.create({ spec: spawnSpec, parent: root.id, name: "bystander", task: "t", host: "h1", budgetMicros: 1, idempotencyKey: "bystander" });
+  const mine = await sb.start({ agent: "ghost-mine", image: "img", env: {}, mounts: [], labels: { daemon_epoch: "50" } }, "ghost-mine");
+  const foreign = await sb.start(
+    { agent: "ghost-foreign", image: "img", env: {}, mounts: [], labels: { store_id: "other", daemon_epoch: "1" } },
+    "ghost-foreign",
+  );
+  await t.daemon.recover();
+  assert.notEqual(sb.running.get(mine.id)!.exitCode, null, "an unregistered container of this daemon is still killed as a stray");
+  assert.equal(sb.running.get(foreign.id)!.exitCode, null, "another store's container is left running");
+  assert.equal(
+    sb.killCalls.some((k) => k.id === foreign.id),
+    false,
+    "no kill was sent for it",
+  );
+  assert.equal(
+    sb.stopCalls.some((k) => k.id === foreign.id),
+    false,
+    "no stop was sent for it",
+  );
+});
+
 test("egress-orphans: recover reclaims egress orphans once, before spawns", async () => {
   let calls = 0;
   const t = setup(async () => {});
-  (t.daemon.deps.sandbox as { reclaimEgressOrphans?: () => Promise<string[]> }).reclaimEgressOrphans = async () => {
+  t.daemon.deps.sandbox.reclaim = async () => {
     calls++;
     return [];
   };
@@ -185,7 +212,7 @@ test("runResumed: a stale generation does nothing (never kills or reclaims a new
 test("runResumed: the in-flight marker is set before the resume starts (a reconcile mid-resume does not re-bump)", async () => {
   const t = setup(async () => {});
   const { a, sid } = await runningWithCp(t, "mk", { sandbox: true });
-  await t.fakes.hooks.raw.sandbox.kill(sid);
+  await t.fakes.hooks.raw.sandbox.kill(sid, `test-kill:${sid}`);
   const ws = t.daemon.deps.workspace;
   const realCreate = ws.create.bind(ws);
   let gen1: number | undefined;

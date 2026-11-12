@@ -79,7 +79,7 @@ test("enabled public wiring: immutable RO manifest, proxy-only RW audit, network
     );
     const writer = new FileEgressAuditWriter(join(dir, "log"), config.identity!);
     writer.append({ connection: "captured", transport: "connect", authority: "public.test:443", phase: "admission", outcome: "allowed", peer: "8.8.8.8" });
-    await sb.kill(handle.id);
+    await sb.kill(handle.id, `test-kill:${handle.id}`);
     writer.append({ connection: "captured", transport: "connect", authority: "public.test:443", phase: "outcome", outcome: "cancelled" });
     const disk = new DiskEgressAudit({ root: auditRoot });
     assert.deepEqual(

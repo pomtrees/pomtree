@@ -46,12 +46,14 @@ import type {
   PlacementStatus,
   Report,
   ReportId,
+  SandboxBackendId,
   SandboxId,
   Schedule,
   ScheduleId,
   SessionId,
   Signal,
   SignalId,
+  SnapshotId,
   SpawnSpec,
   Template,
   TemplateId,
@@ -59,6 +61,7 @@ import type {
   WatchdogState,
 } from "./types.ts";
 import type { LOOPBACK_PORTS } from "./config/image-facts.ts";
+import type { SandboxCapability, SandboxDeclaration } from "./sandbox-capabilities.ts";
 import type {
   CheckResult,
   MergeId,
@@ -366,7 +369,7 @@ export interface SandboxSpec {
   // with "pomtree" (reserved). Optional/additive.
   labels?: Record<string, string>;
   // Start with a TTY and stdin open (`-it` equivalent) so a terminal can be attached via
-  // Sandbox.openTerminal. cols/rows is the initial size (best effort; 80x24 until sized). Unset keeps
+  // the terminal facet. cols/rows is the initial size (best effort; 80x24 until sized). Unset keeps
   // the plain non-TTY container.
   tty?: { cols: number; rows: number };
 }
@@ -384,18 +387,14 @@ export interface TerminalClose {
   error?: Error;
 }
 
-// A bidirectional raw-byte terminal stream attached to a TTY sandbox. Closing only detaches; the
-// container keeps running. Several sessions may be open on one sandbox.
-export interface TerminalSession {
+// A raw bidirectional byte stream; TerminalSession extends it with resize/redraw. It does NOT assume a full-duplex socket: an
+// adapter may realise write() as separate provider input calls and output() as a provider output stream (Sail, Vercel,
+// Cloudflare, Daytona sessions), multiplexing frames over that pair.
+export interface ByteChannel {
   // Resolves once the bytes are accepted by the transport (waits for drain under backpressure);
-  // rejects if the session is closed.
+  // rejects if the channel is closed.
   write(data: Uint8Array | string): Promise<void>;
-  // Resizes the pty. No-op once closed; rejects if the engine refuses.
-  resize(cols: number, rows: number): Promise<void>;
-  // Forces a full-screen redraw by nudging the size (cols+1, then back) at the last known size;
-  // rejects if no size is known yet (open with a size or call resize first).
-  redraw(): Promise<void>;
-  // Raw terminal output, bounded by transport backpressure (never dropped). Single consumer: calls
+  // Raw output, bounded by transport backpressure (never dropped). Single consumer: calls
   // share one queue. Ends when the stream closes; throws if it broke.
   output(): AsyncIterable<Uint8Array>;
   // Detach. Idempotent.
@@ -417,10 +416,121 @@ export interface ByteStream {
   closed: Promise<TerminalClose>;
 }
 
-// The loopback ports Sandbox.openLoopbackStream may open: the image's LOOPBACK_PORTS.
+// The loopback ports the loopback facet may open: the image's LOOPBACK_PORTS.
 export type LoopbackPort = (typeof LOOPBACK_PORTS)[number];
 
-export interface Sandbox {
+// A bidirectional raw-byte terminal stream attached to a TTY sandbox. Closing only detaches; the
+// container keeps running. Several sessions may be open on one sandbox.
+export interface TerminalSession extends ByteChannel {
+  // Resizes the pty. No-op once closed; rejects if the engine refuses.
+  resize(cols: number, rows: number): Promise<void>;
+  // Forces a full-screen redraw by nudging the size (cols+1, then back) at the last known size;
+  // rejects if no size is known yet (open with a size or call resize first).
+  redraw(): Promise<void>;
+}
+
+// Named channels into a sandbox: the address is a name, never a port, because exec-based providers have no port namespace and
+// Docker already addresses these as named unix sockets.
+export type SandboxChannel = "daemon-api" | "egress" | "egress-browser" | "workspace";
+
+// What a readiness probe found. It may only narrow the declaration (see checkProbe).
+export interface ProbeResult {
+  withheld: SandboxCapability[]; // capabilities declared true but unavailable now (plan, quota, runtime block)
+  problems: { code: string; cause: string; action: string }[]; // readiness failures: unreachable engine, bad credential, image missing
+  account: string | null; // opaque hash of the provider-reported account id (never a credential); null for local engines
+}
+
+// Which daemon owns a sandbox: the host, the store and the epoch it stamps on what it creates.
+export interface SandboxOwner {
+  host: HostId;
+  storeId: string;
+  epoch: number;
+}
+
+export interface SandboxListing {
+  id: SandboxId;
+  agent: AgentId;
+  backend: SandboxBackendId;
+  host: HostId | null;
+  generation: number | null; // null host/generation = untagged or foreign: never adopted, reported only
+  state: "creating" | "running" | "paused" | "stopped" | "exited" | "unknown";
+  labels?: Record<string, string>; // echoes SandboxSpec.labels (omitted when none)
+}
+
+// Image identity = the engine-local image id (what the daemon compares at start and what checkpoints pin to) plus the canonical OCI
+// config digest and org.opencontainers.image.revision. Manifest digests and provider templates are derived ImageArtifact records
+// keyed by configDigest. image.digestAttest = the adapter can report the engine-local id itself; without it, imageIdentity throws
+// SandboxCapabilityError and the daemon resolves identity from the registry.
+export interface ImageIdentity {
+  // The content-addressed local id the owning engine reports: equals the config digest on a classic Docker store and on Podman; the
+  // index/manifest digest on Docker with the containerd store. Needs no `docker save`.
+  engineLocalId: string;
+  // "sha256:<hex>"; canonical and portable across engines and registries. null = the engine cannot attest it at runtime (Docker with the
+  // containerd store); the config digest from the image build record is wired by a later task.
+  configDigest: string | null;
+  revision: string | null; // org.opencontainers.image.revision (the key across builds); null = label absent
+}
+
+// A derived artifact of one canonical image, keyed by configDigest: a registry manifest, a provider template, or a provider
+// snapshot used as an image. Images are built in OCI format (a docker-format image converted to OCI changes its config digest);
+// the build fails closed if no source yields the config digest.
+export interface ImageArtifact {
+  configDigest: string; // canonical identity, "sha256:<hex>"
+  revision: string | null; // OCI revision label
+  engineLocalId: string | null; // as ImageIdentity; null when not engine-local
+  providerImage?: string; // derived artifacts only: provider template, snapshot or registry ref; never a local path
+  sourceConfigDigest?: string; // set only when pomtree converted the format; layer diff_ids must match the source
+  backend: SandboxBackendId | null; // null for a registry artifact usable by any backend
+  hostId: HostId;
+  generation: number; // SPEC rule 2
+  idempotencyKey: string; // the key of the call that produced it
+}
+
+export interface SnapshotRef {
+  id: SnapshotId;
+  backend: SandboxBackendId;
+  memory: boolean;
+  sha256?: string; // when the provider exposes a content hash (checkpoints hold ids and hashes)
+}
+
+// Optional capabilities, each gated by SandboxDeclaration.capabilities. A facet is present iff at least one of its capabilities in
+// FACET_OF is declared true; call sites obtain one through `need`, never by testing the property ad hoc.
+export interface SandboxFacets {
+  // Attach a terminal stream to a running sandbox that was started with SandboxSpec.tty. Throws
+  // SandboxUnavailableError when the sandbox is not running (or the engine is unreachable).
+  // `size` resizes the pty right after attaching (and seeds redraw()).
+  terminal?: { open(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession> };
+  // Open a byte stream to `port` on the running sandbox's own loopback, with no port published. Throws SandboxUnavailableError when
+  // the sandbox is not running (or the engine is unreachable) and RangeError for a port outside LOOPBACK_PORTS, also at run time.
+  loopback?: { open(id: SandboxId, port: LoopbackPort): Promise<ByteStream> };
+  // Carries the daemon API, the egress proxies and the workspace bundle. Docker realises each channel as its existing named unix socket.
+  connect?: { open(id: SandboxId, channel: SandboxChannel): Promise<ByteChannel> };
+  files?: {
+    // Path is sandbox-absolute; body is a tar stream; the adapter verifies sha256 end to end and throws SandboxTransferError on
+    // mismatch or partial upload. Idempotent by key.
+    put(id: SandboxId, path: string, body: AsyncIterable<Uint8Array>, sha256: string, idempotencyKey: string): Promise<void>;
+    get(id: SandboxId, path: string, maxBytes: number): Promise<{ body: AsyncIterable<Uint8Array>; sha256: Promise<string> }>;
+  };
+  snapshots?: {
+    create(id: SandboxId, opts: { memory: boolean }, idempotencyKey: string): Promise<SnapshotRef>;
+    start(from: SnapshotRef, spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle>; // also "fork" when called twice with distinct keys
+    remove(ref: SnapshotRef, idempotencyKey: string): Promise<void>;
+  };
+  lease?: { extend(id: SandboxId, untilMs: number, idempotencyKey: string): Promise<{ untilMs: number }> };
+  pause?: {
+    pause(id: SandboxId, idempotencyKey: string): Promise<void>;
+    resume(id: SandboxId, idempotencyKey: string): Promise<void>;
+  };
+  // image.template: build the provider-side template for an image; returns the provider artifact ref recorded as a derived
+  // ImageArtifact keyed by configDigest.
+  images?: { prepare(ref: string, identity: ImageIdentity, idempotencyKey: string): Promise<{ providerImage: string }> };
+}
+
+export interface Sandbox extends SandboxFacets {
+  // Static, exhaustive and readable offline; the daemon admits or refuses the backend from it (admitBackend).
+  readonly declaration: SandboxDeclaration;
+  // Readiness and runtime narrowing for an optional template runtime block. A probe may only narrow the declaration (checkProbe).
+  probe?(runtime?: SandboxSpec["runtime"]): Promise<ProbeResult>;
   // Inspect or, only after explicit approval, commit remaining workspace changes and return a
   // bundle for the controller's normal quarantined ingest. Git runs inside the sandbox only.
   // A changed fingerprint returns the current state without mutation or a bundle.
@@ -432,36 +542,32 @@ export interface Sandbox {
   // When spec.egress is present the adapter MUST default-deny all network except
   // egress.allow and MUST throw if it cannot enforce it. Idempotent by key: repeating
   // the same key returns the same handle without starting a second container.
+  // Throws SandboxOutcomeUnknownError when the create times out with no reply.
   start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle>;
   // Re-adopt an existing live container (by sandbox id) after a daemon restart, so a
   // restarted daemon can finish/drain a checkpoint-less agent. output() derives from the
   // container's logs and wait() from its exit. Throws SandboxUnavailableError when the
   // container is not running.
   attach(id: SandboxId, agent: AgentId): Promise<SandboxHandle>;
-  // Attach a terminal stream to a running sandbox that was started with SandboxSpec.tty. Throws
-  // SandboxUnavailableError when the sandbox is not running (or the engine is unreachable).
-  // `size` resizes the pty right after attaching (and seeds redraw()).
-  openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession>;
-  // Open a byte stream to `port` on the running sandbox's loopback. Throws SandboxUnavailableError when the sandbox is not
-  // running (or the engine is unreachable) and RangeError for a port outside LOOPBACK_PORTS, also at run time.
-  openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream>;
-  stop(id: SandboxId, graceMs: number): Promise<void>;
-  kill(id: SandboxId): Promise<void>;
+  // "Already gone" is success; the key only deduplicates journaling.
+  stop(id: SandboxId, graceMs: number, idempotencyKey: string): Promise<void>;
+  kill(id: SandboxId, idempotencyKey: string): Promise<void>;
   // `status` (optional) is the container runtime's own state string (Docker: created, running, paused, restarting, removing,
   // exited, dead); a sandbox whose exit the adapter observed before it was removed reports "exited". `running: false` alone
   // does not tell a created container from an exited one, so a consumer deciding whether a container holds memory must
   // treat an absent or unrecognized status as "may hold memory". null = no such sandbox.
   inspect(id: SandboxId): Promise<{ running: boolean; exitCode: number | null; oomKilled?: boolean; status?: string } | null>;
-  // Used by startup reconciliation. `labels` echoes SandboxSpec.labels (omitted when none).
-  list(): Promise<{ id: SandboxId; agent: AgentId; labels?: Record<string, string> }[]>;
-  // Reclaim egress proxies/socket volumes whose sandbox container no longer exists (a crash
-  // between egress setup and `run`). Only resources owned by this daemon (its store id, an epoch not newer than its own)
-  // are candidates; another daemon's, an unlabelled one, or an adapter with no owner configured is left alone.
+  // Used by startup reconciliation: the sandboxes this owner's daemon may have created, with host and generation so reconcile can
+  // fence by generation. Required on every backend; `list.byTag` only means the filter runs server-side.
+  list(owner: SandboxOwner): Promise<SandboxListing[]>;
+  // Reclaim any adapter-side resource this daemon owns that no live sandbox uses (Docker: egress proxies/socket volumes whose
+  // sandbox container no longer exists, a crash between egress setup and `run`; hosted: orphaned volumes, snapshots or templates).
+  // Only resources owned by `owner` (its store id, an epoch not newer than its own) are candidates; another daemon's, an unlabelled
+  // one, or an adapter with no owner configured is left alone.
   // Returns the reclaimed sandbox ids. Call at startup, before spawns begin (it cannot tell an orphan from a start in flight).
-  reclaimEgressOrphans(): Promise<SandboxId[]>;
-  // Resolve an image reference (tag or digest) to its canonical repo digest
-  // (e.g. "repo@sha256:..."). Used so a checkpoint records the exact image.
-  resolveImageDigest(image: string): Promise<string>;
+  reclaim(owner: SandboxOwner): Promise<SandboxId[]>;
+  // Resolve an image reference (tag or digest) to its canonical identity, so a checkpoint records the exact image.
+  imageIdentity(ref: string): Promise<ImageIdentity>;
 }
 
 // Why an ingest was refused. The mirror is untouched on every failure.

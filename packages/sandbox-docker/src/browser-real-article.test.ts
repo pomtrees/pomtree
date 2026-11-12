@@ -171,7 +171,7 @@ test("scripted Pi browser_capture reads a real public article through the audite
 
     // Vacuum path from a spool the real proxy wrote: stop the sandbox (the proxy is gone, the spool is marked closed), ingest the
     // whole spool page by page as pomtreed does (read with the journaled head, then ack), and vacuum it.
-    await sb.kill(h.id);
+    await sb.kill(h.id, `test-kill:${h.id}`);
     const all: EgressAuditRecord[] = [];
     for (;;) {
       const last = all.at(-1);
@@ -194,7 +194,7 @@ test("scripted Pi browser_capture reads a real public article through the audite
     assert.equal(disk.vacuum(candidate), true);
     assert.deepEqual(await disk.discover(), [], "the vacuumed spool is no longer discovered");
   } finally {
-    await sb.kill(h.id).catch(() => {});
+    await sb.kill(h.id, `test-kill:${h.id}`).catch(() => {});
     server.closeAllConnections();
     server.close();
     rmSync(root, { recursive: true, force: true });

@@ -12,6 +12,7 @@ import { isStoreDown, journalFailed, spawnedPayload } from "../daemon-util.ts";
 import { isDone } from "../lifecycle.ts";
 import { DEADLINE_KIND, QUARANTINED_KIND } from "../watchdog.ts";
 import type { Budget } from "./budget.ts";
+import { sandboxOpKey, sandboxOwner } from "./sandbox-ops.ts";
 import type { DaemonCtx } from "./ctx.ts";
 import type { Escalation } from "./escalation.ts";
 import type { Tree } from "./tree.ts";
@@ -595,7 +596,7 @@ export class Reconcile {
     }
     let listed: Awaited<ReturnType<Sandbox["list"]>>;
     try {
-      listed = await d.sandbox.list();
+      listed = await d.sandbox.list(sandboxOwner(d, this.epoch));
     } catch (e) {
       if (e instanceof SandboxUnavailableError) {
         this.strays.clear();
@@ -643,7 +644,7 @@ export class Reconcile {
   async reconcileSandboxes() {
     let listed: Awaited<ReturnType<Sandbox["list"]>>;
     try {
-      listed = await this.ctx.deps.sandbox.list();
+      listed = await this.ctx.deps.sandbox.list(sandboxOwner(this.ctx.deps, this.epoch));
     } catch (e) {
       if (e instanceof SandboxUnavailableError) {
         await this.ctx.hub.store.markSandboxDown();
@@ -677,14 +678,14 @@ export class Reconcile {
       // Safe only while spawn writes the registry row before sandbox.start; reordering would make this kill race spawn.
       const r = await this.ctx.deps.registry.get(s.agent);
       if (!r) {
-        await this.ctx.deps.sandbox.kill(s.id).catch(() => {});
+        await this.ctx.deps.sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
         continue;
       }
       if (r.state === "running" && r.host === this.ctx.deps.hostId) {
         if (r.sandbox === s.id) continue; // already adopted
         if (r.sandbox !== null) {
           // A second container labelled for an already-adopted agent is superseded; keep the registry's sandbox.
-          await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs).catch(() => {});
+          await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
         } else {
           // Links the live container's sandbox id into the registry; reconcile() then re-adopts it via
           // Sandbox.attach (see adoptRunning) so a checkpoint-less running agent survives the restart.
@@ -694,8 +695,8 @@ export class Reconcile {
         }
         continue;
       }
-      if (r.host !== this.ctx.deps.hostId) await this.ctx.deps.sandbox.kill(s.id).catch(() => {});
-      else await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs).catch(() => {});
+      if (r.host !== this.ctx.deps.hostId) await this.ctx.deps.sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
+      else await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
       if (r.sandbox === s.id)
         await this.ctx.deps.registry
           .setSandbox(r.id, r.generation, null, `${r.id}:${r.generation}:reconcile-clear`)
@@ -716,7 +717,7 @@ export class Reconcile {
     if (this.egressReclaimed) return;
     this.egressReclaimed = true;
     await this.ctx.deps.sandbox
-      .reclaimEgressOrphans()
+      .reclaim(sandboxOwner(this.ctx.deps, this.epoch))
       .catch((e) => console.error(`pomtreed: egress orphan reclaim failed: ${e instanceof Error ? e.message : String(e)}`));
   }
 
@@ -758,7 +759,9 @@ export class Reconcile {
   async reclaimSandbox(r: AgentRecord, force = false) {
     if (!r.sandbox) return;
     const d = this.ctx.deps;
-    await (force ? d.sandbox.kill(r.sandbox) : d.sandbox.stop(r.sandbox, d.graceMs)).catch(() => {});
+    await (force ? d.sandbox.kill(r.sandbox, sandboxOpKey("kill", r.sandbox)) : d.sandbox.stop(r.sandbox, d.graceMs, sandboxOpKey("stop", r.sandbox))).catch(
+      () => {},
+    );
     await d.registry.setSandbox(r.id, r.generation, null, `${r.id}:${r.generation}:reclaim`).catch(journalFailed(this.ctx.record, r, "reclaim"));
   }
 }

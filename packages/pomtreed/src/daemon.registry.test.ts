@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SandboxSpec } from "@pomtree/core";
-import { get, setup, spawnSpec, until } from "./test-setup.ts";
+import { TEST_OWNER, get, setup, spawnSpec, until } from "./test-setup.ts";
 import type { Ctx } from "./test-setup.ts";
 
 const child = (c: Ctx, task: string, key = "c1", extra: object = {}) => c.api("POST", "/v1/agents", { task, idempotencyKey: key, ...extra });
@@ -21,9 +21,10 @@ test("the sandbox id is recorded in the registry while running and cleared at ex
   });
   const a = await t.spawn();
   await t.orchestrator.idle();
-  const started = (await t.fakes.sandbox.list()).concat(
-    t.fakes.calls.filter((x) => x.method === "stop").map((x) => ({ id: x.args[0] as string, agent: a.id })),
-  );
+  const started = [
+    ...(await t.fakes.sandbox.list(TEST_OWNER)).map((s) => ({ id: s.id as string })),
+    ...t.fakes.calls.filter((x) => x.method === "stop").map((x) => ({ id: x.args[0] as string })),
+  ];
   assert.ok(during, "registry carries the sandbox id while the agent runs");
   assert.ok(started.some((s) => s.id === during));
   assert.equal((await get(t, a.id)).sandbox, null);

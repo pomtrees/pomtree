@@ -11,7 +11,7 @@ export const CLI_POMTREE_MAIN = "/opt/pomtree/pomtree/src/main.ts";
 export const PROXY_ENV_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY"] as const;
 // Chromium's loopback DevTools port.
 export const CDP_PORT = 9222;
-// The in-image loopback bridge (node, argv: one port) that Sandbox.openLoopbackStream execs, and the only ports it may open.
+// The in-image loopback bridge (node, argv: one port) that the loopback facet execs, and the only ports it may open.
 export const LOOPBACK_BRIDGE_MAIN = "/opt/pomtree/loopback-bridge.ts";
 export const LOOPBACK_PORTS = [CDP_PORT] as const;
 // How long one in-image `pomtree` call (capture publish, finish) may run.

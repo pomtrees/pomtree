@@ -29,6 +29,7 @@ import { until as pollUntil } from "@pomtree/testing";
 import { DirReportStore } from "@pomtree/report-dir";
 import { demoWorkspace } from "./demo-workspace.ts";
 import { startLiveModel } from "../live-model.ts";
+import { sandboxOpKey, sandboxOwner } from "../../../pomtreed/src/daemon/sandbox-ops.ts";
 import { listenAgentEndpoint } from "./agent-endpoint.ts";
 
 const env = process.env;
@@ -183,7 +184,7 @@ const remaining = async (id: string) => daemon.remainingMicros(await get(id));
 const evs = async (id?: string) => (await daemon.events(id ? { agent: id } : {})).map((e) => ({ seq: e.seq, p: e.payload as P }));
 const kindsOf = async (id: string) => (await evs(id)).map((e) => e.p.kind);
 const inbox = async (id: string) => ((await store.mailbox.peek(id)) as unknown as Sig[]).filter((s) => s.kind === "escalation");
-const containersOf = async (id: string) => (await sandbox.list()).filter((s) => s.agent === id).map((s) => s.id);
+const containersOf = async (id: string) => (await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch))).filter((s) => s.agent === id).map((s) => s.id);
 const userAsk = async (c: string) =>
   (await evs()).find((e) => e.p.kind === "message_sent" && e.p.purpose === "ask" && e.p.channel === "ui" && String(e.p.subject).includes(c));
 // Act as an ancestor agent through the HTTP API with its own agent-scoped token (what `pomtree decide|answer|pass` does).
@@ -510,9 +511,9 @@ try {
   console.error(`escalation-chain demo failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
   console.error(`temp dir: ${tempDir}`);
 } finally {
-  const left = await sandbox.list().catch(() => []);
+  const left = await sandbox.list(sandboxOwner(daemon.deps, daemon.epoch)).catch(() => []);
   check("no containers left at the end", left.length === 0, `${left.length} left (killing)`);
-  for (const s of left) await sandbox.kill(s.id).catch(() => {});
+  for (const s of left) await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
   for (const w of await workspace.list().catch(() => [])) await workspace.evict(w).catch(() => {});
   await live.close().catch(() => {});
   store.close();

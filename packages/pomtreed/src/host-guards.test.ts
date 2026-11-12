@@ -4,6 +4,7 @@ import { writeFileSync, chmodSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FakeSandbox, tmpDir } from "@pomtree/testing";
 import { memoryGate, memoryHolders, looseMode, writeSecretFile, pinnedAgentPort } from "./host-guards.ts";
+import { TEST_OWNER } from "./test-setup.ts";
 
 test("memoryGate refuses a container that would exceed the reservation", () => {
   const G = 1024 ** 3;
@@ -12,19 +13,19 @@ test("memoryGate refuses a container that would exceed the reservation", () => {
 });
 
 const spec = (agent: string) => ({ agent, image: "i", env: {}, mounts: [] });
-const holders = async (sb: FakeSandbox) => memoryHolders(await sb.list(), (id) => sb.inspect(id));
+const holders = async (sb: FakeSandbox) => memoryHolders(await sb.list(TEST_OWNER), (id) => sb.inspect(id));
 
 test("memoryHolders: a held exited child does not reserve memory, so it does not block admission", async () => {
   const G = 1024 ** 3;
   const sb = new FakeSandbox();
   const parent = await sb.start(spec("parent"), "k1");
   for (const [i, kid] of ["kid-1", "kid-2", "kid-3"].entries()) sb.exit((await sb.start(spec(kid), `k-kid${i}`)).id, 0);
-  assert.equal((await sb.list()).length, 4, "docker ps -a still lists the exited, unreaped children");
+  assert.equal((await sb.list(TEST_OWNER)).length, 4, "docker ps -a still lists the exited, unreaped children");
   assert.equal(await holders(sb), 1);
   assert.ok((await sb.inspect(parent.id))?.running);
   // The hosted runner's limit: four listed containers would be refused, one running container is admitted.
   const limit = { perContainerBytes: 2 * G, totalBytes: 7485331046 / 0.9, fraction: 0.9 };
-  assert.equal(memoryGate({ running: (await sb.list()).length, ...limit }).ok, false);
+  assert.equal(memoryGate({ running: (await sb.list(TEST_OWNER)).length, ...limit }).ok, false);
   assert.equal(memoryGate({ running: await holders(sb), ...limit }).ok, true);
 });
 
@@ -78,7 +79,7 @@ test("memoryHolders negative control: a created container that a running-only co
   sb.statuses.set(starting.id, "created");
   assert.equal((await sb.inspect(starting.id))?.running, false, "the created container reads as not running");
   const limit = { perContainerBytes: 2 * G, totalBytes: 7485331046 / 0.9, fraction: 0.9 }; // 3 containers fit
-  const runningOnly = (await Promise.all((await sb.list()).map(async (c) => (await sb.inspect(c.id))?.running))).filter(Boolean).length;
+  const runningOnly = (await Promise.all((await sb.list(TEST_OWNER)).map(async (c) => (await sb.inspect(c.id))?.running))).filter(Boolean).length;
   assert.equal(memoryGate({ running: runningOnly, ...limit }).ok, true, "a running-only count would admit a 4th container");
   assert.equal(memoryGate({ running: await holders(sb), ...limit }).ok, false, "memoryHolders counts the created one and refuses");
 });

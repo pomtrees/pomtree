@@ -69,9 +69,16 @@ import type {
   Report,
   ReportId,
   ReportStore,
+  ImageIdentity,
+  ProbeResult,
   Sandbox,
+  SandboxCapability,
+  SandboxDeclaration,
+  SandboxFacets,
   SandboxHandle,
   SandboxId,
+  SandboxListing,
+  SandboxOwner,
   SandboxSpec,
   ByteStream,
   LoopbackPort,
@@ -152,6 +159,10 @@ import {
   rungsAbove,
   sameMergeRequest,
   SandboxUnavailableError,
+  SANDBOX_CAPABILITIES,
+  FACET_OF,
+  checkProbe,
+  validateDeclaration,
   STATE_LIMITS_DEFAULT,
   StaleGenerationError,
   StateError,
@@ -180,6 +191,7 @@ export interface Script {
   harnessEvents?: Record<AgentId, HarnessEvent[]>;
   sandboxExitCodes?: number[]; // consumed in order, default 0
   sandboxStop?: SandboxStop; // FakeSandbox.stop() exit semantics; default "graceful" (exit 0)
+  sandboxOptions?: FakeSandboxOptions; // declaration overrides, facets and probe for FakeSandbox
   placement?: (req: {
     agent: AgentId;
     priority: number;
@@ -1423,6 +1435,55 @@ export class FakeByteStream implements ByteStream {
   }
 }
 
+// The fake's default declaration: backend "fake", terminal and loopback on, everything that needs a facet (snapshots, pause, lease, images,
+// connect, files) off. It declares the non-facet behaviour the fake already has: host mounts, OCI pulls, digest attestation,
+// egress and reach, secrets and limits.
+const FAKE_SANDBOX_TRUE: readonly SandboxCapability[] = [
+  "terminal",
+  "loopback",
+  "mounts.host",
+  "image.ociPull",
+  "image.digestAttest",
+  "egress.denyAll",
+  "egress.allowHost",
+  "egress.allowCidr",
+  "reach.outbound",
+  "secrets.env",
+  "resources.limits",
+];
+
+export function fakeSandboxDeclaration(overrides: FakeSandboxDeclaration = {}): SandboxDeclaration {
+  const capabilities = Object.fromEntries(SANDBOX_CAPABILITIES.map((c) => [c, FAKE_SANDBOX_TRUE.includes(c)])) as Record<SandboxCapability, boolean>;
+  const { capabilities: caps, ...rest } = overrides;
+  return {
+    backend: "fake",
+    region: null,
+    idempotency: "unique-name",
+    idempotencyWindowMs: null,
+    tagging: "metadata",
+    output: "stream",
+    maxLifetimeMs: null,
+    preemptible: false,
+    billing: { unit: "none", whileStopped: false, whilePaused: false },
+    ...rest,
+    capabilities: { ...capabilities, ...caps },
+  };
+}
+
+export type FakeSandboxDeclaration = Partial<Omit<SandboxDeclaration, "capabilities">> & {
+  capabilities?: Partial<Record<SandboxCapability, boolean>>;
+};
+
+export interface FakeSandboxOptions {
+  // Overrides merged onto the default declaration (capabilities merge key by key).
+  declaration?: FakeSandboxDeclaration;
+  // Facets merged onto the default ({ terminal, loopback }); an explicit `undefined` value omits that facet, so a test can build a fake that
+  // declares a capability without its facet or the reverse. Any facet given here is the test's own object.
+  facets?: { [K in keyof SandboxFacets]?: SandboxFacets[K] | undefined };
+  // Makes probe() present and return this result (a copy); `probeResult` stays settable. Absent = the fake has no probe.
+  probe?: ProbeResult;
+}
+
 export class FakeSandbox implements Sandbox {
   resultWorkResults: ({ dirty: boolean; fingerprint: string; bundle?: AsyncIterable<Uint8Array> } | Error)[] = [];
   // Every resultWork call in order, with a copy of its opts (maxBytes included), recorded before the availability check.
@@ -1436,8 +1497,26 @@ export class FakeSandbox implements Sandbox {
     return result ?? { dirty: false, fingerprint: "clean" };
   }
   exitCodes: number[];
-  // Scriptable image -> resolved digest; defaults to `${image}@sha256:fake`.
-  imageDigests = new Map<string, string>();
+  // Scriptable image ref -> engineLocalId reported by imageIdentity(); defaults to `${ref}@sha256:fake`.
+  engineLocalIds = new Map<string, string>();
+  readonly declaration: SandboxDeclaration;
+  terminal?: SandboxFacets["terminal"];
+  connect?: SandboxFacets["connect"];
+  loopback?: SandboxFacets["loopback"];
+  files?: SandboxFacets["files"];
+  snapshots?: SandboxFacets["snapshots"];
+  lease?: SandboxFacets["lease"];
+  pause?: SandboxFacets["pause"];
+  images?: SandboxFacets["images"];
+  // Present only when constructed with options.probe; every call's runtime block argument is recorded.
+  probe?: Sandbox["probe"];
+  probeResult: ProbeResult | undefined;
+  probeCalls: (SandboxSpec["runtime"] | undefined)[] = [];
+  // Owners passed to list() and reclaim(), in call order.
+  listOwners: SandboxOwner[] = [];
+  // stop() and kill() calls with the idempotency key, in call order.
+  stopCalls: { id: SandboxId; graceMs: number; idempotencyKey: string }[] = [];
+  killCalls: { id: SandboxId; idempotencyKey: string }[] = [];
   // stop() exit semantics: "graceful" (handled SIGTERM -> 0), "sigterm" (default SIGTERM
   // handler -> 143), "sigkill" (ignored SIGTERM -> SIGKILL after graceMs -> 137).
   stopPolicy: SandboxStop;
@@ -1459,20 +1538,60 @@ export class FakeSandbox implements Sandbox {
   // Scripted wait() failures by sandbox id: wait() on a handle from start() or attach() rejects with the entry instead of
   // resolving at exit. Absent (the default) keeps the exit-resolving behavior.
   waitErrors = new Map<SandboxId, Error>();
-  // Terminals opened via openTerminal, per sandbox id, in open order. They end ("remote") when the sandbox exits.
+  // Terminals opened via terminal.open, per sandbox id, in open order. They end ("remote") when the sandbox exits.
   terminals = new Map<SandboxId, FakeTerminal[]>();
-  // Loopback streams opened via openLoopbackStream, per sandbox id, in open order. They end ("remote") when the sandbox exits.
+  // Loopback streams opened via loopback.open, per sandbox id, in open order. They end ("remote") when the sandbox exits.
   loopbackStreams = new Map<SandboxId, FakeByteStream[]>();
-  // Every openLoopbackStream call in order, recorded before any check.
+  // Every loopback.open call in order, recorded before any check.
   loopbackCalls: { id: SandboxId; port: number }[] = [];
-  // Scripted openLoopbackStream failures, consumed in order (one per call that passed the port and availability checks); an
+  // Scripted loopback.open failures, consumed in order (one per call that passed the port and availability checks); an
   // entry of null lets that call succeed.
   loopbackErrors: (Error | null)[] = [];
   private n = 0;
   private startKeys = new Map<string, SandboxHandle>();
-  constructor(exitCodes: number[] = [], stopPolicy: SandboxStop = "graceful") {
+  constructor(exitCodes: number[] = [], stopPolicy: SandboxStop = "graceful", options: FakeSandboxOptions = {}) {
     this.exitCodes = [...exitCodes];
     this.stopPolicy = stopPolicy;
+    this.declaration = fakeSandboxDeclaration(options.declaration);
+    const facets: { [K in keyof SandboxFacets]?: SandboxFacets[K] | undefined } = {
+      terminal: {
+        open: async (id, size): Promise<TerminalSession> => {
+          const s = this.running.get(id);
+          if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
+          const t = new FakeTerminal(size);
+          this.terminals.set(id, [...(this.terminals.get(id) ?? []), t]);
+          void s.done.then(() => t.end());
+          return t;
+        },
+      },
+      loopback: {
+        open: async (id, port): Promise<ByteStream> => {
+          this.loopbackCalls.push({ id, port });
+          if (!(LOOPBACK_PORTS as readonly number[]).includes(port)) throw new RangeError(`loopback port ${port} is not in LOOPBACK_PORTS`);
+          const s = this.running.get(id);
+          if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
+          if (this.loopbackErrors.length > 0) {
+            const err = this.loopbackErrors.shift();
+            if (err) throw err;
+          }
+          const b = new FakeByteStream();
+          this.loopbackStreams.set(id, [...(this.loopbackStreams.get(id) ?? []), b]);
+          void s.done.then(() => b.end());
+          return b;
+        },
+      },
+      ...options.facets,
+    };
+    for (const k of Object.keys(facets) as (keyof SandboxFacets)[]) {
+      if (facets[k] !== undefined) Object.assign(this, { [k]: facets[k] });
+    }
+    this.probeResult = options.probe;
+    if (options.probe !== undefined) {
+      this.probe = async (runtime) => {
+        this.probeCalls.push(runtime);
+        return structuredClone(this.probeResult ?? { withheld: [], problems: [], account: null });
+      };
+    }
   }
   async start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle> {
     const prior = this.startKeys.get(idempotencyKey);
@@ -1522,28 +1641,6 @@ export class FakeSandbox implements Sandbox {
     const err = this.waitErrors.get(id);
     return err ? Promise.reject(err) : done;
   }
-  async openTerminal(id: SandboxId, size?: { cols: number; rows: number }): Promise<TerminalSession> {
-    const s = this.running.get(id);
-    if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
-    const t = new FakeTerminal(size);
-    this.terminals.set(id, [...(this.terminals.get(id) ?? []), t]);
-    void s.done.then(() => t.end());
-    return t;
-  }
-  async openLoopbackStream(id: SandboxId, port: LoopbackPort): Promise<ByteStream> {
-    this.loopbackCalls.push({ id, port });
-    if (!(LOOPBACK_PORTS as readonly number[]).includes(port)) throw new RangeError(`loopback port ${port} is not in LOOPBACK_PORTS`);
-    const s = this.running.get(id);
-    if (!s || s.exitCode !== null) throw new SandboxUnavailableError();
-    if (this.loopbackErrors.length > 0) {
-      const err = this.loopbackErrors.shift();
-      if (err) throw err;
-    }
-    const b = new FakeByteStream();
-    this.loopbackStreams.set(id, [...(this.loopbackStreams.get(id) ?? []), b]);
-    void s.done.then(() => b.end());
-    return b;
-  }
   // Test hook: end a sandbox that has no scripted exit code; oomKilled marks an OOM exit.
   exit(id: SandboxId, code: number, oomKilled = false) {
     const s = this.running.get(id);
@@ -1552,7 +1649,8 @@ export class FakeSandbox implements Sandbox {
       s.finish(code);
     }
   }
-  async stop(id: SandboxId, graceMs: number): Promise<void> {
+  async stop(id: SandboxId, graceMs: number, idempotencyKey: string): Promise<void> {
+    this.stopCalls.push({ id, graceMs, idempotencyKey });
     const s = this.running.get(id);
     if (!s || s.exitCode !== null) return; // unknown or already-exited: Docker's stop is a no-op
     if (this.stopPolicy === "graceful") s.finish(0);
@@ -1568,7 +1666,8 @@ export class FakeSandbox implements Sandbox {
         ),
       );
   }
-  async kill(id: SandboxId): Promise<void> {
+  async kill(id: SandboxId, idempotencyKey: string): Promise<void> {
+    this.killCalls.push({ id, idempotencyKey });
     const s = this.running.get(id);
     if (!s || s.exitCode !== null) return;
     s.finish(137);
@@ -1593,18 +1692,57 @@ export class FakeSandbox implements Sandbox {
         : s.exitCode === null;
     return { running, exitCode: running ? null : s.exitCode, ...(s.oomKilled ? { oomKilled: true } : {}), ...(status !== null ? { status } : {}) };
   }
-  async resolveImageDigest(image: string): Promise<string> {
-    return this.imageDigests.get(image) ?? `${image}@sha256:fake`;
+  // engineLocalId is the scripted value or `${ref}@sha256:fake`; configDigest is the sha256 of the ref; revision is null.
+  async imageIdentity(ref: string): Promise<ImageIdentity> {
+    return {
+      configDigest: `sha256:${createHash("sha256").update(ref).digest("hex")}`,
+      revision: null,
+      engineLocalId: this.engineLocalIds.get(ref) ?? `${ref}@sha256:fake`,
+    };
   }
-  // `docker ps -a` lists exited containers too, so the fake keeps self-exited sandboxes.
-  async list() {
-    return [...this.running].map(([id, s]) => ({ id, agent: s.agent, ...(s.labels ? { labels: { ...s.labels } } : {}) }));
+  // `docker ps -a` lists exited containers too, so the fake keeps self-exited sandboxes. The fake cannot stamp pomtree tags
+  // (reserved label names are refused), so host and generation are null, which a real daemon reads as foreign.
+  async list(owner: SandboxOwner): Promise<SandboxListing[]> {
+    this.listOwners.push({ ...owner });
+    return [...this.running]
+      .filter(([, s]) => {
+        // Same exclusion rule as DockerSandbox.list: a store_id label other than the owner's, or a daemon_epoch label newer
+        // than the owner's, marks a sandbox someone else owns; unlabelled sandboxes are included.
+        const store = s.labels?.store_id;
+        if (store !== undefined && store !== owner.storeId) return false;
+        const epoch = Number(s.labels?.daemon_epoch);
+        return !(Number.isFinite(epoch) && epoch > owner.epoch);
+      })
+      .map(([id, s]) => {
+        const status = this.statuses.get(id);
+        const state: SandboxListing["state"] =
+          status === "paused"
+            ? "paused"
+            : status === "created"
+              ? "creating"
+              : s.exitCode !== null
+                ? "exited"
+                : status === undefined || status === "running"
+                  ? "running"
+                  : "unknown";
+        return {
+          id,
+          agent: s.agent,
+          backend: this.declaration.backend,
+          host: null,
+          generation: null,
+          state,
+          ...(s.labels ? { labels: { ...s.labels } } : {}),
+        };
+      });
   }
-  // Scripted: the sandbox ids the next reclaimEgressOrphans() reports as reclaimed (the fake owns no egress proxies).
+  // Scripted: the sandbox ids the next reclaim() reports as reclaimed (the fake owns no adapter-side resources).
   egressOrphans: SandboxId[] = [];
   reclaimEgressCalls = 0;
-  async reclaimEgressOrphans(): Promise<SandboxId[]> {
+  reclaimOwners: SandboxOwner[] = [];
+  async reclaim(owner: SandboxOwner): Promise<SandboxId[]> {
     this.reclaimEgressCalls++;
+    this.reclaimOwners.push({ ...owner });
     return this.egressOrphans.splice(0);
   }
 }
@@ -2845,7 +2983,7 @@ export function createFakes(script: Script = {}): Fakes {
     state: new FakeStateStore(now, registry, script.stateLimits),
     reportStore: new FakeReportStore(now, registry),
     templates: new FakeTemplateStore(script.templates ?? []),
-    sandbox: new FakeSandbox(script.sandboxExitCodes, script.sandboxStop),
+    sandbox: new FakeSandbox(script.sandboxExitCodes, script.sandboxStop, script.sandboxOptions),
     harness: new FakeHarness(script.harnessEvents),
     orchestrator: new FakeOrchestrator(),
     workspace: new FakeWorkspace(),
@@ -3095,8 +3233,32 @@ export interface SandboxContractWorld {
   cmd?: string[];
 }
 
-// Sandbox port contract: start/list/attach/wait/inspect/kill/resolveImageDigest. The body is
+// Sandbox port contract: start/list/attach/wait/inspect/kill/imageIdentity, facet presence and the probe subset rule. The body is
 // adapter-agnostic; run it with `contract("Sandbox", { fake, real? })`.
+const CONTRACT_OWNER: SandboxOwner = { host: "host-contract", storeId: "store-contract", epoch: 1 };
+
+// Contract case 1: a facet is present iff at least one capability mapped to it by FACET_OF is declared true.
+export function assertFacetPresence(s: Sandbox): void {
+  assert.deepEqual(validateDeclaration(s.declaration), [], "the declaration must be valid");
+  const facets = new Set(Object.values(FACET_OF));
+  for (const facet of facets) {
+    const declared = (Object.keys(FACET_OF) as (keyof typeof FACET_OF)[]).filter((c) => FACET_OF[c] === facet && s.declaration.capabilities[c] === true);
+    const present = s[facet] !== undefined && s[facet] !== null;
+    assert.equal(
+      present,
+      declared.length > 0,
+      `facet ${facet} is ${present ? "present" : "absent"} but capabilities [${declared.join(", ")}] are declared true`,
+    );
+  }
+}
+
+// Contract case 2: a probe result only narrows the declaration, with and without a runtime block. A backend with no probe passes.
+export async function assertProbeSubset(s: Sandbox): Promise<void> {
+  if (s.probe === undefined) return;
+  checkProbe(s.declaration, await s.probe());
+  checkProbe(s.declaration, await s.probe({ ociRuntime: "runsc" }));
+}
+
 export async function sandboxContractBody(w: SandboxContractWorld): Promise<void> {
   const s = w.sandbox;
   const image = w.imageRef ?? "i";
@@ -3113,7 +3275,9 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
   assert.deepEqual(await s.inspect(h.id), { running: true, exitCode: null, status: "running" });
   // Idempotent by key: a repeated start re-adopts the same sandbox instead of starting a second.
   assert.equal((await s.start(spec, "sb-contract")).id, h.id);
-  assert.equal((await s.list()).filter((x) => x.id === h.id).length, 1);
+  assertFacetPresence(s);
+  await assertProbeSubset(s);
+  assert.equal((await s.list(CONTRACT_OWNER)).filter((x) => x.id === h.id).length, 1);
   // Negative: a label name that is malformed or reserved ("pomtree" prefix) is rejected before anything starts.
   for (const bad of ["pomtree.owner", "has space", ""]) {
     await assert.rejects(
@@ -3121,18 +3285,28 @@ export async function sandboxContractBody(w: SandboxContractWorld): Promise<void
       `label ${JSON.stringify(bad)} must be rejected`,
     );
   }
-  assert.ok(!(await s.list()).some((x) => x.agent === "c"));
-  const listed = await s.list();
+  assert.ok(!(await s.list(CONTRACT_OWNER)).some((x) => x.agent === "c"));
+  const listed = await s.list(CONTRACT_OWNER);
   assert.ok(listed.some((x) => x.id === h.id && x.agent === "a" && x.labels === undefined));
-  const hl = await s.start({ ...spec, agent: "b", labels: { daemon_epoch: "e1", store_id: "s1" } }, "sb-contract-labels");
-  assert.deepEqual((await s.list()).find((x) => x.id === hl.id)?.labels, { daemon_epoch: "e1", store_id: "s1" });
-  await s.kill(hl.id);
-  assert.ok((await s.resolveImageDigest(image)).length > 0);
+  const hl = await s.start(
+    { ...spec, agent: "b", labels: { daemon_epoch: String(CONTRACT_OWNER.epoch), store_id: CONTRACT_OWNER.storeId } },
+    "sb-contract-labels",
+  );
+  assert.deepEqual((await s.list(CONTRACT_OWNER)).find((x) => x.id === hl.id)?.labels, {
+    daemon_epoch: String(CONTRACT_OWNER.epoch),
+    store_id: CONTRACT_OWNER.storeId,
+  });
+  await s.kill(hl.id, "sb-contract-kill-labels");
+  const identity = await s.imageIdentity(image);
+  assert.ok(identity.engineLocalId.length > 0, "imageIdentity reports a non-empty engine-local id");
+  assert.ok(identity.configDigest === null || /^sha256:[0-9a-f]{64}$/.test(identity.configDigest), "configDigest is null or sha256:<hex>");
   await assert.rejects(() => s.attach("no-such-id", "a"), SandboxUnavailableError);
-  await assert.rejects(() => s.openTerminal("no-such-id"), SandboxUnavailableError);
-  await assert.rejects(() => s.openLoopbackStream("no-such-id", LOOPBACK_PORTS[0]), SandboxUnavailableError);
-  await assert.rejects(() => s.openLoopbackStream(h.id, 1 as LoopbackPort), RangeError);
-  await s.kill(h.id);
+  if (s.terminal) await assert.rejects(() => s.terminal!.open("no-such-id"), SandboxUnavailableError);
+  if (s.loopback) {
+    await assert.rejects(() => s.loopback!.open("no-such-id", LOOPBACK_PORTS[0]), SandboxUnavailableError);
+    await assert.rejects(() => s.loopback!.open(h.id, 1 as LoopbackPort), RangeError);
+  }
+  await s.kill(h.id, "sb-contract-kill");
   assert.deepEqual(await h.wait(), { exitCode: 137 });
   // Exited (and, after an observed exit, removed) sandboxes report "exited", which the memory gate does not count.
   assert.deepEqual(await s.inspect(h.id), { running: false, exitCode: 137, status: "exited" });

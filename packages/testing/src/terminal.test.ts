@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { LOOPBACK_PORTS, SandboxUnavailableError, type LoopbackPort } from "@pomtree/core";
 import { createFakes, FakeByteStream } from "./index.ts";
 
-test("FakeSandbox.openTerminal: records writes/resizes/closes, scripted output, ends on sandbox exit", async () => {
+test("FakeSandbox terminal.open: records writes/resizes/closes, scripted output, ends on sandbox exit", async () => {
   const f = createFakes();
   const h = await f.sandbox.start(
     { agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }], tty: { cols: 80, rows: 24 } },
     "k-term",
   );
   assert.deepEqual(f.sandbox.started[0]!.tty, { cols: 80, rows: 24 });
-  const t = await f.sandbox.openTerminal(h.id, { cols: 80, rows: 24 });
+  const t = await f.sandbox.terminal!.open(h.id, { cols: 80, rows: 24 });
   const fake = f.sandbox.terminals.get(h.id)![0]!;
   assert.equal(fake, t);
   await t.write("ls\r");
@@ -34,13 +34,13 @@ test("FakeSandbox.openTerminal: records writes/resizes/closes, scripted output, 
   t.close();
   t.close();
   assert.equal(fake.closes, 2);
-  await assert.rejects(() => f.sandbox.openTerminal(h.id), SandboxUnavailableError);
+  await assert.rejects(() => f.sandbox.terminal!.open(h.id), SandboxUnavailableError);
 });
 
-test("FakeSandbox.openLoopbackStream: records writes/closes, scripted output, ends on sandbox exit, scripted errors", async () => {
+test("FakeSandbox loopback facet: records writes/closes, scripted output, ends on sandbox exit, scripted errors", async () => {
   const f = createFakes();
   const h = await f.sandbox.start({ agent: "a", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-a", containerPath: "/w" }] }, "k-lb");
-  const b = await f.sandbox.openLoopbackStream(h.id, LOOPBACK_PORTS[0]);
+  const b = await f.sandbox.loopback!.open(h.id, LOOPBACK_PORTS[0]);
   const fake = f.sandbox.loopbackStreams.get(h.id)![0]!;
   assert.equal(fake, b);
   assert.deepEqual(f.sandbox.loopbackCalls, [{ id: h.id, port: 9222 }]);
@@ -57,12 +57,12 @@ test("FakeSandbox.openLoopbackStream: records writes/closes, scripted output, en
   b.close();
   assert.equal(fake.closes, 1);
   // Negative: not running, a port outside LOOPBACK_PORTS (also recorded), a scripted error.
-  await assert.rejects(() => f.sandbox.openLoopbackStream(h.id, 9222), SandboxUnavailableError);
+  await assert.rejects(() => f.sandbox.loopback!.open(h.id, 9222), SandboxUnavailableError);
   const h2 = await f.sandbox.start({ agent: "b", image: "i", env: {}, mounts: [{ kind: "workspace", workspace: "ws-b", containerPath: "/w" }] }, "k-lb2");
-  await assert.rejects(() => f.sandbox.openLoopbackStream(h2.id, 22 as LoopbackPort), RangeError);
+  await assert.rejects(() => f.sandbox.loopback!.open(h2.id, 22 as LoopbackPort), RangeError);
   f.sandbox.loopbackErrors.push(new Error("scripted"), null);
-  await assert.rejects(() => f.sandbox.openLoopbackStream(h2.id, 9222), /scripted/);
-  await f.sandbox.openLoopbackStream(h2.id, 9222);
+  await assert.rejects(() => f.sandbox.loopback!.open(h2.id, 9222), /scripted/);
+  await f.sandbox.loopback!.open(h2.id, 9222);
   assert.equal(f.sandbox.loopbackStreams.get(h2.id)!.length, 1);
 });
 

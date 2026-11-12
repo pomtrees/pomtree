@@ -111,10 +111,10 @@ test("sandbox down skips the phase: no list call while the host is down, nothing
   const orig = t.sandbox.list.bind(t.sandbox);
   let lists = 0;
   let down = true;
-  t.sandbox.list = async () => {
+  t.sandbox.list = async (owner) => {
     lists++;
     if (down) throw new SandboxUnavailableError();
-    return orig();
+    return orig(owner);
   };
   await t.daemon.reconcile(); // list throws: marks the sandbox down, clears memory
   const afterFirst = lists;
