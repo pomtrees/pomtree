@@ -1,0 +1,2 @@
+{"provenance":"inferred","provider":"kubernetes","source":"Kubernetes client-go remotecommand v5.channel.k8s.io WebSocket protocol (channels 1 stdout, 3 status)","date":"2026-11-11","apiVersion":"v1","placeholders":["A3sibWV0YWRhdGEiOnt9LCJzdGF0dXMiOiJTdWNjZXNzIn0="]}
+{"seq":1,"method":"GET","path":"/api/v1/namespaces/default/pods/pomtree-sbx-1/exec","query":{"command":"echo","container":"worker"},"status":101,"stream":[{"dir":"out","binary":true,"data":"AWhpCg=="},{"dir":"out","binary":true,"data":"A3sibWV0YWRhdGEiOnt9LCJzdGF0dXMiOiJTdWNjZXNzIn0="}]}
