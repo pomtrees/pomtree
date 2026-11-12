@@ -1,3 +1,5 @@
+// TODO(docker-contract-case-unrun): the real-Docker case of this contract was not run when written; it needs a committed PTREE_AGENT_TEST_REVISION and
+// a matching agent image. Current behavior: it skips without the gate.
 // Shared Sandbox port contract (@pomtree/testing) against the fake always, and against DockerSandbox when the
 // real-Docker gate passes (PTREE_DOCKER_TESTS=1, PTREE_AGENT_TEST_REVISION, image PTREE_AGENT_TEST_IMAGE).
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";

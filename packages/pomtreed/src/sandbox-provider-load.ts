@@ -17,6 +17,8 @@ import type { ExtensionManifest, ExtensionTreeEntry, SandboxBackendModule, Sandb
 // reviewed module. The extension runs in-process with the daemon's full Node privileges and can read its environment and files; the
 // hook is a resolve-time review aid and cheap import friction (it also refuses a few process-spawning builtins), not isolation.
 //
+// TODO(sandbox-loader-isolation): the import guard is friction, not isolation: a contributed backend runs in-process with the daemon's privileges, and
+// the content-hash pin plus operator review is the only protection. Out-of-process adapters are the real fix.
 // Still skips the guard (so nobody should lean on it or on the denied-builtin list): `process.getBuiltinModule`, `process.binding`,
 // `new Function`/`eval` code whose `import()` has a parent outside the tree, `createRequire(<a path outside the tree>)`, a
 // `module.registerHooks` obtained that way (a hook registered later runs first), and `process.mainModule`.

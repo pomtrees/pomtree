@@ -1,3 +1,6 @@
+// TODO(kubernetes-adapter-assembly): the pieces (this builder, auth, REST client, exec channel, files over exec) exist but no adapter assembles them;
+// missing: the adapter with list and inspect, an install generator with an RBAC drift test, a shim for the credential channel and for `put` files, and
+// a manifest and conformance descriptor. Current behavior: selecting kubernetes refuses to start, and everything is tested against local stubs only.
 // Pure builders for the Kubernetes backend: the sandbox Pod, its labels and annotations, the spec
 // hash used for idempotent create, the default-deny NetworkPolicy and the canary pod that checks policy enforcement.
 //

@@ -32,6 +32,8 @@ export interface LocalBackendProvider extends SandboxBackendProvider {
 // - isolation.gvisor: detection of `runsc` on Podman is inferred from documentation, not run, so Podman does not declare it (a gVisor template is not refused at boot either; see the sandbox-template-admission marker in pomtreed).
 // Everything else is the shared argv floor (terminal, host mounts, image pull and digest identity, tag listing, host alias, resource
 // limits, seccomp, ipv6 sysctl); resources.limits is narrowed at runtime by the engine probe on a rootless host without cgroup v2 delegation.
+// TODO(podman-inferred-details): Podman error patterns and the info and gateway-inspect formats come from documentation and fixtures, not a real Podman;
+// `firewallHint` and the onboarding steps stay Docker-only and the doctor payload carries no engine id. Run against a real Podman and fix.
 // TODO(podman-egress-isolation): security-relevant fail-open: Podman does not declare egress.denyAll or egress.allowHost, yet nothing refuses a
 // template that sets egress (see the sandbox-template-admission marker in pomtreed), so such a template still starts and its egress is not isolated.
 // Trigger: before Podman is documented as a supported backend or a template relies on egress isolation. Fix: declare both once the gated

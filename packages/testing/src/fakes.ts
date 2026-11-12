@@ -350,6 +350,8 @@ export class FakeRegistry implements Registry {
   // pins this backend (createFakes sets it to the fake sandbox's own), so the many tests that set a sandbox by hand model a
   // daemon that started it. Set it to undefined, or write `agents` directly, to build a legacy record that holds a sandbox
   // with no backend.
+  // TODO(fake-registry-default-backend): a fake-only convenience that makes the fake more lenient than the real store; current behavior: a record
+  // holding a sandbox with no backend is pinned to the fake sandbox's backend. Remove once tests set the backend explicitly.
   defaultBackend: SandboxBackendId | undefined;
   // Own settled plus in-flight model use per agent for the ledger setRootPool reads (the fake has no debit buckets); default 0.
   ownUse: (id: AgentId) => number = () => 0;

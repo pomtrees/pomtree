@@ -19,6 +19,8 @@ const failedIds = (r: ConformanceReport) =>
     .sort();
 const messages = (r: ConformanceReport) => r.results.flatMap((x) => (x.status === "failed" ? [`${x.id}: ${x.error.message}`] : [])).join(" | ");
 
+// TODO(sandbox-broken-meta-test): add an opt-in meta-test that runs every broken-sandbox mode through the whole suite; current behavior: the modes
+// are covered one by one.
 test("registry: every clause id has exactly one break mode, with a unique name", () => {
   assert.deepEqual(Object.keys(BREAK_MODES).sort(), [...CLAUSE_IDS].sort());
   const names = Object.values(BREAK_MODES).map((m) => m.name);

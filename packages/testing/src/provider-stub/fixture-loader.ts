@@ -209,6 +209,8 @@ export const FIXTURE_MAX_AGE_DAYS = 180;
  * Throws `FixtureError` when the header date is more than `FIXTURE_MAX_AGE_DAYS` before `now` (or after it). A test that scans tracked fixtures
  * calls this with the real clock; tests inject `now`. The loader itself does not reject age, so an old fixture still loads for inspection.
  */
+// TODO(fixture-fresh-gate): only provider-stub/server.test.ts calls this, with a fixed clock, so the 180-day limit is enforced on no real fixture;
+// current behavior: an old tracked fixture still loads and passes. Add a scan that calls it with the real clock.
 export function assertFixtureFresh(fixture: Fixture, now: Date, maxAgeDays: number = FIXTURE_MAX_AGE_DAYS): void {
   const days = Math.floor((now.getTime() - Date.parse(`${fixture.header.date}T00:00:00Z`)) / 86_400_000);
   if (days < 0) {
