@@ -3,8 +3,8 @@
 // the daemon host would describe the wrong machine. Supported means all of: rootless, Podman >= 5.3, the pasta network backend, and a
 // pasta build with --map-host-loopback. Anything unreadable or unrecognised is unsupported (fail closed).
 //
-// Plumbing for a later capability declaration: a backend's readiness probe may only withhold capabilities it declares true
-// (checkProbe in @pomtree/core), so podmanEgressProbeResult is not consumed until Podman declares egress.denyAll and egress.allowHost.
+// The daemon runs this once at boot (probeLocalBackend in pomtreed) and narrows PODMAN_DECLARATION with the result: a backend's readiness probe may
+// only withhold capabilities it declares true (checkProbe in @pomtree/core), which Podman does for both egress capabilities.
 import type { ProbeResult } from "@pomtree/core";
 import type { LocalEngine } from "./local-engine.ts";
 
@@ -69,7 +69,6 @@ export function checkPodmanEgress(infoJson: string): PodmanEgressSupport {
   return { supported: true };
 }
 
-// TODO(podman-egress-isolation): not consumed until the Podman declaration flips egress.denyAll and egress.allowHost to true (see provider.ts).
 // The readiness-probe result for a support verdict: unsupported withholds both egress capabilities (a narrowing, not a readiness problem).
 export function podmanEgressProbeResult(s: PodmanEgressSupport): ProbeResult {
   return { withheld: s.supported ? [] : ["egress.denyAll", "egress.allowHost"], problems: [], account: null };

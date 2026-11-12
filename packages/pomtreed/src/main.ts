@@ -18,6 +18,7 @@ import {
 import {
   admitAtBoot,
   admitTemplateSpec,
+  probeLocalBackend,
   backendDeps,
   bootNeeds,
   createBackendRegistry,
@@ -197,11 +198,15 @@ try {
   refuseStart((e as Error).message);
 }
 if (!backend.localEngine) refuseStart(remoteBootRefusal(backend));
-// The local engines have no readiness probe: their static declaration is admitted here, before any state; the adapter is built later
-// by wireLocalHost, which needs the node's mount provider.
+// The local engines' declaration is admitted here, before any state, narrowed by the Podman egress probe (Docker has none); the adapter is
+// built later by wireLocalHost, which needs the node's mount provider. The probe runs once, at boot: a Podman that was down at boot withholds
+// egress until the daemon restarts.
 const bootNeedsOfBackend = bootNeeds(backend, cfg["sandbox.secretsInEnv"]);
+const bootProbe = await probeLocalBackend(backend.provider.declaration, backend.engine);
+if (bootProbe?.egressWithheld)
+  console.error(`pomtreed: sandbox backend ${backend.id} runs without egress isolation: ${bootProbe.egressWithheld.cause}; ${bootProbe.egressWithheld.action}`);
 {
-  const refusals = admitAtBoot(backend.provider.declaration, bootNeedsOfBackend);
+  const refusals = admitAtBoot(backend.provider.declaration, bootNeedsOfBackend, bootProbe);
   for (const r of refusals) console.error(`pomtreed: refusing to start: ${r}`);
   if (refusals.length > 0) process.exit(1);
 }
@@ -818,7 +823,7 @@ daemon = new Daemon({
   // Canonical workflow launch (transports reach it through this dependency); admission stays default-deny via `reviewed`.
   launchWorkflow: (requester, req) => workflows.launch(requester, req),
   deterministicExecutors: workflows.executors,
-  admitSpec: (spec) => admitTemplateSpec(localBackend.provider.declaration, bootNeedsOfBackend, spec),
+  admitSpec: (spec) => admitTemplateSpec(localBackend.provider.declaration, bootNeedsOfBackend, spec, bootProbe),
   publicEgressReady: () => egressAudit?.healthy() ?? false,
   mayUseTemplate: async (caller, template) =>
     caller === (await daemon.root()).id || workflowPolicy.allows(await stores.registry.get(caller), template.id, workflows.qualifiedNames()),

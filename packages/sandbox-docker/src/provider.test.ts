@@ -15,6 +15,7 @@ import {
 import { DOCKER_DECLARATION, DockerSandbox } from "./docker.ts";
 import { DOCKER_PROFILE, PODMAN_PROFILE } from "./engine-profile.ts";
 import { scriptedLocalEngine } from "./local-engine-fake.ts";
+import { checkPodmanEgress, podmanEgressProbeResult } from "./podman-egress-probe.ts";
 import { type LocalBackendDeps, type LocalBackendProvider, PODMAN_DECLARATION, dockerProvider, podmanProvider } from "./provider.ts";
 import { stubMounts } from "./test-mounts.ts";
 
@@ -54,9 +55,9 @@ const needs = (over: Partial<BackendNeeds> = {}): BackendNeeds => ({
   ...over,
 });
 
-test("podman declaration omits egress.denyAll (and the egress allowlist and gVisor it cannot honor); docker keeps them", () => {
-  assert.equal(PODMAN_DECLARATION.capabilities["egress.denyAll"], false);
-  assert.equal(PODMAN_DECLARATION.capabilities["egress.allowHost"], false);
+test("podman declares the egress capabilities (verified by the gated rootless suite) but not gVisor or loopback; docker keeps all of them", () => {
+  assert.equal(PODMAN_DECLARATION.capabilities["egress.denyAll"], true);
+  assert.equal(PODMAN_DECLARATION.capabilities["egress.allowHost"], true);
   assert.equal(PODMAN_DECLARATION.capabilities["isolation.gvisor"], false);
   assert.equal(PODMAN_DECLARATION.capabilities.loopback, false);
   assert.equal(DOCKER_DECLARATION.capabilities.loopback, true);
@@ -65,17 +66,22 @@ test("podman declaration omits egress.denyAll (and the egress allowlist and gVis
   assert.equal(PODMAN_DECLARATION.backend, "podman");
   // Every other capability is the shared argv floor, unchanged.
   for (const [cap, v] of Object.entries(DOCKER_DECLARATION.capabilities)) {
-    if (!["egress.denyAll", "egress.allowHost", "isolation.gvisor", "loopback"].includes(cap))
+    if (!["isolation.gvisor", "loopback"].includes(cap))
       assert.equal(PODMAN_DECLARATION.capabilities[cap as keyof typeof PODMAN_DECLARATION.capabilities], v, cap);
   }
 });
 
 // The declaration-level rule; the daemon applies it to each template at spawn and start (pomtreed daemon.template-admission.test.ts).
-test("admitBackend refuses an egress template against the podman declaration; docker admits it", () => {
-  const refused = admitBackend(PODMAN_DECLARATION, null, needs({ egress: true }));
-  assert.equal(refused.ok, false);
+test("admitBackend admits an egress template against the podman declaration; the boot probe's withheld egress refuses it (fail closed)", () => {
+  assert.equal(admitBackend(PODMAN_DECLARATION, null, needs({ egress: true })).ok, true);
   assert.equal(admitBackend(DOCKER_DECLARATION, null, needs({ egress: true })).ok, true);
-  assert.equal(admitBackend(PODMAN_DECLARATION, null, needs()).ok, true);
+  const unsupported = podmanEgressProbeResult(checkPodmanEgress("podman: not json"));
+  assert.deepEqual(unsupported.withheld, ["egress.denyAll", "egress.allowHost"]);
+  const refused = admitBackend(PODMAN_DECLARATION, unsupported, needs({ egress: true }));
+  assert.equal(refused.ok, false);
+  assert.equal(admitBackend(PODMAN_DECLARATION, unsupported, needs()).ok, true, "an egress-none template still runs on an unsupported Podman");
+  // The gVisor omission is a declaration gap, not a probe one.
+  assert.equal(admitBackend(PODMAN_DECLARATION, null, needs({ isolation: "gvisor" })).ok, false);
 });
 
 test("both declarations pass validateDeclaration; a mutated one fails", () => {

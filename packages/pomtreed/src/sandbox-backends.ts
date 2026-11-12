@@ -3,6 +3,7 @@ import {
   SANDBOX_BACKEND_AUTO,
   validateDeclaration,
   type BackendNeeds,
+  type ProbeResult,
   type SandboxBackendDeps,
   type SandboxBackendProvider,
   type SandboxDeclaration,
@@ -19,6 +20,7 @@ import {
   type LocalEngine,
   type OpenLocalEngineInput,
   podmanProvider,
+  probePodmanEgress,
 } from "@pomtree/sandbox-docker";
 import { createRequest } from "@pomtree/sandbox-kit";
 import { createSandboxBackendDeps } from "./sandbox-backend-deps.ts";
@@ -209,26 +211,72 @@ export function templateNeeds(boot: BackendNeeds, spec: Pick<SpawnSpec, "egress"
   };
 }
 
+// What the daemon's boot probe found about the selected local engine: the narrowing core's admitBackend takes, plus, when it withheld egress, the
+// cause and action behind it (ProbeResult carries neither for a withheld capability), so a refusal can name both.
+export interface BootProbe {
+  result: ProbeResult;
+  egressWithheld?: { cause: string; action: string };
+}
+
+// The boot probe of a local engine. Only Podman has one: its egress isolation holds on a supported rootless setup only (probePodmanEgress), and
+// anything unreadable or unsupported withholds egress.denyAll and egress.allowHost (fail closed). Docker's static declaration needs no probe.
+export async function probeLocalBackend(declaration: SandboxDeclaration, engine: Pick<LocalEngine, "output">): Promise<BootProbe | null> {
+  if (declaration.backend !== "podman") return null;
+  const { support, result } = await probePodmanEgress(engine);
+  return support.supported ? { result } : { result, egressWithheld: { cause: support.cause, action: support.action } };
+}
+
+// Podman declares egress statically and relies on the boot probe to withhold it on an unsupported setup, so admission without a probe result must not
+// read as "supported": a caller that omits the probe gets the withheld result (fail closed), not the bare declaration. Other backends need no probe.
+const UNPROBED_PODMAN: BootProbe = {
+  result: { withheld: ["egress.denyAll", "egress.allowHost"], problems: [], account: null },
+  egressWithheld: { cause: "the Podman egress probe did not run, so its egress setup is unchecked", action: "restart the daemon so the boot probe runs" },
+};
+const probeOrClosed = (declaration: SandboxDeclaration, probe: BootProbe | null): BootProbe | null =>
+  probe ?? (declaration.backend === "podman" ? UNPROBED_PODMAN : null);
+
+// A refusal line's cause and action; for the egress row of a probed backend they carry the probe's own cause and action.
+const refusalText = (r: { capability: string | null; cause: string; action: string }, probe: BootProbe | null): { cause: string; action: string } =>
+  probe?.egressWithheld && r.capability === "egress.allowHost"
+    ? { cause: `${r.cause}; the boot probe found ${probe.egressWithheld.cause}`, action: `${probe.egressWithheld.action}, or ${r.action}` }
+    : r;
+
 // Template admission, at spawn and again at start or resume: the template's needs run through the same admitBackend rows as boot, so a
-// template the selected backend cannot honour (egress isolation or gVisor the declaration omits) is refused, never started with a
+// template the selected backend cannot honour (egress isolation or gVisor the declaration omits, or the boot probe withheld) is refused, never started with a
 // weaker mode. The boot needs are passed through unchanged, so nothing boot already admitted is reported again. One refusal line per
 // reason, each naming the template, the backend, the cause and the action; [] = admitted.
-export function admitTemplateSpec(declaration: SandboxDeclaration, boot: BackendNeeds, spec: Pick<SpawnSpec, "egress" | "runtime" | "template">): string[] {
-  const result = admitBackend(declaration, null, templateNeeds(boot, spec));
+export function admitTemplateSpec(
+  declaration: SandboxDeclaration,
+  boot: BackendNeeds,
+  spec: Pick<SpawnSpec, "egress" | "runtime" | "template">,
+  given: BootProbe | null = null,
+): string[] {
+  const probe = probeOrClosed(declaration, given);
+  const result = admitBackend(declaration, probe?.result ?? null, templateNeeds(boot, spec));
   return result.ok
     ? []
-    : result.refusals.map((r) => `template ${spec.template ?? "code"} cannot run on sandbox backend ${declaration.backend}: ${r.cause}; ${r.action}`);
+    : result.refusals.map((r) => {
+        const t = refusalText(r, probe);
+        return `template ${spec.template ?? "code"} cannot run on sandbox backend ${declaration.backend}: ${t.cause}; ${t.action}`;
+      });
 }
 
 // Boot admission of the selected backend: the declaration must be registrable (validateDeclaration: an idempotency mechanism of
 // none and an unknown capability are refused), and admitBackend's security- and reach-bearing rows refuse. The local engines have no
-// readiness probe, so none is passed. Returns one refusal line per reason, each with the cause and the action; [] = admitted.
-export function admitAtBoot(declaration: SandboxDeclaration, needs: BackendNeeds): string[] {
+// readiness probe beyond the Podman egress probe (probeLocalBackend), which is passed in when present. Returns one refusal line per reason,
+// each with the cause and the action; [] = admitted.
+export function admitAtBoot(declaration: SandboxDeclaration, needs: BackendNeeds, given: BootProbe | null = null): string[] {
   const id = declaration.backend;
+  const probe = probeOrClosed(declaration, given);
   const invalid = validateDeclaration(declaration);
   if (invalid.length > 0) return invalid.map((r) => `sandbox backend ${id} has an invalid declaration: ${r}`);
-  const result = admitBackend(declaration, null, needs);
-  return result.ok ? [] : result.refusals.map((r) => `sandbox backend ${id} is not admitted: ${r.cause}; ${r.action}`);
+  const result = admitBackend(declaration, probe?.result ?? null, needs);
+  return result.ok
+    ? []
+    : result.refusals.map((r) => {
+        const t = refusalText(r, probe);
+        return `sandbox backend ${id} is not admitted: ${t.cause}; ${t.action}`;
+      });
 }
 
 // A backend that is not a local engine cannot run agents in this build.
