@@ -6,6 +6,7 @@ import { articleRetryable, type MissingStory, type StoryResult } from "./content
 import { DEFAULT_CONTENT_BOUNDS } from "./content-bounds.mts";
 import { browserBoundDetail } from "./content-evidence.mts";
 import { setup } from "./content-harness.mts";
+import { until } from "../../packages/testing/src/index.ts";
 
 type Env = Awaited<ReturnType<typeof setup>>;
 type Result = { reportBody: string; stories: StoryResult[]; entryIds: number[]; failedStories: MissingStory[] };
@@ -13,13 +14,18 @@ type Provenance = NonNullable<Parameters<typeof provenanceOf>[0]>;
 
 // Polls like until() but with a caller-chosen budget.
 async function waitFor<T>(read: () => Promise<T | null | undefined | false>, note: string, ms = 7000): Promise<T> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    const result = await read();
-    if (result) return result;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  throw new Error(`timed out: ${note}`);
+  let found: T | undefined;
+  await until(
+    async () => {
+      const result = await read();
+      if (!result) return false;
+      found = result;
+      return true;
+    },
+    ms,
+    { what: note, intervalMs: 20 },
+  );
+  return found as T;
 }
 
 // Runs the tree to its publication gate, approves it, and returns the root result.

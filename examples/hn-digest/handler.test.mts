@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import { EXTENSION_API_VERSION, type Delivered, type WorkflowRunContext } from "../../packages/core/src/index.ts";
 import extension, { type HnInput, hnDigest, validateInput } from "./entry.mts";
 import { REPORT_MAX } from "./logic.mts";
+import { until } from "../../packages/testing/src/index.ts";
 
 const FETCHED_MS = Date.parse("2026-10-19T00:00:00.000Z");
 const FEED = "https://hacker-news.firebaseio.com/v0/topstories.json";
@@ -148,8 +149,7 @@ const answer = (escalation: string, body: string, id = `sig-${escalation}-${body
 
 // Waits until the handler has asked, so a test can answer while it is parked.
 async function untilAsked(eff: Eff, n = 1): Promise<void> {
-  for (let i = 0; i < 500 && eff.asks.length < n; i++) await new Promise((r) => setTimeout(r, 2));
-  assert.ok(eff.asks.length >= n, "handler never asked");
+  await until(() => eff.asks.length >= n, 1000, { what: "the handler to ask", intervalMs: 2 });
 }
 
 describe("manifest and export", () => {

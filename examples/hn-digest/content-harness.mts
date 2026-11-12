@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PAGE_TOOL } from "../../packages/agent-image/ext/pomtree-analyst/analyst-contract.ts";
 import { ScriptHarness } from "../../packages/testing/src/test-harness.ts";
+import { until as pollUntil } from "../../packages/testing/src/index.ts";
 import { runStaticWorker } from "./article-worker.mts";
 import { captureStaticArticleDetailed } from "./article.mts";
 import { pageName } from "./article-pages.mts";
@@ -48,13 +49,18 @@ export const deferred = () => {
 export const evidenceOf = (prompt: string): EvidenceBundle =>
   JSON.parse(prompt.slice(prompt.lastIndexOf(EVIDENCE_BEGIN) + EVIDENCE_BEGIN.length, prompt.lastIndexOf(EVIDENCE_END)).trim()) as EvidenceBundle;
 export async function until<T>(read: () => Promise<T | null | undefined | false>, note: string): Promise<T> {
-  const deadline = Date.now() + 7000;
-  while (Date.now() < deadline) {
-    const result = await read();
-    if (result) return result;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error(`timed out: ${note}`);
+  let found: T | undefined;
+  await pollUntil(
+    async () => {
+      const result = await read();
+      if (!result) return false;
+      found = result;
+      return true;
+    },
+    7000,
+    { what: note, intervalMs: 5 },
+  );
+  return found as T;
 }
 
 // What a scripted analyst does: reads the first article page the host published to it (the same reports `pomtree report show` reads) and
