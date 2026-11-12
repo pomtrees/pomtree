@@ -3,7 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # `wave/**` branches get the full run without a PR: a batch of commits is validated there before main is fast-forwarded.
+    branches: [main, "wave/**"]
 
 permissions:
   contents: read
