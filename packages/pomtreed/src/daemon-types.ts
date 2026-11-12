@@ -175,6 +175,11 @@ export interface DaemonDeps {
   // Gate for inbound `intent: "spawn"` (messaging.allowSpawn); off by default.
   messagingAllowSpawn?: boolean;
   sandbox: Sandbox;
+  // The sandbox of any backend this build and config can reach (boot reconcile walks every backend a live record names).
+  // Absent = only `sandbox` is reachable; undefined for an id = that backend is not available. For the selected id it must return
+  // this object's own `sandbox` (the guard/trace wrapper), never the raw adapter, or one sandbox is reconciled twice. Each backend's
+  // `list(owner)` must filter by owner server-side: reconcile reclaims only what a backend lists and can prove is this daemon's.
+  sandboxFor?: (backend: string) => Sandbox | undefined;
   workspace: Workspace;
   // Merge engine. Absent = merging is not configured (merge route 503, reap unguarded).
   repos?: RepoStore;

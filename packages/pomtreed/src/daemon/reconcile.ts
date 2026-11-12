@@ -23,6 +23,21 @@ export const AUTO_RESTART = "auto-restart:";
 // Journal prefix of an operator reset marker: restartCount counts only AUTO_RESTART entries after the latest one.
 export const RESTART_RESET = "restart-budget-reset:";
 
+// Boot refusal: a live record names a sandbox backend this build or config cannot reach.
+export class SandboxBackendUnavailableError extends Error {
+  backend: string;
+  agents: AgentId[];
+  constructor(backend: string, holders: AgentRecord[]) {
+    const agents = holders.map((r) => r.id);
+    super(
+      `sandbox backend ${backend} is not available, but agent(s) ${agents.join(", ")} hold sandboxes on it; select it again (sandbox.backend) or run pomtree abandon <agent> for each of them, then restart`,
+    );
+    this.name = "SandboxBackendUnavailableError";
+    this.backend = backend;
+    this.agents = agents;
+  }
+}
+
 export class Reconcile {
   private readonly ctx: DaemonCtx;
   private readonly tree: Tree;
@@ -336,6 +351,22 @@ export class Reconcile {
           hub.claim.markDirty(a.id);
           continue;
         }
+        // Attach, inspect, stop and the resume path go through the selected backend; a sandbox pinned to another backend must not
+        // be looked up there (an empty answer reads as dead and would be force-resumed). Left as is, with one finding.
+        const selectedBackend = d.sandbox.declaration.backend;
+        if (a.sandbox !== null && a.sandboxBackend !== null && a.sandboxBackend !== selectedBackend) {
+          await this.ctx
+            .record(
+              a,
+              {
+                kind: "error",
+                message: `sandbox ${a.sandbox} is on backend ${a.sandboxBackend}, but the selected backend is ${selectedBackend}, and this pass cannot attach, inspect or stop it through the selected backend; left as is: select ${a.sandboxBackend} again (sandbox.backend), or run pomtree abandon ${a.id}`,
+              },
+              `${a.id}:${a.generation}:foreign-backend`,
+            )
+            .catch(journalFailed(this.ctx.record, a, "foreign-backend"));
+          continue;
+        }
         if (a.executor === "deterministic") {
           // Never sandbox-adopt or restartFresh. Reviewed opt-in workflows recover their task-local snapshot;
           // ordinary deterministic drivers still fail on interruption and cancel/reap their children.
@@ -642,32 +673,72 @@ export class Reconcile {
   // same-host containers whose record is not running are stopped; a second container labelled for an already-
   // adopted agent is superseded and stopped. Agents being driven right now (this.live) are never touched.
   async reconcileSandboxes() {
-    // The backend comes from the RECORD, never from current config. A record on this host that holds a live sandbox (non-terminal)
-    // under another backend cannot be listed, adopted or stopped here, so boot refuses with the mismatch error naming both ids
-    // and the action. A record on another host, or a finished one, is not this daemon's to refuse. A record that holds a sandbox
-    // but names no backend (written before the field existed, or damaged) cannot be matched to any backend: refused too.
-    const selected = this.ctx.deps.sandbox.declaration.backend;
-    for (const r of await this.ctx.deps.registry.list({ excludeState: "reaped" })) {
-      if (r.sandbox === null || r.host !== this.ctx.deps.hostId || isDone(r)) continue;
+    // The backend comes from the RECORD, never from current config. The active set is the selected backend plus every backend
+    // named by a non-terminal record of this host that holds a sandbox (overflow, or a backend left behind by a config change);
+    // each is reconciled against its own sandbox. A record that names a backend this build cannot reach cannot be listed,
+    // adopted or stopped, so boot refuses before touching any backend. A record on another host, or a finished one, is not this
+    // daemon's to refuse. A record that holds a sandbox but names no backend cannot be matched to any backend: refused too.
+    const d = this.ctx.deps;
+    const selected = d.sandbox.declaration.backend;
+    const holders = new Map<string, AgentRecord[]>();
+    for (const r of await d.registry.list({ excludeState: "reaped" })) {
+      if (r.sandbox === null || r.host !== d.hostId || isDone(r)) continue;
       if (r.sandboxBackend === null) {
         throw new Error(
           `agent ${r.id} holds sandbox ${r.sandbox} but its record names no sandbox backend (written by a build before the field existed, or damaged), so the sandbox cannot be matched to a backend; move the database file aside and restart to re-initialize`,
         );
       }
-      if (r.sandboxBackend !== selected) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend, selected);
+      if (r.sandboxBackend === selected) continue;
+      // A build that wires no per-backend accessor reaches the selected backend only.
+      if (!d.sandboxFor) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend, selected);
+      holders.set(r.sandboxBackend, [...(holders.get(r.sandboxBackend) ?? []), r]);
     }
+    const targets: [string, Sandbox][] = [[selected, d.sandbox]];
+    for (const [id, agents] of holders) {
+      const sb = d.sandboxFor?.(id);
+      if (!sb) throw new SandboxBackendUnavailableError(id, agents);
+      targets.push([id, sb]);
+    }
+    // One backend failing never skips the others: each runs, the first unexpected error is rethrown afterwards.
+    const done = new Set<Sandbox>(); // the same sandbox reached under two ids is reclaimed once
+    let failure: { error: unknown } | null = null;
+    for (const [id, sb] of targets) {
+      if (done.has(sb)) continue;
+      done.add(sb);
+      try {
+        await this.reconcileBackend(sb, id, id === selected);
+      } catch (e) {
+        failure ??= { error: e };
+      }
+    }
+    if (failure) throw failure.error;
+  }
+
+  // One backend of the active set. A backend that cannot be listed is skipped, and the records it holds stay as they are
+  // (nothing is adopted, stopped or cleared on a listing that was not read): the selected one latches the sandbox-down health
+  // flag, any other is reported on the root's journal and the log.
+  private async reconcileBackend(sandbox: Sandbox, backend: string, isSelected: boolean) {
     let listed: Awaited<ReturnType<Sandbox["list"]>>;
     try {
-      listed = await this.ctx.deps.sandbox.list(sandboxOwner(this.ctx.deps, this.epoch));
+      listed = await sandbox.list(sandboxOwner(this.ctx.deps, this.epoch));
     } catch (e) {
       if (e instanceof SandboxUnavailableError) {
-        await this.ctx.hub.store.markSandboxDown();
+        if (isSelected) {
+          await this.ctx.hub.store.markSandboxDown();
+          return;
+        }
+        const message = `sandbox backend ${backend} cannot be listed (${e.message}); its sandboxes were not reconciled this boot, start it and restart pomtreed, or run pomtree abandon <agent> for the agents that hold sandboxes on it`;
+        console.error(`pomtreed: ${message}`);
+        const root = await this.ctx.hub.root.root();
+        await this.ctx
+          .record(root, { kind: "host_error", component: "sandbox", message }, `host:sandbox-list:${backend}`)
+          .catch(journalFailed(this.ctx.record, root, "sandbox"));
         return;
       }
       throw e;
     }
     // Containers of another store or a newer daemon epoch are not ours; neither are unlabelled ones.
-    listed = listed.filter((s) => this.ownsSandbox(s.labels));
+    listed = listed.filter((s) => (isSelected ? this.ownsSandbox(s.labels) : this.provablyOurs(s)));
     // A registry holding nothing but the root next to live containers means a restored or
     // swapped pomtreed.sqlite (or another pomtreed's containers); killing them would destroy live work. Refuse unless the
     // operator opted in with adoptOrphans (agent.adoptOrphans).
@@ -681,7 +752,7 @@ export class Reconcile {
             component: "sandbox",
             message: `registry is empty but ${listed.length} container(s) exist; refusing to kill them (set POMTREED_AGENT_ADOPT_ORPHANS=1)`,
           },
-          "host:orphans:sandbox",
+          isSelected ? "host:orphans:sandbox" : `host:orphans:sandbox:${backend}`,
         )
         .catch(journalFailed(this.ctx.record, root, "sandbox"));
       return;
@@ -692,7 +763,7 @@ export class Reconcile {
       // Safe only while spawn writes the registry row before sandbox.start; reordering would make this kill race spawn.
       const r = await this.ctx.deps.registry.get(s.agent);
       if (!r) {
-        await this.ctx.deps.sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
+        await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
         continue;
       }
       if (r.state === "running" && r.host === this.ctx.deps.hostId) {
@@ -712,23 +783,40 @@ export class Reconcile {
         }
         if (r.sandbox !== null) {
           // A second container labelled for an already-adopted agent is superseded; keep the registry's sandbox.
-          await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
+          await sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
         } else {
           // Links the live container's sandbox id into the registry; reconcile() then re-adopts it via
           // Sandbox.attach (see adoptRunning) so a checkpoint-less running agent survives the restart.
           await this.ctx.deps.registry
-            .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`, selected)
+            .setSandbox(r.id, r.generation, s.id, `${r.id}:${r.generation}:adopt:${s.id}`, backend)
             .catch(journalFailed(this.ctx.record, r, "adopt-bind"));
         }
         continue;
       }
-      if (r.host !== this.ctx.deps.hostId) await this.ctx.deps.sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
-      else await this.ctx.deps.sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
+      if (r.host !== this.ctx.deps.hostId) await sandbox.kill(s.id, sandboxOpKey("kill", s.id)).catch(() => {});
+      else await sandbox.stop(s.id, this.ctx.deps.graceMs, sandboxOpKey("stop", s.id)).catch(() => {});
       if (r.sandbox === s.id)
         await this.ctx.deps.registry
           .setSandbox(r.id, r.generation, null, `${r.id}:${r.generation}:reconcile-clear`)
           .catch(journalFailed(this.ctx.record, r, "reconcile-clear"));
     }
+  }
+
+  // Positive ownership for a backend that may be a shared hosted account (every backend but the selected one): a peer daemon's
+  // sandbox there can carry no store_id or a store_id this daemon has never heard of, so absence is not evidence of ownership.
+  // Mirrors `ownedByUs` in reconcile-remote.ts; TODO(unify-ownership-predicate): unify the two predicates; current behavior: this one is local.
+  private provablyOurs(s: Awaited<ReturnType<Sandbox["list"]>>[number]): boolean {
+    const d = this.ctx.deps;
+    const epoch = s.labels?.daemon_epoch;
+    return (
+      d.storeId !== undefined &&
+      s.labels?.store_id === d.storeId &&
+      epoch !== undefined &&
+      /^\d+$/.test(epoch) &&
+      Number(epoch) <= Number(this.epoch) &&
+      s.host === d.hostId &&
+      s.generation !== null
+    );
   }
 
   private ownsSandbox(labels?: Record<string, string>): boolean {
@@ -786,7 +874,11 @@ export class Reconcile {
   async reclaimSandbox(r: AgentRecord, force = false) {
     if (!r.sandbox) return;
     const d = this.ctx.deps;
-    await (force ? d.sandbox.kill(r.sandbox, sandboxOpKey("kill", r.sandbox)) : d.sandbox.stop(r.sandbox, d.graceMs, sandboxOpKey("stop", r.sandbox))).catch(
+    // The record's own backend decides where the sandbox is; one this build cannot reach is refused, never looked up elsewhere.
+    const selected = d.sandbox.declaration.backend;
+    const sandbox = r.sandboxBackend === null || r.sandboxBackend === selected ? d.sandbox : d.sandboxFor?.(r.sandboxBackend);
+    if (!sandbox) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend ?? selected, selected);
+    await (force ? sandbox.kill(r.sandbox, sandboxOpKey("kill", r.sandbox)) : sandbox.stop(r.sandbox, d.graceMs, sandboxOpKey("stop", r.sandbox))).catch(
       () => {},
     );
     await d.registry.setSandbox(r.id, r.generation, null, `${r.id}:${r.generation}:reclaim`).catch(journalFailed(this.ctx.record, r, "reclaim"));
