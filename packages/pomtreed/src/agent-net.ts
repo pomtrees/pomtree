@@ -6,6 +6,8 @@
 // unreachable from a container. Binding 0.0.0.0 would fix it but also exposes the (token-gated) agent API to the LAN,
 // so the default binds the bridge gateway IP instead: reachable from containers, not from other machines.
 // Docker Desktop (macOS/Windows) forwards host.docker.internal to the host's loopback, so 127.0.0.1 keeps working.
+// Rootless Podman has no docker0: its egress sidecar runs on pasta with --map-host-loopback, which makes host.docker.internal reach the
+// host's 127.0.0.1, so the Podman default binds loopback only and never detects a gateway (a wider bind would only widen exposure).
 import { DOCKER_PROFILE, type EngineProfile, gatewayInspectArgs, HOST_ALIAS, hostGatewayArgs } from "@pomtree/sandbox-docker";
 
 export const FALLBACK_BRIDGE_GATEWAY = "172.17.0.1";
@@ -22,6 +24,7 @@ let cachedGateway: Promise<string | undefined> | undefined;
 // The engine's default-network gateway IP (Docker's bridge, Podman's `podman` network), or undefined when it cannot be determined
 // (engine missing/failing, odd output). `exec` receives the engine's binary. Cached per process; pass `fresh` (tests) to bypass it.
 export function detectBridgeGateway(exec: ExecFn, fresh = false, engine: EngineProfile = DOCKER_PROFILE): Promise<string | undefined> {
+  if (engine.id === "podman") return Promise.resolve(undefined);
   if (!fresh && cachedGateway) return cachedGateway;
   const p = exec(engine.binary, gatewayInspectArgs(engine))
     .then((out) => {
@@ -43,14 +46,14 @@ export interface AgentListenPlan {
 
 // POMTREED_AGENT_LISTEN (host:port | off) always wins. Otherwise: Linux binds the bridge gateway (plus loopback on the
 // same port, harmless and handy for host-side tools); other platforms bind loopback. An undeterminable gateway on
-// Linux falls back to loopback with a warning (containers will not reach it).
+// Linux falls back to loopback with a warning (containers will not reach it). Podman binds loopback only, without a warning.
 export function planAgentListen(o: { listen: string | undefined; platform: string; gateway: string | undefined; engine?: EngineProfile }): AgentListenPlan {
   if (o.listen === "off") return { mode: "off", host: "", port: 0, extraHosts: [] };
   if (o.listen !== undefined && o.listen !== "") {
     const i = o.listen.lastIndexOf(":");
     return { mode: "explicit", host: o.listen.slice(0, i), port: Number(o.listen.slice(i + 1)), extraHosts: [] };
   }
-  if (o.platform !== "linux") return { mode: "loopback", host: "127.0.0.1", port: 0, extraHosts: [] };
+  if (o.platform !== "linux" || o.engine?.id === "podman") return { mode: "loopback", host: "127.0.0.1", port: 0, extraHosts: [] };
   if (o.gateway) return { mode: "gateway", host: o.gateway, port: 0, extraHosts: ["127.0.0.1"] };
   return {
     mode: "loopback",
@@ -67,8 +70,10 @@ export async function agentBindPlan(platform: string, detect: () => Promise<stri
 }
 
 // Can a Linux container (host-gateway = bridge gateway) reach a listener bound to `host`? Wildcards yes, gateway yes, loopback no.
-export function containerReachable(o: { platform: string; boundHosts: string[]; gateway: string | undefined }): boolean {
+// Under Podman the sidecar's pasta network maps the host loopback, so loopback is reachable too.
+export function containerReachable(o: { platform: string; boundHosts: string[]; gateway: string | undefined; engine?: EngineProfile }): boolean {
   if (o.platform !== "linux") return true;
+  if (o.engine?.id === "podman") return o.boundHosts.some((h) => h === "127.0.0.1" || h === "0.0.0.0" || h === "::");
   return o.boundHosts.some((h) => h === "0.0.0.0" || h === "::" || (o.gateway !== undefined && h === o.gateway));
 }
 
@@ -148,7 +153,9 @@ export function summarizeAgentEndpoint(o: {
   const bind = o.boundHosts.map((h) => `${h}:${o.port}`);
   const target = probeTarget({ platform: o.platform, boundHosts: o.boundHosts, gateway: o.gateway });
   const probe = `${target}:${o.port}`;
-  const reachable = containerReachable({ platform: o.platform, boundHosts: o.boundHosts, gateway: o.gateway }) && o.containerProbe !== false;
+  const reachable =
+    containerReachable({ platform: o.platform, boundHosts: o.boundHosts, gateway: o.gateway, ...(o.engine && { engine: o.engine }) }) &&
+    o.containerProbe !== false;
   const ok = o.hostProbe && reachable;
   const message = ok
     ? undefined

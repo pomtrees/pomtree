@@ -10,6 +10,7 @@ import {
   summarizeAgentEndpoint,
   unreachableMessage,
 } from "./agent-net.ts";
+import { PODMAN_PROFILE } from "@pomtree/sandbox-docker";
 
 test("detectBridgeGateway parses docker output, rejects junk, falls back to undefined on failure", async () => {
   let args: string[] = [];
@@ -206,4 +207,39 @@ test("summarizeAgentEndpoint: loopback bind is unreachable from Linux containers
   });
   assert.equal(s.containerReachable, false);
   assert.match(s.message ?? "", /connected but loopback is not routable from containers/);
+});
+
+test("Podman: the default plan binds loopback only, ignores a gateway and carries no warning; an explicit listen still wins", () => {
+  const p = planAgentListen({ listen: undefined, platform: "linux", gateway: "172.17.0.1", engine: PODMAN_PROFILE });
+  assert.deepEqual([p.mode, p.host, p.extraHosts, p.warning], ["loopback", "127.0.0.1", [], undefined]);
+  const none = planAgentListen({ listen: undefined, platform: "linux", gateway: undefined, engine: PODMAN_PROFILE });
+  assert.equal(none.warning, undefined);
+  const e = planAgentListen({ listen: "10.0.0.5:7000", platform: "linux", gateway: undefined, engine: PODMAN_PROFILE });
+  assert.deepEqual([e.mode, e.host, e.port], ["explicit", "10.0.0.5", 7000]);
+  assert.equal(planAgentListen({ listen: "off", platform: "linux", gateway: undefined, engine: PODMAN_PROFILE }).mode, "off");
+});
+
+test("Podman: detectBridgeGateway never runs the engine; loopback counts as container-reachable only for Podman", async () => {
+  let calls = 0;
+  const exec = async () => {
+    calls++;
+    return "172.17.0.1\n";
+  };
+  assert.equal(await detectBridgeGateway(exec, true, PODMAN_PROFILE), undefined);
+  assert.equal(calls, 0);
+  assert.equal(containerReachable({ platform: "linux", boundHosts: ["127.0.0.1"], gateway: undefined, engine: PODMAN_PROFILE }), true);
+  assert.equal(containerReachable({ platform: "linux", boundHosts: ["10.0.0.5"], gateway: undefined, engine: PODMAN_PROFILE }), false);
+  assert.equal(containerReachable({ platform: "linux", boundHosts: ["127.0.0.1"], gateway: undefined }), false);
+  const st = summarizeAgentEndpoint({
+    platform: "linux",
+    boundHosts: ["127.0.0.1"],
+    port: 7,
+    apiUrl: "http://host.docker.internal:7",
+    gateway: undefined,
+    hostProbe: true,
+    containerProbe: undefined,
+    engine: PODMAN_PROFILE,
+  });
+  assert.equal(st.containerReachable, true);
+  assert.equal(st.message, undefined);
 });

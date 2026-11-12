@@ -962,7 +962,7 @@ if (agentListen !== "off") {
   }
   extraAgentServers = extra;
   console.error(`pomtreed agent endpoint on ${agentBound.map((h) => `${h}:${a.port}`).join(", ")} (containers: POMTREE_API=${agentApiUrl})`);
-  if (!containerReachable({ platform: process.platform, boundHosts: agentBound, gateway: await reachGateway() })) {
+  if (!containerReachable({ platform: process.platform, boundHosts: agentBound, gateway: await reachGateway(), engine: engine.profile })) {
     console.error(
       `pomtreed: WARNING: ${unreachableMessage({ bind: agentBound.map((h) => `${h}:${a.port}`), apiUrl: agentApiUrl, probe: `${agentBound[0]}:${a.port}`, listenable: true, engine: engine.profile })}`,
     );
