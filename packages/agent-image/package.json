@@ -13,5 +13,8 @@
   },
   "dependencies": {
     "@pomtree/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@pomtree/testing": "workspace:*"
   }
 }

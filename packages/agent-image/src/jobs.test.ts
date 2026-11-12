@@ -5,15 +5,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { until as untilShared } from "@pomtree/testing";
 import * as J from "../ext/pomtree-jobs/jobs.ts";
 
 const WRAP = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bin", "pomtree-job-run");
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const until = async (f: () => boolean, ms = 15000) => {
-  const e = Date.now() + ms;
-  while (!f() && Date.now() < e) await sleep(50);
-  assert.ok(f(), "condition");
-};
+const until = (f: () => boolean, ms = 15000) => untilShared(f, ms, { what: "jobs test condition", intervalMs: 50 });
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);

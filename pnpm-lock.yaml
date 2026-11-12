@@ -23,6 +23,10 @@ importers:
       '@pomtree/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@pomtree/testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/core: {}
 
