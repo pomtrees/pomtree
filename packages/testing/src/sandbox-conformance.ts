@@ -29,6 +29,8 @@ import type {
 } from "@pomtree/core";
 import { FakeSandbox, assertFacetPresence } from "./fakes.ts";
 import type { FakeSandboxOptions } from "./fakes.ts";
+import { SANDBOX_CAPABILITY_COVERAGE, coverageCounts, coverageTableFindings, suiteFloorFindings } from "./sandbox-capability-coverage.ts";
+import type { CapabilityTable } from "./sandbox-capability-coverage.ts";
 import { FaultPlan, assertStartIdempotent } from "./sandbox-faults.ts";
 import { realSetTimeout, scaled } from "./timing.ts";
 
@@ -107,6 +109,10 @@ export interface SandboxUnderTest {
   gate?(): string | false | null | undefined;
   // Fail the run when checks were gated, so a lane proves the real half ran.
   requireReal?: boolean;
+  // The suite floor fails a run in which no clause passed. A closed environment gate (every check gated) would otherwise dodge it, so a
+  // descriptor whose environment may legitimately be closed (no Docker on this machine) sets this to stay green; default false.
+  // requireReal still fails a gated run whatever this says.
+  acceptClosedEnvironment?: boolean;
   // Whether list(owner) must stamp the host and generation tags on its listings. Default "required": the port's list(owner) exists so
   // reconcile can fence by host and generation. "optional" is for a backend that cannot stamp them yet (the shared fake).
   listingTags?: "required" | "optional";
@@ -905,7 +911,11 @@ export function conformanceSummary(results: readonly ClauseResult[]): string {
 }
 
 export interface ConformanceOptions {
+  // The clauses to run. `runSandboxConformance`'s floor applies to this registered set: a declared capability whose clauses were left
+  // out of it fails the floor, so narrowing the set cannot hide a capability.
   clauses?: readonly Clause[];
+  // The coverage table the floor reads; default SANDBOX_CAPABILITY_COVERAGE. Tests inject a broken table here.
+  coverage?: CapabilityTable;
 }
 
 // Runs every clause and returns the report; does not register tests, so a test can run a deliberately broken sandbox and read the failures.
@@ -948,14 +958,44 @@ export function runSandboxConformance(sut: SandboxUnderTest, opts: ConformanceOp
     return why ? { id: "probe", status: "gated", reason: `${GATED}${why}` } : checkProbeResult(await effectiveOnce());
   });
   for (const clause of clauses) entry(clause.id, async () => runClause(clause, sut, sut.gate?.() ? declaredOnly() : await effectiveOnce()));
-  after(() => {
+  after(async () => {
     console.error(`CONFORMANCE ${sut.name}: ${conformanceSummary(results)}`);
+    const problems: string[] = [];
     const gated = results.filter((r) => r.status === "gated");
     if (sut.requireReal && gated.length > 0) {
-      throw new Error(
+      problems.push(
         `conformance for ${sut.name}: requireReal is set but ${gated.length} check(s) were gated (${[...new Set(gated.map((r) => (r as { reason: string }).reason))].join("; ")}); open the gate (start the engine or supply credentials) so the real adapter runs`,
       );
     }
+    // The suite floor: a run in which every entry ran must have exercised the clauses its declaration needs. A filtered run
+    // (--test-name-pattern, --test-only) has fewer results and is left alone.
+    const table = opts.coverage ?? SANDBOX_CAPABILITY_COVERAGE;
+    if (results.length === clauses.length + 2) {
+      const counts = coverageCounts(table);
+      console.error(`CONFORMANCE ${sut.name} floor: ${counts.covered} capabilities covered, ${counts.deferred} deferred`);
+      problems.push(...coverageTableFindings(table));
+      if (gated.length > 0) {
+        if (!sut.acceptClosedEnvironment && !sut.requireReal) {
+          problems.push(
+            `conformance for ${sut.name}: the environment gate is closed, so no clause ran and the run proves nothing; open the gate, or set acceptClosedEnvironment: true on the descriptor if a closed environment is legitimate for this lane`,
+          );
+        }
+      } else {
+        const eff = await effectiveOnce();
+        problems.push(
+          ...suiteFloorFindings({
+            name: sut.name,
+            declared: [...eff.declared].filter((c) => !eff.withheld.has(c)),
+            results,
+            table,
+            clauseIds: clauses.map((c) => c.id),
+          }),
+        );
+      }
+    } else {
+      console.error(`CONFORMANCE ${sut.name} floor: not checked, only ${results.length} of ${clauses.length + 2} checks ran (a filtered run)`);
+    }
+    if (problems.length > 0) throw new Error(problems.join("\n"));
   });
 }
 

@@ -355,7 +355,7 @@ test("mutation: a SandboxCapabilityError without an action fails unsupported-cap
 });
 
 // The registration path: node:test cases, t.skip, the stderr summary and the after() floor, observed through a child node --test run of a generated file.
-function runRegistered(mode: "plain" | "gated" | "gated-require" | "broken") {
+function runRegistered(mode: "plain" | "gated" | "gated-require" | "gated-unaccepted" | "broken" | "no-clauses" | "withheld") {
   const dir = tmpDir("conformance-register-");
   const file = join(dir, "register.test.ts");
   const mod = pathToFileURL(join(import.meta.dirname, "sandbox-conformance.ts")).href;
@@ -363,8 +363,17 @@ function runRegistered(mode: "plain" | "gated" | "gated-require" | "broken") {
     file,
     `import { runSandboxConformance, fakeSandboxUnderTest } from ${JSON.stringify(mod)};
 const mode = ${JSON.stringify(mode)};
-const base = fakeSandboxUnderTest(mode === "broken" ? { wrap: (f) => new Proxy(f, { get: (t, p) => (p === "list" ? async () => [] : typeof t[p] === "function" ? t[p].bind(t) : t[p]) }) } : {});
-runSandboxConformance(mode.startsWith("gated") ? { ...base, gate: () => "no engine", requireReal: mode === "gated-require" } : base);
+const base = fakeSandboxUnderTest(
+  mode === "broken"
+    ? { wrap: (f) => new Proxy(f, { get: (t, p) => (p === "list" ? async () => [] : typeof t[p] === "function" ? t[p].bind(t) : t[p]) }) }
+    : mode === "withheld"
+      ? { probe: { withheld: ["connect"], problems: [], account: null } }
+      : {},
+);
+runSandboxConformance(
+  mode.startsWith("gated") ? { ...base, gate: () => "no engine", requireReal: mode === "gated-require", acceptClosedEnvironment: mode === "gated" } : base,
+  mode === "no-clauses" ? { clauses: [] } : {},
+);
 `,
   );
   const env = { ...process.env };
@@ -399,4 +408,30 @@ test("registration: a failing clause fails the run", () => {
   const r = runRegistered("broken");
   assert.notEqual(r.code, 0, r.out);
   assert.match(r.out, /✖ fake conformance list-by-owner/);
+});
+
+test("registration: the floor fails a backend that registers no clause even though its declaration and probe pass", () => {
+  const r = runRegistered("no-clauses");
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /ran no clause/);
+  assert.match(r.out, /declares connect, but none of its clauses \(channel-drop-throws\) passed/);
+});
+
+test("registration: a closed gate fails the floor unless the descriptor accepts a closed environment", () => {
+  const r = runRegistered("gated-unaccepted");
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /environment gate is closed/);
+  assert.match(r.out, /acceptClosedEnvironment/);
+  assert.doesNotMatch(r.out, /requireReal is set/);
+});
+
+test("registration: the floor prints the covered and deferred counts", () => {
+  const r = runRegistered("plain");
+  assert.match(r.out, /floor: 5 capabilities covered, 22 deferred/);
+});
+
+test("registration: a capability the probe withholds is not required to have run, so a legitimate narrowed adapter passes the floor", () => {
+  const r = runRegistered("withheld");
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /withheld/);
 });
