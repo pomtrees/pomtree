@@ -125,6 +125,9 @@ importers:
       '@pomtree/sandbox-docker':
         specifier: workspace:*
         version: link:../sandbox-docker
+      '@pomtree/sandbox-kit':
+        specifier: workspace:*
+        version: link:../sandbox-kit
       '@pomtree/sched':
         specifier: workspace:*
         version: link:../sched

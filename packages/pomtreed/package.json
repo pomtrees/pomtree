@@ -19,6 +19,7 @@
     "@pomtree/observe": "workspace:*",
     "@pomtree/report-dir": "workspace:*",
     "@pomtree/sandbox-docker": "workspace:*",
+    "@pomtree/sandbox-kit": "workspace:*",
     "@pomtree/sched": "workspace:*",
     "@pomtree/store-sqlite": "workspace:*",
     "@pomtree/template-dir": "workspace:*",
