@@ -1,0 +1,26 @@
+{
+  "engine": "docker",
+  "provenance": "inferred",
+  "source": "docker image inspect --format {{.Id}}; P9 results for the containerd store (digests are placeholders)",
+  "accepted": [
+    {
+      "digestRaw": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "expected": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "note": "classic store image id, or containerd index digest"
+    }
+  ],
+  "rejected": [
+    {
+      "digestRaw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "note": "docker never prints a bare id; a bare id means the output is not an image id"
+    },
+    {
+      "digestRaw": "sha256:aaaa",
+      "note": "truncated"
+    },
+    {
+      "digestRaw": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "note": "uppercase hex"
+    }
+  ]
+}

@@ -8,10 +8,12 @@ import {
   egressNetworkProblems,
   EgressNetworkMismatchError,
   ensureEgressNetwork,
+  ICC_OPTION,
   removeEgressNetwork,
 } from "./network.ts";
 import { OK_EGRESS_NETWORK } from "./test-network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
+import { PODMAN_PROFILE } from "./engine-profile.ts";
 
 const NOT_FOUND = "docker network failed: Error response from daemon: network pomtree-egress not found";
 const EXISTS = "docker network failed: Error response from daemon: network with name pomtree-egress already exists";
@@ -172,4 +174,58 @@ test("start: network is ensured before any per-sandbox resource; a wrong network
   const bad = new DockerSandbox({ mounts: stubMounts(), exec: wrong.exec });
   await assert.rejects(bad.start(spec, "k-net-wrong"), (e: Error) => e instanceof SandboxStartError && /not a pomtree egress network/.test(e.message));
   assert.ok(!wrong.calls.some((c) => c[0] === "run" || (c[0] === "volume" && c[1] === "create")), "no proxy, volume or worker");
+});
+
+// ---- Podman dialect: wording and inspect field names; the fixtures live in fixtures/engine/podman ----
+
+const PODMAN_NOT_FOUND = "podman network failed: Error: unable to find network with name or ID pomtree-egress: network not found";
+const PODMAN_EXISTS = "podman network failed: Error: network name pomtree-egress already used: network already exists";
+const PODMAN_OK = JSON.stringify([
+  {
+    name: "pomtree-egress",
+    driver: "bridge",
+    internal: false,
+    options: { [ICC_OPTION]: "false" },
+    labels: { "pomtree.egress": "1", "pomtree.egress.network": "shared" },
+  },
+]);
+
+test("podman: a missing network and a lost create race are read in Podman's wording, and its lowercase inspect is validated", async () => {
+  let created = false;
+  const exec: Exec = async (args) => {
+    if (args[1] === "inspect") {
+      if (!created) throw new Error(PODMAN_NOT_FOUND);
+      return PODMAN_OK;
+    }
+    created = true;
+    throw new Error(PODMAN_EXISTS);
+  };
+  assert.equal(await ensureEgressNetwork(exec, EGRESS_NETWORK, PODMAN_PROFILE), "existing");
+  assert.equal(
+    await removeEgressNetwork(
+      async () => {
+        throw new Error(PODMAN_NOT_FOUND);
+      },
+      EGRESS_NETWORK,
+      PODMAN_PROFILE,
+    ),
+    false,
+  );
+});
+
+test("podman: Docker's wording is not read as Podman's, and a wrong Podman network names podman in the error", async () => {
+  const dockerNotFound = async () => {
+    throw new Error(NOT_FOUND);
+  };
+  await assert.rejects(ensureEgressNetwork(dockerNotFound, EGRESS_NETWORK, PODMAN_PROFILE), /network pomtree-egress not found/);
+  const wrong = JSON.stringify([{ name: "pomtree-egress", driver: "bridge", internal: true, options: {}, labels: {} }]);
+  await assert.rejects(
+    ensureEgressNetwork(async () => wrong, EGRESS_NETWORK, PODMAN_PROFILE),
+    (e: Error) =>
+      e instanceof EgressNetworkMismatchError &&
+      e.message.startsWith("podman network pomtree-egress exists but is not") &&
+      e.message.includes("(podman network rm pomtree-egress)"),
+  );
+  assert.deepEqual(egressNetworkProblems(PODMAN_OK, PODMAN_PROFILE), []);
+  assert.notDeepEqual(egressNetworkProblems(OK_EGRESS_NETWORK, PODMAN_PROFILE), [], "Docker's capitalized fields are not Podman's");
 });

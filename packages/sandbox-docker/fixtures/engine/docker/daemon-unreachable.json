@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "daemonUnreachable",
+  "provenance": "inferred",
+  "source": "docker CLI wording as asserted in docker.unit.test.ts",
+  "verb": "ps",
+  "exitCode": 1,
+  "stderr": "Cannot connect to the Docker daemon at unix://<socket>. Is the docker daemon running?",
+  "negative": {
+    "stderr": "OCI runtime exec failed: exec failed: unable to start container process: exec: \"/opt/x\": stat /opt/x: no such file or directory: unknown",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

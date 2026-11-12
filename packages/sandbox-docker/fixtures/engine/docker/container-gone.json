@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "containerGone",
+  "provenance": "inferred",
+  "source": "docker CLI wording as asserted in docker.unit.test.ts",
+  "verb": "inspect",
+  "exitCode": 1,
+  "stderr": "Error response from daemon: No such container: pomtree-<id>",
+  "negative": {
+    "stderr": "Error response from daemon: No such volume: pomtree-<id>",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "removalRace",
+  "provenance": "inferred",
+  "source": "libpod wording not captured; written from the libpod error names, replace when a real run is captured",
+  "verb": "rm",
+  "exitCode": 125,
+  "stderr": "Error: container <id> has already been removed",
+  "negative": {
+    "stderr": "Error: cannot remove container <id> as it is running - running or paused containers cannot be removed without force: container state improper",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

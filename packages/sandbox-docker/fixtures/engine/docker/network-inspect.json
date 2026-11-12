@@ -1,0 +1,11 @@
+{
+  "engine": "docker",
+  "provenance": "inferred",
+  "source": "docker network inspect --format {{json .}} (test-network.ts OK_EGRESS_NETWORK shape)",
+  "output": "{\"Name\":\"pomtree-egress\",\"Driver\":\"bridge\",\"Internal\":false,\"Options\":{\"com.docker.network.bridge.enable_icc\":\"false\"},\"Labels\":{\"pomtree.egress\":\"1\",\"pomtree.egress.network\":\"shared\"}}",
+  "expected": {
+    "driver": "bridge",
+    "internal": false
+  },
+  "negativeOutput": "{\"name\":\"pomtree-egress\",\"driver\":\"bridge\",\"internal\":false,\"options\":{},\"labels\":{}}"
+}

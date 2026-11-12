@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "noSuchNetwork",
+  "provenance": "inferred",
+  "source": "docker CLI wording as asserted in network.test.ts",
+  "verb": "network inspect",
+  "exitCode": 1,
+  "stderr": "Error response from daemon: network pomtree-egress not found",
+  "negative": {
+    "stderr": "Error response from daemon: error while removing network: network pomtree-egress has active endpoints",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

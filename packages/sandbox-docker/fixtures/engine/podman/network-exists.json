@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "networkExists",
+  "provenance": "inferred",
+  "source": "libpod wording",
+  "verb": "network create",
+  "exitCode": 125,
+  "stderr": "Error: network name pomtree-egress already used: network already exists",
+  "negative": {
+    "stderr": "Error: unable to find network with name or ID pomtree-egress: network not found",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "imageUnavailable",
+  "provenance": "inferred",
+  "source": "docker CLI wording as asserted in docker.unit.test.ts",
+  "verb": "run",
+  "exitCode": 125,
+  "stderr": "Error response from daemon: manifest for pomtree/agent:nope not found: manifest unknown: manifest unknown",
+  "negative": {
+    "stderr": "Error response from daemon: Get \"https://<registry>/v2/\": dial tcp: lookup <registry>: no such host",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "engine": "podman",
+  "provenance": "captured",
+  "source": "p9/results.md: podman image inspect --format {{.Id}} prints bare hex on Podman 6.2.0 (digest is a placeholder)",
+  "accepted": [
+    {
+      "digestRaw": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+      "expected": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "note": "bare hex, normalized"
+    },
+    {
+      "digestRaw": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "note": "an iidfile-style id is already canonical"
+    }
+  ],
+  "rejected": [
+    {
+      "digestRaw": "512eccabb65a",
+      "note": "12-char short id (P9 shortened digests): not a full id"
+    },
+    {
+      "digestRaw": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbx",
+      "note": "trailing junk"
+    }
+  ]
+}

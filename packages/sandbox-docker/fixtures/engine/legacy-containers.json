@@ -1,0 +1,44 @@
+{
+  "provenance": "inferred",
+  "source": "label maps as `docker inspect --format {{json .Config.Labels}}` prints them; legacy = pomtree=1 without pomtree.host or pomtree.generation; engineId is what `ps -aq` prints, never a label value",
+  "containers": [
+    {
+      "legacy": true,
+      "labels": {
+        "pomtree": "1",
+        "pomtree.sandbox": "sandbox-1",
+        "pomtree.agent": "a"
+      },
+      "engineId": "111111111111"
+    },
+    {
+      "legacy": true,
+      "labels": {
+        "pomtree": "1",
+        "pomtree.sandbox": "sandbox-2",
+        "pomtree.agent": "a",
+        "pomtree.host": "host-1"
+      },
+      "engineId": "222222222222"
+    },
+    {
+      "legacy": false,
+      "labels": {
+        "pomtree": "1",
+        "pomtree.sandbox": "sandbox-3",
+        "pomtree.agent": "a",
+        "pomtree.host": "host-1",
+        "pomtree.generation": "2"
+      },
+      "engineId": "333333333333"
+    },
+    {
+      "legacy": false,
+      "labels": {
+        "pomtree.sandbox": "sandbox-4",
+        "io.example.other": "x"
+      },
+      "engineId": "444444444444"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "imageUnavailable",
+  "provenance": "inferred",
+  "source": "libpod wording Auth-denied (\"requested access to the resource is denied\") is intentionally merged here: like a missing image it is permanent, and waiting never fixes it.",
+  "verb": "image inspect",
+  "exitCode": 125,
+  "stderr": "Error: pomtree/agent:nope: image not known",
+  "negative": {
+    "stderr": "Error: initializing source docker://<registry>/x:1: pinging container registry <registry>: Get \"https://<registry>/v2/\": dial tcp: lookup <registry>: no such host",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

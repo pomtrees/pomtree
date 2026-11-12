@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "nameInUse",
+  "provenance": "captured",
+  "source": "p9/results.md, duplicate-name run on Docker Engine 28.4.0 (container id scrubbed)",
+  "verb": "create",
+  "exitCode": 1,
+  "stderr": "Error response from daemon: Conflict. The container name \"/pomtree-<id>\" is already in use by container \"<id>\". You have to remove (or rename) that container to be able to reuse that name.",
+  "negative": {
+    "stderr": "Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:8080 failed: port is already allocated",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

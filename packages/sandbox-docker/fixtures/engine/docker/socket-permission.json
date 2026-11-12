@@ -1,0 +1,13 @@
+{
+  "engine": "docker",
+  "class": "socketPermission",
+  "provenance": "inferred",
+  "source": "docker CLI wording as asserted in the pre-dialect docker.unit.test.ts and the Docker Engine docs",
+  "verb": "ps",
+  "exitCode": 1,
+  "stderr": "permission denied while trying to connect to the Docker daemon socket at unix://<socket>: Get \"http://%2F<socket>/v1.24/containers/json\": dial unix <socket>: connect: permission denied",
+  "negative": {
+    "stderr": "Error response from daemon: error while creating mount source path '<path>': mkdir <path>: permission denied",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

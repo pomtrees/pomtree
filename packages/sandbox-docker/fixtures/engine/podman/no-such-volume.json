@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "noSuchVolume",
+  "provenance": "inferred",
+  "source": "libpod wording",
+  "verb": "volume rm",
+  "exitCode": 125,
+  "stderr": "Error: no volume with name \"pomtree-egress-<id>\" found: no such volume",
+  "negative": {
+    "stderr": "Error: no container with name or ID \"pomtree-<id>\" found: no such container",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

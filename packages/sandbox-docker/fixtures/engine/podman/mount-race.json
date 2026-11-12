@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "mountRace",
+  "provenance": "inferred",
+  "source": "libpod wording for a missing bind source",
+  "verb": "run",
+  "exitCode": 125,
+  "stderr": "Error: statfs <path>: no such file or directory",
+  "negative": {
+    "stderr": "Error: lstat <path>: no such file or directory",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

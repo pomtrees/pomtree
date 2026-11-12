@@ -17,7 +17,12 @@ interface Rule {
 }
 
 // Tracked fixture directories the scan covers. The planted-bad inputs under scrub-negative/ sit outside these on purpose.
-const SCANNED = [/^packages\/[^/]+\/src\/fixtures\//, /^packages\/[^/]+\/conformance\/fixtures\//, /^examples\/[^/]+\/conformance\/fixtures\//];
+const SCANNED = [
+  /^packages\/[^/]+\/src\/fixtures\//,
+  /^packages\/sandbox-docker\/fixtures\/engine\//,
+  /^packages\/[^/]+\/conformance\/fixtures\//,
+  /^examples\/[^/]+\/conformance\/fixtures\//,
+];
 const EXCLUDED = /(^|\/)scrub-negative\//;
 
 export function isScannedPath(path: string): boolean {

@@ -52,6 +52,12 @@ test("isScannedPath covers adapter fixture directories and excludes the planted-
   assert.equal(isScannedPath("packages/harness-pi/src/fixtures/plain.jsonl"), true);
   assert.equal(isScannedPath("packages/sandbox-e2b/conformance/fixtures/x.jsonl"), true);
   assert.equal(isScannedPath("examples/foo/conformance/fixtures/x.jsonl"), true);
+  assert.equal(isScannedPath("packages/sandbox-docker/fixtures/engine/docker/name-in-use.json"), true);
+  const planted = scanText("packages/sandbox-docker/fixtures/engine/docker/x.json", `{"stderr": "Authorization: Bearer ${"a1b2c3d4".repeat(5)}"}`);
+  assert.ok(
+    isScannedPath("packages/sandbox-docker/fixtures/engine/docker/x.json") && planted.length > 0,
+    "a planted token under the engine fixtures is flagged",
+  );
   assert.equal(isScannedPath("packages/e2e/src/scrub-negative/absolute-path.txt"), false);
   assert.equal(isScannedPath("packages/core/src/index.ts"), false);
 });

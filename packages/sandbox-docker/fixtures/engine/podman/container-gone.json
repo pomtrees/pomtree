@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "containerGone",
+  "provenance": "inferred",
+  "source": "libpod wording for a stopped or absent container; p9 notes the compat text The \"is in state X: container state improper\" alternative is inferred (not captured); the other forms are the captured-shape wording.",
+  "verb": "kill",
+  "exitCode": 125,
+  "stderr": "Error: no container with name or ID \"pomtree-<id>\" found: no such container",
+  "negative": {
+    "stderr": "Error: cannot remove container <id> as it is running - running or paused containers cannot be removed without force: container state improper",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

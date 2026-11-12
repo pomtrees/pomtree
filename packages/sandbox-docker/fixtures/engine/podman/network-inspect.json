@@ -1,0 +1,11 @@
+{
+  "engine": "podman",
+  "provenance": "inferred",
+  "source": "podman network inspect: lowercase field names, as netavark networks are listed; the one-element array form is also accepted",
+  "output": "[{\"name\":\"pomtree-egress\",\"driver\":\"bridge\",\"internal\":false,\"options\":{\"com.docker.network.bridge.enable_icc\":\"false\"},\"labels\":{\"pomtree.egress\":\"1\",\"pomtree.egress.network\":\"shared\"}}]",
+  "expected": {
+    "driver": "bridge",
+    "internal": false
+  },
+  "negativeOutput": "{\"Name\":\"pomtree-egress\",\"Driver\":\"bridge\",\"Internal\":false,\"Options\":{},\"Labels\":{}}"
+}

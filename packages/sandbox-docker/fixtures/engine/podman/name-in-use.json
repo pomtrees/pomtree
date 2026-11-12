@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "nameInUse",
+  "provenance": "captured",
+  "source": "p9/results.md, duplicate-name run on Podman 6.2.0 (container id scrubbed)",
+  "verb": "run",
+  "exitCode": 125,
+  "stderr": "Error: creating container storage: the container name \"pomtree-<id>\" is already in use by <id>. You have to remove that container to be able to reuse that name: that name is already in use",
+  "negative": {
+    "stderr": "Error: cannot listen on the TCP port: listen tcp4 :8080: bind: address already in use",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

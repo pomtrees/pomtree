@@ -2,7 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { IMAGE_REBUILD_ACTION, SandboxStartError, SandboxUnavailableError, validateDeclaration, type Sandbox, type SandboxOwner } from "@pomtree/core";
+import {
+  DOCKER_GROUP_ACTION,
+  IMAGE_REBUILD_ACTION,
+  sandboxIdForKey,
+  SandboxStartError,
+  SandboxUnavailableError,
+  validateDeclaration,
+  type Sandbox,
+  type SandboxOwner,
+} from "@pomtree/core";
 import { classifyDockerError, classifyStartError, DockerSandbox, egressProbeFailure, makeExec, removalRace } from "./docker.ts";
 import type { ExecFileFn } from "./docker.ts";
 import { DOCKER_PROFILE, PODMAN_PROFILE } from "./engine-profile.ts";
@@ -1311,4 +1320,150 @@ test("lookupEngineSync: a socket nobody answers on is absent (a skip), and a rem
   assert.equal(absent.kind, "absent");
   const refused: EngineLookup = lookupEngineSync("podman", { ...process.env, CONTAINER_HOST: "tcp://203.0.113.1:2375" });
   assert.equal(refused.kind, "refused");
+});
+
+// ---- Engine dialect wiring; the per-class patterns are pinned by fixtures in engine-dialect.test.ts ----
+
+const PODMAN_PERMISSION =
+  "podman ps failed: Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`\nError: unable to connect to Podman socket: failed to connect: dial unix <socket>: connect: permission denied";
+
+test("classifyDockerError: a Podman 'Cannot connect' line that ends in permission denied is not retryable unavailability", () => {
+  const e = new Error(PODMAN_PERMISSION);
+  assert.equal(classifyDockerError(e, PODMAN_PROFILE), e);
+});
+
+test("classifyStartError: the socket-permission refusal names the active engine and its own action; Docker's text is unchanged", () => {
+  const podman = classifyStartError(new Error(PODMAN_PERMISSION), PODMAN_PROFILE);
+  assert.equal(podman.kind, "endpoint_unreachable");
+  assert.equal(podman.retryable, false);
+  assert.match(
+    podman.message,
+    /^podman socket permission denied: [\s\S]*; the Podman socket is not open to this user: on Linux run `systemctl --user start podman\.socket`, on macOS run `podman machine start`/,
+  );
+  const dockerMsg = "docker ps failed: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock";
+  const docker = classifyStartError(new Error(dockerMsg));
+  assert.equal(docker.message, `docker socket permission denied: ${dockerMsg}; ${DOCKER_GROUP_ACTION}`);
+});
+
+test("classifyStartError: Podman's 'image not known' is a permanent image error under its profile and unknown under Docker's", () => {
+  const line = new Error("podman run failed: Error: pomtree/agent:nope: image not known");
+  assert.equal(classifyStartError(line, PODMAN_PROFILE).kind, "image_unavailable");
+  assert.equal(classifyStartError(line).kind, "unknown");
+});
+
+test("removalRace: Podman's wording matches under its profile only, and a removal in progress is not an absent container", () => {
+  const podmanRace = new Error("podman rm failed: Error: container abc has already been removed");
+  assert.equal(removalRace(podmanRace, PODMAN_PROFILE), true);
+  assert.equal(removalRace(podmanRace), false);
+  assert.equal(removalRace(new Error("Error: no container with name or ID x found: no such container"), PODMAN_PROFILE), false);
+});
+
+test("imageIdentity: Podman's bare-hex id stays the engine-local id and is normalized only for the config digest; Docker refuses a bare id", async () => {
+  const bare = "b".repeat(64);
+  const podman = new DockerSandbox({ mounts: stubMounts(), profile: PODMAN_PROFILE, socket: PODMAN_SOCK, exec: async () => `${bare}\tb3fe8f9` });
+  assert.deepEqual(await podman.imageIdentity("alpine:3"), { engineLocalId: bare, configDigest: `sha256:${bare}`, revision: "b3fe8f9" });
+  const docker = new NetSandbox({ mounts: stubMounts(), exec: async (args) => (args[0] === "info" ? CLASSIC : `${bare}\t`) });
+  await assert.rejects(docker.imageIdentity("alpine:3"), new RegExp(`docker reported the image id "${bare}", which is not sha256:<64 hex>`));
+});
+
+test("egressProxyImage by local id: Podman's bare-hex answer matches the pinned sha256:<hex>; a different id still fails", async () => {
+  const run = async (answer: string) => {
+    const sb = new DockerSandbox({
+      mounts: stubMounts(),
+      profile: PODMAN_PROFILE,
+      socket: PODMAN_SOCK,
+      egressProxyImage: PIN,
+      execFile: recordingExecFile([], (args) => (args[0] === "image" ? answer : "")),
+      warn: () => {},
+    });
+    return sb.start(podmanEgressSpec, `k-podman-id-${answer.slice(0, 4)}`);
+  };
+  await run("b".repeat(64));
+  await assert.rejects(run("c".repeat(64)), /do not match sha256:b{64}/);
+});
+
+test("egress cleanup under Podman: its 'no container with name or ID' wording is already-gone, not a warning; a busy volume warns", async () => {
+  const warnings: string[] = [];
+  const refuse =
+    (volumeText: string): Exec =>
+    async (args) => {
+      if (args[0] === "volume") throw new Error(`podman volume failed: ${volumeText}`);
+      if (args[0] === "rm") throw new Error(`podman rm failed: Error: no container with name or ID "x" found`);
+      return "";
+    };
+  const gone = new DockerSandbox({
+    mounts: stubMounts(),
+    profile: PODMAN_PROFILE,
+    socket: PODMAN_SOCK,
+    exec: refuse(`Error: no volume with name "v" found: no such volume`),
+    warn: (m) => warnings.push(m),
+  });
+  await gone["cleanupEgress"](sandboxIdForKey("k-cleanup"));
+  assert.equal(warnings.length, 0);
+  const busy = new DockerSandbox({
+    mounts: stubMounts(),
+    profile: PODMAN_PROFILE,
+    socket: PODMAN_SOCK,
+    exec: refuse("Error: volume v is being used"),
+    warn: (m) => warnings.push(m),
+  });
+  await busy["cleanupEgress"](sandboxIdForKey("k-cleanup"));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /egress socket volume .* could not be removed .*podman volume rm/);
+});
+
+test("legacyContainerRefusal: containers without the host and generation labels are refused by engine id for the active engine; current ones are not", async () => {
+  const rows: Record<string, Record<string, string>> = {
+    aaaaaaaaaaaa: { pomtree: "1", "pomtree.sandbox": "legacy1", "pomtree.agent": "a" },
+    bbbbbbbbbbbb: { pomtree: "1", "pomtree.sandbox": "current1", "pomtree.agent": "a", "pomtree.host": "h", "pomtree.generation": "1" },
+  };
+  const exec: Exec = async (args) => {
+    if (args[0] === "ps") return Object.keys(rows).join("\n");
+    if (args[0] === "image") return "{}";
+    const key = args.at(-1)!;
+    return `${rows[key]!["pomtree.sandbox"]}\ta\t${JSON.stringify(rows[key])}\timg\trunning`;
+  };
+  const refusal = await new NetSandbox({ mounts: stubMounts(), exec }).legacyContainerRefusal();
+  assert.match(refusal ?? "", /^1 container on the docker engine predates .*run `docker rm -f 'aaaaaaaaaaaa'`/);
+  assert.ok(!refusal?.includes("bbbbbbbbbbbb") && !refusal?.includes("legacy1"));
+  delete rows.aaaaaaaaaaaa;
+  assert.equal(await new NetSandbox({ mounts: stubMounts(), exec }).legacyContainerRefusal(), undefined);
+});
+
+test("legacyContainerRefusal: a hostile or empty pomtree.sandbox label never reaches the command; the engine's own id does", async () => {
+  const hostile = ["x; rm -rf ~", "a b", `q'uote"`, "line\nbreak", "$(reboot)", ""];
+  const rows: Record<string, string> = {};
+  hostile.forEach((label, i) => {
+    rows[`${String(i).repeat(12)}`] = label;
+  });
+  const exec: Exec = async (args) => {
+    if (args[0] === "ps") return Object.keys(rows).join("\n");
+    if (args[0] === "image") return "{}";
+    const label = rows[args.at(-1)!]!;
+    return `${label.replace(/\n/g, " ")}\ta\t${JSON.stringify({ pomtree: "1", "pomtree.sandbox": label })}\timg\trunning`;
+  };
+  const refusal = (await new NetSandbox({ mounts: stubMounts(), exec }).legacyContainerRefusal()) ?? "";
+  for (const bad of ["rm -rf", "$(reboot)", "q'uote", "break", "pomtree-`", "pomtree- ", "pomtree-'"]) assert.ok(!refusal.includes(bad), bad);
+  assert.match(refusal, /^6 containers /);
+  assert.match(refusal, /'000000000000'/);
+});
+
+test("egressProxyImage by bare hex under Podman: the engine is given the bare hex it printed, never a sha256: rewrite; Docker refuses a bare id", async () => {
+  const bare = "d".repeat(64);
+  const launches: Launch[] = [];
+  const sb = new DockerSandbox({
+    mounts: stubMounts(),
+    profile: PODMAN_PROFILE,
+    socket: PODMAN_SOCK,
+    egressProxyImage: bare,
+    execFile: recordingExecFile(launches, (args) => (args[0] === "image" ? bare : "")),
+    warn: () => {},
+  });
+  await sb.start(podmanEgressSpec, "k-podman-bare");
+  const inspect = launches.find((l) => l.args[0] === "image" && l.args[1] === "inspect");
+  assert.equal(inspect?.args.at(-1), bare);
+  const sidecar = launches.find((l) => l.args[0] === "run" && l.args.includes("--entrypoint"));
+  assert.ok(sidecar?.args.includes(bare), "the sidecar runs the engine's own id form");
+  assert.ok(!launches.some((l) => l.args.includes(`sha256:${bare}`)), "no call carries a rewritten reference");
+  assert.throws(() => new DockerSandbox({ mounts: stubMounts(), egressProxyImage: bare }), /is not digest-pinned/);
 });

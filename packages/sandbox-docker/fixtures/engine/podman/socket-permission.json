@@ -1,0 +1,13 @@
+{
+  "engine": "podman",
+  "class": "socketPermission",
+  "provenance": "inferred",
+  "source": "libpod wording, composed from the connect-failure text in p9/results.md and the dial error shape",
+  "verb": "ps",
+  "exitCode": 125,
+  "stderr": "Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`, or try `podman machine init` and `podman machine start` to manage a new Linux VM\nError: unable to connect to Podman socket: failed to connect: dial unix <socket>: connect: permission denied",
+  "negative": {
+    "stderr": "Error: mkdir <path>: permission denied",
+    "note": "similar-looking line that must not classify as this class"
+  }
+}

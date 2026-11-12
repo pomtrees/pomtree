@@ -41,6 +41,7 @@ import { LOOPBACK_BRIDGE_MAIN, LOOPBACK_PORTS, NODE_BIN } from "./container-cont
 import { openExecStream } from "./exec-stream.ts";
 import { buildAttachRequest, buildResizeRequest, createTerminalSession, engineCall, engineSocketPath, realEngineApi, type EngineApi } from "./terminal.ts";
 import { cliSocketEnv, DOCKER_PROFILE, type EngineProfile } from "./engine-profile.ts";
+import { findLegacyContainers, isEngineError, legacyContainerRefusal, normalizeImageId } from "./engine-dialect.ts";
 import { collectResultWork } from "./result-work.ts";
 import {
   defaultDenyEgress,
@@ -92,7 +93,8 @@ export interface DockerDeps {
   // opt-out because a missing proxy would otherwise silently grant unrestricted network access.
   enforceEgress?: boolean;
   // Rebuilt agent image containing /opt/pomtree/egress/proxy.ts, digest-pinned: `name[:tag]@sha256:<64 hex>` or a local
-  // image id `sha256:<64 hex>` (what agent-image's build.ts prints). Checked against the local image before the first sidecar
+  // image id `sha256:<64 hex>`: field 2 (the engine-local id) of the build line `<tag> <engineLocalId> <configDigest> [mediaType]`
+  // that agent-image's build.ts prints, not the config digest in field 3. Checked against the local image before the first sidecar
   // start; never pulled by the adapter. Defaults to spec.image (with a warning; see TODO(egress-image)).
   egressProxyImage?: string;
   // Byte cap for relayed daemon/model-proxy connections, written into the sidecar's config as limits.relayMaxBytes.
@@ -119,10 +121,10 @@ export interface DockerDeps {
 
 // Maps a CLI failure to SandboxUnavailableError when the engine is unreachable, and returns the original error otherwise. These are
 // the only failures the daemon treats as retryable "sandbox unavailable"; every other failure stays a generic Error. What counts as
-// unreachable is the profile's data (engine-profile.ts): a bare "no such file or directory" is not enough, since a container-side
-// missing path says the same; the socket dial context is required.
+// unreachable is the profile's data (engine-profile.ts, read through engine-dialect.ts): a bare "no such file or directory" is not
+// enough, since a container-side missing path says the same; the socket dial context is required.
 export function classifyDockerError(cause: Error, profile: EngineProfile = DOCKER_PROFILE): Error {
-  return profile.errors.daemonUnreachable.test(cause.message) ? new SandboxUnavailableError() : cause;
+  return isEngineError(profile, "daemonUnreachable", cause.message) ? new SandboxUnavailableError() : cause;
 }
 
 const defaultExecFile: ExecFileFn = (file, args, options, callback) => execFile(file, args, options, (err, stdout, stderr) => callback(err, stdout, stderr));
@@ -149,8 +151,10 @@ export function hostAddressList(ifaces: NodeJS.Dict<Pick<NetworkInterfaceInfo, "
 
 // The digest an egressProxyImage reference pins (`sha256:<hex>`), or undefined when it is not digest-pinned. A bare
 // `sha256:<hex>` is a local image id (verified against .Id); `name[:tag]@sha256:<hex>` is verified against .RepoDigests.
-export function pinnedImageDigest(ref: string): { digest: string; imageId: boolean } | undefined {
+export function pinnedImageDigest(ref: string, profile: EngineProfile = DOCKER_PROFILE): { digest: string; imageId: boolean } | undefined {
   if (/^sha256:[0-9a-f]{64}$/.test(ref)) return { digest: ref, imageId: true };
+  // Podman prints and resolves a local image id as bare hex: that form is kept as the reference, and only compared as sha256:<hex>.
+  if (profile.id === "podman" && /^[0-9a-f]{64}$/.test(ref)) return { digest: `sha256:${ref}`, imageId: true };
   const at = ref.lastIndexOf("@");
   return at > 0 && /^[^@\s]+$/.test(ref.slice(0, at)) && /^sha256:[0-9a-f]{64}$/.test(ref.slice(at + 1))
     ? { digest: ref.slice(at + 1), imageId: false }
@@ -158,11 +162,11 @@ export function pinnedImageDigest(ref: string): { digest: string; imageId: boole
 }
 
 const name = (id: SandboxId) => `pomtree-${id}`;
-const gone = (e: unknown) => /no such container|no such object|is not running/i.test(String(e instanceof Error ? e.message : e));
-// Docker's rejection of `rm` while another remover already holds the container ("removal of container X is already in progress").
-// Deliberately separate from gone(): readState and wait must not read an in-progress removal as an absent container.
-export const removalRace = (e: unknown) => /removal of container \S+ is already in progress/i.test(String(e instanceof Error ? e.message : e));
 const errmsg = (e: unknown) => String(e instanceof Error ? e.message : e);
+const gone = (e: unknown, profile: EngineProfile = DOCKER_PROFILE) => isEngineError(profile, "containerGone", errmsg(e));
+// The engine's rejection of `rm` while another remover already holds the container (Docker: "removal of container X is already in progress").
+// Deliberately separate from gone(): readState and wait must not read an in-progress removal as an absent container.
+export const removalRace = (e: unknown, profile: EngineProfile = DOCKER_PROFILE) => isEngineError(profile, "removalRace", errmsg(e));
 
 // Default output() buffer budget (bytes).
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -170,18 +174,10 @@ const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 // Default cap on the delivered-exit cache.
 const DEFAULT_MAX_EXITED_CACHE = 1024;
 
-// Docker CLI diagnostics that classify a `start` failure. A missing manifest / nonexistent image
-// is permanent (image_unavailable, not retryable); a transient registry/network failure (pull
-// interrupted, DNS/TLS/timeout, registry rate limit) may succeed on retry (pull_failed).
-const IMAGE_UNAVAILABLE =
-  /manifest for .* not found|manifest unknown|no such image|pull access denied|repository .* not found|not found: manifest|image .* not found/i;
-const PULL_FAILED =
-  /error pulling image|pull .* failed|dial tcp|tls handshake|i\/o timeout|timeout|toomanyrequests|rate limit|connection reset|no route to host|no such host|temporary failure|get https?:\/\//i;
+// The Podman counterpart of DOCKER_GROUP_ACTION: its rootless socket is the user's own, so the fix is the socket, not a group.
+const PODMAN_SOCKET_ACTION =
+  "the Podman socket is not open to this user: on Linux run `systemctl --user start podman.socket`, on macOS run `podman machine start`, and run pomtreed as the user that owns the socket";
 
-// The docker CLI's refusal when the user cannot open the daemon socket (older and newer wordings). Not retryable: waiting never grants access.
-const SOCKET_PERMISSION = /permission denied while trying to connect to the docker (daemon socket|api)/i;
-
-const MOUNT_RACE = /bind source path does not exist/i;
 const MOUNT_RACE_RETRIES = 2;
 const MOUNT_RACE_DELAY_MS = 250;
 
@@ -189,15 +185,19 @@ const MOUNT_RACE_DELAY_MS = 250;
 // SandboxUnavailableError reaching here is the daemon-unreachable signal produced by
 // classifyDockerError (the real docker exec path), which becomes endpoint_unreachable; otherwise
 // the message is classified as a bad image ref, a transient pull/network failure, or unknown.
-export function classifyStartError(cause: unknown): SandboxStartError {
+export function classifyStartError(cause: unknown, profile: EngineProfile = DOCKER_PROFILE): SandboxStartError {
   if (cause instanceof SandboxUnavailableError) {
     return new SandboxStartError("endpoint_unreachable", cause.message, true);
   }
   const message = errmsg(cause);
-  if (SOCKET_PERMISSION.test(message))
-    return new SandboxStartError("endpoint_unreachable", `docker socket permission denied: ${message}; ${DOCKER_GROUP_ACTION}`, false);
-  if (IMAGE_UNAVAILABLE.test(message)) return new SandboxStartError("image_unavailable", message, false);
-  if (PULL_FAILED.test(message)) return new SandboxStartError("pull_failed", message, true);
+  if (isEngineError(profile, "socketPermission", message))
+    return new SandboxStartError(
+      "endpoint_unreachable",
+      `${profile.binary} socket permission denied: ${message}; ${profile.id === "podman" ? PODMAN_SOCKET_ACTION : DOCKER_GROUP_ACTION}`,
+      false,
+    );
+  if (isEngineError(profile, "imageUnavailable", message)) return new SandboxStartError("image_unavailable", message, false);
+  if (isEngineError(profile, "pullFailed", message)) return new SandboxStartError("pull_failed", message, true);
   return new SandboxStartError("unknown", message, false);
 }
 
@@ -205,8 +205,8 @@ export function classifyStartError(cause: unknown): SandboxStartError {
 // own kind (the operator's fix is the same as for the worker image); any other failure there is `egress_start_failed`, not
 // `unknown`, so the daemon can say the network sidecar (not the agent image) is what failed. Not retryable unless the caller
 // built a typed error that says so (a sidecar still running when its readiness probe failed): it fails closed.
-export function egressStartError(cause: unknown): SandboxStartError {
-  const typed = cause instanceof SandboxStartError ? cause : classifyStartError(cause);
+export function egressStartError(cause: unknown, profile: EngineProfile = DOCKER_PROFILE): SandboxStartError {
+  const typed = cause instanceof SandboxStartError ? cause : classifyStartError(cause, profile);
   if (typed.kind !== "unknown") return typed;
   return new SandboxStartError("egress_start_failed", `egress proxy start failed: ${typed.message}`, false);
 }
@@ -399,9 +399,9 @@ export class DockerSandbox implements Sandbox {
     this.mounts = deps.mounts;
     this.pidsLimit = deps.pidsLimit; // unset: the runtime shape's limit applies
     this.maxExitedCache = deps.maxExitedCache ?? DEFAULT_MAX_EXITED_CACHE;
-    if (deps.egressProxyImage !== undefined && !pinnedImageDigest(deps.egressProxyImage))
+    if (deps.egressProxyImage !== undefined && !pinnedImageDigest(deps.egressProxyImage, this.profile))
       throw new Error(
-        `egressProxyImage ${JSON.stringify(deps.egressProxyImage)} is not digest-pinned: set it to name[:tag]@sha256:<64 hex> or a local image id sha256:<64 hex>`,
+        `egressProxyImage ${JSON.stringify(deps.egressProxyImage)} is not digest-pinned: set it to name[:tag]@sha256:<64 hex> or a local image id ${this.profile.id === "podman" ? "(<64 hex> or sha256:<64 hex>)" : "sha256:<64 hex>"}`,
       );
     if (deps.egressRelayMaxBytes !== undefined && !(Number.isSafeInteger(deps.egressRelayMaxBytes) && deps.egressRelayMaxBytes > 0))
       throw new Error(`egressRelayMaxBytes ${JSON.stringify(deps.egressRelayMaxBytes)} must be a positive integer byte count`);
@@ -461,7 +461,7 @@ export class DockerSandbox implements Sandbox {
         }
       }
       await this.startEgress(id, restricted).catch((e: unknown) => {
-        throw egressStartError(e);
+        throw egressStartError(e, this.profile);
       });
       egressStarted = true;
       await this.runWithRetry(id, restricted, mounts);
@@ -473,7 +473,7 @@ export class DockerSandbox implements Sandbox {
       // A sandbox `docker run` failure after a successful startEgress would otherwise leak the
       // proxy/network; reclaim them best-effort before surfacing the typed start error.
       if (egressStarted) await this.cleanupEgress(id).catch(() => {});
-      throw e instanceof SandboxStartError ? e : classifyStartError(e);
+      throw e instanceof SandboxStartError ? e : classifyStartError(e, this.profile);
     } finally {
       const n = (this.starting.get(id) ?? 1) - 1;
       if (n > 0) this.starting.set(id, n);
@@ -551,14 +551,14 @@ export class DockerSandbox implements Sandbox {
         // TODO(sandbox-mount-race): Docker Desktop transiently reports `bind source path does not exist`
         // for a workspace dir created moments earlier (clone+rename); root cause unproven. Current
         // behavior: retry up to MOUNT_RACE_RETRIES times, MOUNT_RACE_DELAY_MS apart, then fail as before.
-        if (MOUNT_RACE.test(errmsg(e)) && mountRetries < MOUNT_RACE_RETRIES) {
+        if (isEngineError(this.profile, "mountRace", errmsg(e)) && mountRetries < MOUNT_RACE_RETRIES) {
           mountRetries++;
           await this.exec(["rm", "-f", name(id)]).catch(() => {});
           await new Promise((r) => setTimeout(r, MOUNT_RACE_DELAY_MS));
           attempt--;
           continue;
         }
-        const typed = classifyStartError(e);
+        const typed = classifyStartError(e, this.profile);
         if (typed.kind !== "pull_failed" || attempt > this.startRetries) throw typed;
         await this.exec(["rm", "-f", name(id)]).catch(() => {});
         await new Promise((r) => setTimeout(r, this.retryDelayMs(attempt)));
@@ -657,7 +657,7 @@ export class DockerSandbox implements Sandbox {
     // The shared network is validated (ICC off, ours) or created before anything per-sandbox exists; a wrong
     // same-named network fails the start here. It is never removed by this sandbox's cleanup.
     // A sidecar on its own pasta network (rootless Podman) is isolated by construction: no shared network exists to validate.
-    if (describeRunHardening(spec, {}, this.profile).sidecarNetwork !== "pasta") await ensureEgressNetwork(this.exec, this.egressNetwork);
+    if (describeRunHardening(spec, {}, this.profile).sidecarNetwork !== "pasta") await ensureEgressNetwork(this.exec, this.egressNetwork, this.profile);
     const spool = audited ? prepareEgressSpool(this.egressAuditRoot!, id, config) : undefined;
     // A crash between startEgress and the worker run can leave this sandbox's exact-named proxy and socket volume;
     // reclaim them (names derive from the id, no worker exists) so start is idempotent. Audit spools are never touched.
@@ -750,7 +750,7 @@ export class DockerSandbox implements Sandbox {
       return spec.image;
     }
     if (this.egressImageVerified) return ref;
-    const pin = pinnedImageDigest(ref);
+    const pin = pinnedImageDigest(ref, this.profile);
     if (!pin) throw new Error(`egressProxyImage ${ref} is not digest-pinned`); // unreachable: the constructor refused it
     let out: string;
     try {
@@ -762,7 +762,7 @@ export class DockerSandbox implements Sandbox {
       );
     }
     let found: string[] = [];
-    if (pin.imageId) found = [out.trim()];
+    if (pin.imageId) found = [normalizeImageId(this.profile, out) ?? out.trim()];
     else {
       try {
         const parsed: unknown = JSON.parse(out || "null");
@@ -792,13 +792,13 @@ export class DockerSandbox implements Sandbox {
     let proxyGone = true;
     await this.exec(["rm", "-f", proxy]).catch((e) => {
       proxyGone = false;
-      if (!gone(e))
+      if (!gone(e, this.profile))
         this.warn(
           `egress sidecar ${proxy} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run ${this.profile.binary} rm -f ${proxy}`,
         );
     });
     await this.exec(["volume", "rm", volume]).catch((e) => {
-      if (!/no such volume/i.test(errmsg(e)))
+      if (!isEngineError(this.profile, "noSuchVolume", errmsg(e)))
         this.warn(
           `egress socket volume ${volume} could not be removed (${errmsg(e)}); the next boot's sweep reclaims it, or run ${this.profile.binary} volume rm ${volume}`,
         );
@@ -898,7 +898,7 @@ export class DockerSandbox implements Sandbox {
       const status = rawStatus && /^[a-z]+$/.test(rawStatus) ? rawStatus : undefined;
       return { running: running === "true", exitCode: running === "true" ? null : Number(code), oomKilled: oom === "true", networkMode, status };
     } catch (e) {
-      if (gone(e)) return null;
+      if (gone(e, this.profile)) return null;
       throw e;
     }
   }
@@ -918,7 +918,7 @@ export class DockerSandbox implements Sandbox {
       if (late !== undefined) return { exitCode: late.exitCode, ...(late.oomKilled ? { oomKilled: true } : {}) };
       // TODO(exit-race): container removed externally before its exit was observed and no cached code exists;
       // the exit code and last stderr are unrecoverable here (the journal holds what output() already streamed).
-      if (gone(e)) throw new Error(`sandbox ${id} was removed before its exit was observed (exit code unknown)`);
+      if (gone(e, this.profile)) throw new Error(`sandbox ${id} was removed before its exit was observed (exit code unknown)`);
       throw e;
     }
   }
@@ -928,7 +928,7 @@ export class DockerSandbox implements Sandbox {
     try {
       exitCode = Number(await this.exec(["wait", name(id)]));
     } catch (e) {
-      if (!gone(e)) throw e;
+      if (!gone(e, this.profile)) throw e;
     }
     // Capture OOMKilled BEFORE rm -f; after removal the flag is gone for good.
     const state = await this.readState(id);
@@ -946,7 +946,7 @@ export class DockerSandbox implements Sandbox {
     // TODO(finish-serialize): kill, stop and reap paths are not serialized per sandbox, so two finishers can race on this rm; the loser
     // is tolerated (someone else is removing the container) and goes on to cleanupEgress without waiting for the removal to complete.
     await this.exec(["rm", "-f", name(id)]).catch((e) => {
-      if (!gone(e) && !removalRace(e)) throw e;
+      if (!gone(e, this.profile) && !removalRace(e, this.profile)) throw e;
     });
     await this.cleanupEgress(id);
   }
@@ -954,14 +954,14 @@ export class DockerSandbox implements Sandbox {
   // The key is accepted for the port contract; stop and kill are idempotent by nature ("already gone" is success).
   async stop(id: SandboxId, graceMs: number, _idempotencyKey: string): Promise<void> {
     await this.exec(["stop", "-t", String(stopTimeoutSeconds(graceMs)), name(id)]).catch((e) => {
-      if (!gone(e)) throw e;
+      if (!gone(e, this.profile)) throw e;
     });
     await this.finish(id);
   }
 
   async kill(id: SandboxId, _idempotencyKey: string): Promise<void> {
     await this.exec(["kill", name(id)]).catch((e) => {
-      if (!gone(e)) throw e;
+      if (!gone(e, this.profile)) throw e;
     });
     await this.finish(id);
   }
@@ -976,7 +976,9 @@ export class DockerSandbox implements Sandbox {
   }
 
   // Every labelled container with its raw labels, caller labels and Docker status; list and reclaim filter it.
-  private async scan(): Promise<{ id: SandboxId; agent: string; raw: Record<string, string>; labels: Record<string, string>; status: string }[]> {
+  private async scan(): Promise<
+    { id: SandboxId; engineId: string; agent: string; raw: Record<string, string>; labels: Record<string, string>; status: string }[]
+  > {
     const containers = await this.exec(["ps", "-aq", "--filter", `label=${LABEL}=1`]);
     if (!containers) return [];
     // `docker ps` exposes .Labels as an ambiguous comma-separated string. Inspect the canonical
@@ -1003,7 +1005,7 @@ export class DockerSandbox implements Sandbox {
       try {
         out = await this.exec(["inspect", "--format", format, container]);
       } catch (e) {
-        if (gone(e)) continue;
+        if (gone(e, this.profile)) continue;
         throw e;
       }
       const [id = "", agent = "", json, image, status = ""] = out.split("\t");
@@ -1021,7 +1023,7 @@ export class DockerSandbox implements Sandbox {
       } catch {
         /* unparseable label map: report none */
       }
-      sandboxes.push({ id, agent, raw, labels, status });
+      sandboxes.push({ id, engineId: container, agent, raw, labels, status });
     }
     return sandboxes;
   }
@@ -1048,6 +1050,13 @@ export class DockerSandbox implements Sandbox {
         state: listingState(c.status),
         ...(Object.keys(c.labels).length ? { labels: c.labels } : {}),
       }));
+  }
+
+  // The refusal text when any pomtree container on the engine predates the host and generation labels (engine-dialect.ts), or
+  // undefined when none does. Pure over one scan; the caller (boot) decides to refuse. Pomtree never removes these containers.
+  async legacyContainerRefusal(): Promise<string | undefined> {
+    const legacy = findLegacyContainers((await this.scan()).map((c) => ({ engineId: c.engineId, labels: c.raw })));
+    return legacy.length ? legacyContainerRefusal(this.profile, legacy) : undefined;
   }
 
   // TODO(rec8-egress-volume): find why REC-8 leaks an egress volume. Current behavior: this sweep runs once per boot.
@@ -1099,14 +1108,17 @@ export class DockerSandbox implements Sandbox {
     } catch (e) {
       throw new Error(`cannot read the image identity of ${ref}: ${errmsg(e)}; pull or build the image locally, or fix the reference`);
     }
-    const [id = "", label = ""] = out.split("\t");
-    if (!/^sha256:[0-9a-f]{64}$/.test(id)) {
+    const [rawId = "", label = ""] = out.split("\t");
+    // Docker prints sha256:<hex>; Podman prints the bare hex of the config digest, normalized here for the digest only.
+    const id = normalizeImageId(this.profile, rawId);
+    if (id === undefined) {
       throw new Error(
-        `cannot read the image identity of ${ref}: ${this.profile.binary} reported the image id ${JSON.stringify(id)}, which is not sha256:<64 hex>, so the image cannot be pinned; check that the reference names a local image with \`${this.profile.binary} image inspect --format '{{.Id}}' ${ref}\` (pull or build it if that fails), and report the output if it names an image`,
+        `cannot read the image identity of ${ref}: ${this.profile.binary} reported the image id ${JSON.stringify(rawId)}, which is not sha256:<64 hex>, so the image cannot be pinned; check that the reference names a local image with \`${this.profile.binary} image inspect --format '{{.Id}}' ${ref}\` (pull or build it if that fails), and report the output if it names an image`,
       );
     }
     const revision = label && label !== "<no value>" ? label : null;
     // On the containerd store the id is the index/manifest digest, not the OCI config digest, which `docker save` alone would reveal.
-    return { engineLocalId: id, configDigest: containerd ? null : id, revision };
+    // The engine-local id keeps the engine's own form (Podman: bare hex, which `run` resolves); only the config digest is canonical.
+    return { engineLocalId: rawId, configDigest: containerd ? null : id, revision };
   }
 }
