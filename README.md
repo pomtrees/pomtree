@@ -106,6 +106,7 @@ The primary first run is [GETTING_STARTED.md](GETTING_STARTED.md) through its Do
 - [`docs/safety-decisions.md`](docs/safety-decisions.md): the invariants, the forced decisions, the silent-default gap list, and the supervised-use limit.
 - [`docs/economy.md`](docs/economy.md): budgets, reservations, pricing and escalation.
 - [`docs/tasks.md`](docs/tasks.md): tasks and the message path.
+- [`docs/ui-vision.md`](docs/ui-vision.md): the operator UI as a browser window manager: decisions, status and open questions.
 - [`docs/prior-art.md`](docs/prior-art.md): what existing systems cover, with sources, and what none combine.
 - [`docs/faq.md`](docs/faq.md): short answers, with links, to questions operators and extension authors ask first.
 - [`docs/demo.md`](docs/demo.md): scripted demos and the slim demo image.
