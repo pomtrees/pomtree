@@ -1,0 +1,30 @@
+{
+  "name": "browse-viewer-stub",
+  "rules": [
+    {
+      "id": "nav",
+      "when": { "toolResults": 0, "offersTool": "browser_navigate" },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [{ "name": "browser_navigate", "arguments": { "url": "https://example.com/" } }],
+        "usage": { "input": 100, "output": 20 }
+      }
+    },
+    {
+      "id": "hold",
+      "when": { "toolResults": 1, "lastTool": "browser_navigate" },
+      "times": 5,
+      "reply": { "kind": "fault", "fault": { "type": "slow_stream", "chunkDelayMs": 500, "chunks": 240 } }
+    },
+    {
+      "id": "fin",
+      "when": { "toolResults": 1, "lastTool": "browser_navigate", "offersTool": "capture_finish" },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [{ "name": "capture_finish", "arguments": { "status": "succeeded", "summary": "loaded example.com (stub)" } }],
+        "usage": { "input": 100, "output": 20 }
+      }
+    }
+  ],
+  "fallback": { "kind": "text", "text": "STUB-DONE", "usage": { "input": 120, "output": 8 } }
+}
