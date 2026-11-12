@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { SandboxSpec } from "@pomtree/core";
 import { buildEgressProxyArgs, buildRunArgs, describeRunHardening, type RunHardening } from "./args.ts";
+import { PODMAN_PROFILE } from "./engine-profile.ts";
 import { EGRESS_NETWORK } from "./network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
@@ -122,4 +123,21 @@ test("sidecar realization: shared ICC-off network named only when there is an eg
   assert.equal(flags[flags.indexOf("--network") + 1], EGRESS_NETWORK);
   assert.equal(flags[flags.indexOf("--user") + 1], "501:1000");
   assert.ok(!flags.includes("bridge"));
+});
+
+test("podman: the description names userns keep-id and the pasta sidecar, and the built argv carries both", async () => {
+  const s: SandboxSpec = { ...base, egress: { allow: [] } };
+  const h = describeRunHardening(s, {}, PODMAN_PROFILE);
+  const provider = stubMounts("/host/private/ws");
+  const mounts = await Promise.all(s.mounts.map((m) => provider.resolve(s.agent, m)));
+  const worker = buildRunArgs("i", s, { mounts }, PODMAN_PROFILE);
+  const side = buildEgressProxyArgs(
+    "i",
+    s,
+    { uid: 501, network: EGRESS_NETWORK, hostAddresses: [], image: "img", config: { allow: [], relay: [] } },
+    PODMAN_PROFILE,
+  );
+  assert.ok(worker.includes(`--userns=${h.userns}`) && side.includes(`--userns=${h.userns}`));
+  assert.equal(side[side.indexOf("--network") + 1], h.sidecarNetwork);
+  assert.equal(h.sidecarNetwork, "pasta");
 });

@@ -12,6 +12,7 @@ import {
   runEnv,
   stopTimeoutSeconds,
 } from "./args.ts";
+import { DOCKER_PROFILE } from "./engine-profile.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const spec: SandboxSpec = {
@@ -331,4 +332,12 @@ test("chromium.json is Docker's default profile plus exactly the narrow user-nam
   assert.ok(profile.syscalls.some((r) => r.names.join() === "clone3" && r.action === "SCMP_ACT_ERRNO" && r.errnoRet === 38));
   const ungated = profile.syscalls.filter((r) => r.action === "SCMP_ACT_ALLOW" && !r.includes && !r.args).flatMap((r) => r.names);
   for (const name of ["clone3", "setns", "mount", "pivot_root", "ptrace", "bpf", "keyctl"]) assert.equal(ungated.includes(name), false, name);
+});
+
+test("the docker engine profile renders the same argv as no profile (golden snapshots hold for both)", async () => {
+  const provider = stubMounts("/h");
+  for (const s of [codeSpec, { ...codeSpec, egress: { allow: [{ host: "pypi.org" }] } }]) {
+    const mounts = await Promise.all(s.mounts.map((m) => provider.resolve(s.agent, m)));
+    assert.deepEqual(buildRunArgs("i", s, { mounts }, DOCKER_PROFILE), buildRunArgs("i", s, { mounts }));
+  }
 });

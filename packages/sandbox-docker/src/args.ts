@@ -12,6 +12,7 @@ import {
   egressSocketVolumeName,
   proxyEnv,
 } from "./egress.ts";
+import { DOCKER_PROFILE, type EngineProfile } from "./engine-profile.ts";
 import { EGRESS_GID } from "./worker-ready.ts";
 
 export const LABEL = "pomtree";
@@ -165,11 +166,41 @@ export function chromiumSeccompProfile(): string {
   return realpathSync(fileURLToPath(new URL("../seccomp/chromium.json", import.meta.url)));
 }
 
+// The Podman flag dialect, as deltas over the one shared hardening policy. Only the `podman` profile id selects it; every other
+// profile (the default is DOCKER_PROFILE) renders the Docker argv unchanged.
+// Rootless Podman maps container root to the host user, so the worker and sidecar (uid 1000) would not own the socket volume
+// (uid/gid 1000, mode 0770); keep-id maps the host user to 1000:1000 instead. There is deliberately no `idmap` flag (Docker has none).
+export const PODMAN_USERNS = `keep-id:uid=1000,gid=${EGRESS_GID}`;
+// Rootless Podman gives the sidecar its own pasta network: isolation by construction, so the shared ICC-off bridge is not used.
+const PODMAN_SIDECAR_NETWORK = "pasta";
+// SELinux relabel option for a shared read-only bind mount (Linux SELinux hosts only; macOS shares are virtiofs and need none).
+// Known limitation: relabel=shared is applied to read-only bind mounts only, by design. On an enforcing-SELinux Linux host an unlabeled
+// WRITABLE bind (the workspace bind and the sidecar spool log directory) may be denied to the container, so the operator must pre-label
+// those paths or the writable binds need relabel too. Not verified on a real SELinux host (built and tested on macOS).
+const PODMAN_RELABEL = ",relabel=shared";
+
+const isPodman = (profile: EngineProfile) => profile.id === "podman";
+
+// Renders `--add-host <alias>:host-gateway`, or nothing for an engine that adds the alias itself (Podman adds host.docker.internal and
+// host.containers.internal on its own; P9 verified both resolve in a rootless container).
+function hostGatewayArgs(profile: EngineProfile): string[] {
+  return isPodman(profile) ? [] : ["--add-host", `${profile.hostAlias}:host-gateway`];
+}
+
+// A bind mount's `--mount` argv. `relabel` adds the SELinux option to read-only binds; it is a Podman option, so another engine refuses it.
+function bindMountArgs(m: Extract<ResolvedMount, { type: "bind" }>, profile: EngineProfile, relabel: boolean | undefined): string[] {
+  if (relabel && !isPodman(profile))
+    throw new Error(`selinuxRelabel is a Podman mount option and the ${profile.id} engine rejects it; drop selinuxRelabel or select the podman engine`);
+  return ["--mount", `type=bind,source=${m.hostPath},target=${m.containerPath}${m.readOnly ? ",readonly" : ""}${m.readOnly && relabel ? PODMAN_RELABEL : ""}`];
+}
+
 export interface RunArgsOptions {
   // Overrides the shape's pids limit (the DockerSandbox deps knob).
   pidsLimit?: number;
   // spec.mounts resolved by the MountProvider, index-aligned with spec.mounts.
   mounts?: ResolvedMount[];
+  // Podman on a Linux SELinux host: relabel read-only bind mounts as shared. Refused for any other engine.
+  selinuxRelabel?: boolean;
 }
 
 // The hardening `docker run` is told to apply, as plain data. buildRunArgs renders its flags FROM this value, so the
@@ -194,12 +225,15 @@ export interface RunHardening {
   stopTimeoutSeconds: number;
   ipv6Disabled: boolean;
   hostGateway: boolean;
+  // Present only for Podman: the `--userns` value that keeps the host user as container uid/gid 1000 (socket volume ownership).
+  userns?: string;
   // Present only when the worker runs under gVisor (`--runtime=runsc`), so the description of every default-runtime sandbox is unchanged.
   // Never applies to the egress sidecar.
   ociRuntime?: "runsc";
   // The egress sidecar's network (present whenever the worker has an egress spec, i.e. always under defaultDenyEgress):
   // the one shared user-defined bridge with inter-container communication off (network.ts, ensureEgressNetwork).
-  sidecarNetwork?: "shared-icc-off";
+  // Podman (rootless) instead gives the sidecar its own `pasta` network.
+  sidecarNetwork?: "shared-icc-off" | "pasta";
 }
 
 // The worker reaches its egress sidecar only through the socket volume, which is group EGRESS_GID with mode 0770 (the sidecar runs
@@ -214,7 +248,7 @@ function assertEgressGroup(spec: SandboxSpec, user: string): void {
     );
 }
 
-export function describeRunHardening(spec: SandboxSpec, opts: Pick<RunArgsOptions, "pidsLimit"> = {}): RunHardening {
+export function describeRunHardening(spec: SandboxSpec, opts: Pick<RunArgsOptions, "pidsLimit"> = {}, profile: EngineProfile = DOCKER_PROFILE): RunHardening {
   const shape = parseDockerShape(spec.runtime);
   assertEgressGroup(spec, shape.user);
   const res = spec.resources ?? {};
@@ -234,9 +268,12 @@ export function describeRunHardening(spec: SandboxSpec, opts: Pick<RunArgsOption
     ...(res.shmBytes !== undefined ? { shmBytes: res.shmBytes } : {}),
     stopTimeoutSeconds: shape.stopTimeoutSeconds,
     ipv6Disabled: spec.egress?.auditedPublic !== undefined,
-    hostGateway: !spec.egress && shape.addHostGateway,
+    // For Podman this is false because Podman adds the host.docker.internal and host.containers.internal aliases itself, so the
+    // description says false while the alias still resolves; not a weaker posture (Docker's non-egress worker also reaches the host via the alias).
+    hostGateway: !spec.egress && shape.addHostGateway && !isPodman(profile),
+    ...(isPodman(profile) ? { userns: PODMAN_USERNS } : {}),
     ...(shape.ociRuntime === "runsc" ? { ociRuntime: "runsc" as const } : {}),
-    ...(spec.egress ? { sidecarNetwork: "shared-icc-off" as const } : {}),
+    ...(spec.egress ? { sidecarNetwork: isPodman(profile) ? PODMAN_SIDECAR_NETWORK : ("shared-icc-off" as const) } : {}),
   };
 }
 
@@ -250,13 +287,16 @@ export interface EgressProxyArgsOptions {
   config: EgressProxyConfig;
   // Audited sandboxes (any egress mode): the spool's config (read-only) and log directories; otherwise the config is passed inline.
   spool?: { configDir: string; logDir: string };
+  // Podman on a Linux SELinux host: relabel the read-only spool config bind as shared. Refused for any other engine.
+  selinuxRelabel?: boolean;
 }
 
 // The egress sidecar's `docker run` argv. Pure; its --network is rendered only when the hardening description names
-// the shared ICC-off network, so the description and the argv cannot drift (args-hardening.test.ts parses both).
-export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: EgressProxyArgsOptions): string[] {
-  const hard = describeRunHardening(spec);
-  if (hard.sidecarNetwork !== "shared-icc-off") throw new Error("egress sidecar requires an egress spec");
+// the shared ICC-off network (Docker) or the sidecar's own pasta network (Podman), so the description and the argv cannot drift
+// (args-hardening.test.ts parses both). The optional trailing profile selects the engine dialect (default Docker, output unchanged).
+export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: EgressProxyArgsOptions, profile: EngineProfile = DOCKER_PROFILE): string[] {
+  const hard = describeRunHardening(spec, {}, profile);
+  if (hard.sidecarNetwork === undefined) throw new Error("egress sidecar requires an egress spec");
   const memory = String(EGRESS_PROXY_MEMORY_BYTES);
   return [
     "run",
@@ -270,13 +310,12 @@ export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: Egress
     // The sandbox's ownership labels (store_id, daemon_epoch), so the orphan sweep can tell whose sidecar this is (egressOwnedBy).
     ...userLabelArgs(spec.labels),
     "--network",
-    o.network,
+    hard.sidecarNetwork === "pasta" ? PODMAN_SIDECAR_NETWORK : o.network,
     "--mount",
     `type=volume,source=${egressSocketVolumeName(id)},target=${EGRESS_SOCKET_DIR}`,
     // The proxy (not the internal-network agent) dials the daemon's agent endpoint, so it needs the host-gateway alias
     // on Linux; the agent itself reaches host.docker.internal through the proxy (TODO(agent-endpoint)).
-    "--add-host",
-    "host.docker.internal:host-gateway",
+    ...hostGatewayArgs(profile),
     "--cap-drop=ALL",
     "--security-opt",
     "no-new-privileges",
@@ -286,6 +325,7 @@ export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: Egress
     memory,
     "--user",
     `${o.uid}:1000`,
+    ...(hard.userns ? [`--userns=${hard.userns}`] : []),
     "--read-only",
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,size=16m",
@@ -305,10 +345,8 @@ export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: Egress
     `EGRESS_HOST_ADDRESSES=${JSON.stringify(o.hostAddresses)}`,
     ...(o.spool
       ? [
-          "--mount",
-          `type=bind,source=${o.spool.configDir},target=/etc/pomtree-egress,readonly`,
-          "--mount",
-          `type=bind,source=${o.spool.logDir},target=/var/log/pomtree-egress`,
+          ...bindMountArgs({ type: "bind", hostPath: o.spool.configDir, containerPath: "/etc/pomtree-egress", readOnly: true }, profile, o.selinuxRelabel),
+          ...bindMountArgs({ type: "bind", hostPath: o.spool.logDir, containerPath: "/var/log/pomtree-egress", readOnly: false }, profile, o.selinuxRelabel),
         ]
       : ["-e", `EGRESS_CONFIG_JSON=${JSON.stringify(o.config)}`]),
     "--",
@@ -317,10 +355,11 @@ export function buildEgressProxyArgs(id: SandboxId, spec: SandboxSpec, o: Egress
   ];
 }
 
-export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOptions = {}): string[] {
+// The optional trailing profile selects the engine dialect; absent or DOCKER_PROFILE yields the Docker argv unchanged.
+export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOptions = {}, profile: EngineProfile = DOCKER_PROFILE): string[] {
   // parseDockerShape enforces the sandbox floor for every egress mode (audited-public included).
   const shape = parseDockerShape(spec.runtime);
-  const hard = describeRunHardening(spec, opts);
+  const hard = describeRunHardening(spec, opts, profile);
   const resolved = opts.mounts ?? [];
   if (resolved.length !== spec.mounts.length) throw new Error("resolved mounts do not match spec.mounts");
   const wsAt = spec.mounts.flatMap((m, i) => (m.kind === "workspace" ? [i] : []));
@@ -339,10 +378,7 @@ export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOpti
   // --memory-swap is memory + swap; setting it equal to --memory gives zero swap (no host swap
   // pressure from a single sandbox). One value drives both so they can never drift apart.
   // `--mount` (not `-v`) so a colon in a path cannot be misread as a host:ctr separator.
-  const bind = (m: Extract<ResolvedMount, { type: "bind" }>) => [
-    "--mount",
-    `type=bind,source=${m.hostPath},target=${m.containerPath}${m.readOnly ? ",readonly" : ""}`,
-  ];
+  const bind = (m: Extract<ResolvedMount, { type: "bind" }>) => bindMountArgs(m, profile, opts.selinuxRelabel);
   const args = [
     "run",
     "-d",
@@ -358,9 +394,10 @@ export function buildRunArgs(id: SandboxId, spec: SandboxSpec, opts: RunArgsOpti
     ...userLabelArgs(spec.labels),
     "--user",
     hard.user,
+    ...(hard.userns ? [`--userns=${hard.userns}`] : []),
     // With egress the daemon channel is allowlisted and reached through the per-sandbox proxy on the
     // egress network, so the host-gateway alias is dropped in favor of that network.
-    ...(spec.egress ? buildNetworkArgs(id, spec) : hard.hostGateway ? ["--add-host", "host.docker.internal:host-gateway"] : []),
+    ...(spec.egress ? buildNetworkArgs(id, spec) : hard.hostGateway ? hostGatewayArgs(profile) : []),
     ...(hard.ipv6Disabled ? ["--sysctl", "net.ipv6.conf.all.disable_ipv6=1", "--sysctl", "net.ipv6.conf.default.disable_ipv6=1"] : []),
     ...hard.capDrop.map((c) => `--cap-drop=${c}`),
     ...(hard.noNewPrivileges ? ["--security-opt", "no-new-privileges"] : []),
