@@ -13,6 +13,10 @@ export const RESERVED_NAMES: ReadonlySet<string> = new Set(["pomtreed", "egress"
 
 // The dependencies an extension manifest may declare. `store` is accepted syntactically but rejected
 // in load (TODO(extensions)) because the host does not provide an extension store yet.
+// TODO(sandbox-run-dep): `provides[].deps` is checked against this list too, so a sandbox backend's `"run"` dep is refused here
+// while the loader (sandbox-provider-load.ts) accepts only `"run"`. Current behavior: no contributed backend can declare `run`.
+// Pending: a provides-specific dep type in core (SandboxProvides.deps is ExtensionDepName[], which has no "run") and a daemon
+// ProcessRunner (createBackendDeps passes declaresRun: false and no runner exists).
 const KNOWN_DEPS: readonly ExtensionDepName[] = ["registry", "journal", "record", "deliver", "authorize", "credentials", "store"];
 
 // A manifest whose `params` declaration is invalid. Unlike every other manifest fault (which only fails that one extension's load),

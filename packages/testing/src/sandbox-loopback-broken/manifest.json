@@ -1,0 +1,24 @@
+{
+  "apiVersion": 2,
+  "name": "loopback",
+  "entry": "entry.mts",
+  "capabilities": {},
+  "deps": [],
+  "provides": [
+    {
+      "kind": "sandbox",
+      "id": "loopback",
+      "entry": "provider.mts",
+      "portVersion": 1,
+      "credentials": ["apiKey"],
+      "params": [
+        {
+          "key": "baseUrl",
+          "kind": "string",
+          "default": "http://127.0.0.1:8790",
+          "doc": "URL of the loopback sandbox API the backend talks to."
+        }
+      ]
+    }
+  ]
+}

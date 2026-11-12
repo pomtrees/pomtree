@@ -57,7 +57,7 @@ Ports separate `pomtreed` from its dependencies. Each is defined by what the dae
 
 | Port | What the daemon asks of it | Single-node adapter | Later adapter |
 | --- | --- | --- | --- |
-| Sandbox | Start, stop, kill, re-adopt, and inspect an isolated environment from resource limits and named mounts, never host paths; open a terminal; stream output; apply an egress policy, including audited-public | Docker (CLI plus Engine API) | Remote node (`pomtreed-node`); later Kubernetes, microVMs |
+| Sandbox | Start, stop, kill, re-adopt, and inspect an isolated environment from resource limits and named mounts, never host paths; open a terminal; stream output; apply an egress policy, including audited-public | Docker (CLI plus Engine API) | Remote node (`pomtreed-node`); later Kubernetes, microVMs; contributed backends ([`docs/sandbox-backends.md`](docs/sandbox-backends.md)) |
 | Harness | Start or resume an agent session and return normalized events | Interactive Pi with an events side-channel | Other harnesses |
 | Orchestrator | Run lifecycles durably with timers, wake conditions, cancellation | In-process | A durable external engine |
 | Journal | Append ordered events; subscribe from a position | SQLite | Same, on the controller |
