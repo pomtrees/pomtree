@@ -15,3 +15,6 @@ export * from "./probe-fake.ts";
 export * from "./timing.ts";
 export * from "./schema-check.ts";
 export { kubernetesPodCreate } from "./provider-schemas/kubernetes-pod-create.ts";
+export * from "./sandbox-conformance.ts";
+export * from "./sandbox-capability-coverage.ts";
+export * from "./sandbox-broken.ts";

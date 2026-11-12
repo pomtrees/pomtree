@@ -20,6 +20,7 @@
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:full",
     "check:lite": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:lite",
     "format": "biome format --write .",
+    "conformance:sandbox": "node packages/pomtreed/scripts/sandbox-conformance.ts",
     "gen:config": "node packages/core/scripts/gen-config.ts",
     "gen:getting-started": "node packages/pomtreed/scripts/gen-getting-started.ts",
     "format:check": "biome format .",
