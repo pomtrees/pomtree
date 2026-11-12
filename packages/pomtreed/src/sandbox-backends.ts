@@ -10,11 +10,13 @@ import {
 } from "@pomtree/core";
 import {
   dockerProvider,
+  engineProfile,
   type EngineId,
   type EngineSelection,
   type LocalBackendProvider,
   type LocalBackendWiring,
   type LocalEngine,
+  type OpenLocalEngineInput,
   podmanProvider,
 } from "@pomtree/sandbox-docker";
 import { createRequest } from "@pomtree/sandbox-kit";
@@ -112,6 +114,19 @@ export type ResolvedBackend =
   | { readonly origin: "builtin"; readonly localEngine: false; readonly id: string; readonly provider: SandboxBackendProvider }
   // A contributed backend whose pin matched; its module has not been imported.
   | { readonly origin: "extension"; readonly localEngine: false; readonly id: string; readonly extension: string; readonly dir: string };
+
+export interface OpenLocalFromConfigInput {
+  backendConfig: (id: string) => Readonly<Record<string, unknown>>; // LoadedDaemonConfig.backendConfig
+  env: Readonly<Record<string, string | undefined>>;
+  open: (input: OpenLocalEngineInput) => Promise<LocalEngine>;
+}
+
+// The `openLocal` of resolveBackend: opens the engine with each engine's own configured socket (`sandbox.<id>.socket`, empty =
+// detect), so an explicit engine reads its key and `auto` reads both.
+export function openLocalFromConfig(i: OpenLocalFromConfigInput): (selection: EngineSelection) => Promise<LocalEngine> {
+  const socket = (id: EngineId) => i.backendConfig(id)[engineProfile(id).socketConfigKey] as string | undefined;
+  return (selection) => i.open({ selection, env: i.env, configured: { docker: socket("docker"), podman: socket("podman") } });
+}
 
 export interface ResolveBackendInput {
   configured: string; // sandbox.backend

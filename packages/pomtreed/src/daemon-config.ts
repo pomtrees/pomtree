@@ -14,6 +14,7 @@ import {
   EXT_NAMESPACE,
   type ExtensionConfigView,
   type ParamDef,
+  type SandboxBackendConfigDecl,
   composeRegistry,
   configEnvIgnore,
   containerConfigDoc,
@@ -28,6 +29,7 @@ import {
 import { type ListenSpec, assertLoopbackOrAllowed, parseListen } from "./config.ts";
 import { checkModelBaseUrl } from "./model-proxy/upstream.ts";
 import type { ManifestScan } from "./extension-manifest.ts";
+import { BUILTIN_BACKENDS } from "./sandbox-backends.ts";
 import type { LoadedSandboxExtension } from "./sandbox-provider-load.ts";
 import { StatePolicy } from "./state-policy.ts";
 import { WorkflowRuntimePolicy } from "./workflow-policy.ts";
@@ -133,6 +135,19 @@ export interface DaemonConfigInput {
   // Reads the extension manifests under a directory as JSON (no extension code runs). Injected so this module stays pure;
   // main.ts passes extension-manifest.ts's scanExtensionManifests.
   scanExtensions: (dir: string) => ManifestScan;
+  // The config declarations of the first-party backends this build carries (their `sandbox.<id>.*` keys). Default: the declared
+  // params of the built-in providers (builtinBackendDecls), so no filesystem scan is needed by a published daemon.
+  builtinBackends?: () => readonly SandboxBackendConfigDecl[];
+}
+
+// The built-in backends' keys, from the providers this build carries (the same params their manifests declare; provider.test.ts
+// pins the two together). A built-in without an adapter in this build declares none.
+export function builtinBackendDecls(builtins: typeof BUILTIN_BACKENDS = BUILTIN_BACKENDS): SandboxBackendConfigDecl[] {
+  return builtins.flatMap((b) => {
+    if (b.provider === undefined) return [];
+    const p = b.provider();
+    return [{ id: p.id, owner: `built-in backend ${p.id}`, builtin: true, params: p.params, credentials: p.credentials }];
+  });
 }
 
 export interface LoadedDaemonConfig {
@@ -162,13 +177,17 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 
 // Phase 1 resolves the core keys alone to learn where the extensions live (`extensions.dir` is itself a key). Everything under
 // `ext` is the extensions' business and is validated in phase 2, so it is withheld here: the file's `ext` subtree, `--set ext.*`
-// entries and the POMTREED_EXT_ env family (unknown env names are reported once, by phase 2).
+// entries and the POMTREED_EXT_ env family (unknown env names are reported once, by phase 2). The same holds for a sandbox
+// backend's `sandbox.<id>.*` keys (every core sandbox key is a leaf, so an object under `sandbox` is a backend's subtree).
 function withoutExtensionInputs(file: unknown, set: readonly string[]): { file?: unknown; set: string[] } {
   const isPlain = typeof file === "object" && file !== null && !Array.isArray(file);
   const { [EXT_NAMESPACE]: _ext, ...rest } = isPlain ? (file as Record<string, unknown>) : {};
+  const sandbox = rest.sandbox;
+  if (typeof sandbox === "object" && sandbox !== null && !Array.isArray(sandbox))
+    rest.sandbox = Object.fromEntries(Object.entries(sandbox).filter(([, v]) => typeof v !== "object" || v === null || Array.isArray(v)));
   return {
     ...(file !== undefined && { file: isPlain ? rest : file }),
-    set: set.filter((entry) => !entry.startsWith(`${EXT_NAMESPACE}.`)),
+    set: set.filter((entry) => !entry.startsWith(`${EXT_NAMESPACE}.`) && !/^sandbox\.[^.=]+\./.test(entry)),
   };
 }
 
@@ -232,8 +251,8 @@ export function loadDaemonConfig(input: DaemonConfigInput): LoadedDaemonConfig |
   // Phase 2: scan the manifests (JSON only), compose the registry, and resolve everything once over the merged table, so origins,
   // ceilings, relations and the unknown-name refusals are uniform. A bad `params` declaration or composition is a config error.
   // One composition takes the extensions' keys and the sandbox backends their `provides` entries contribute, so `sandbox.backend`
-  // accepts a contributed id and refuses an unknown one with the list. The docker and podman socket keys are declared by a manifest
-  // (packages/sandbox-docker/manifest.json) but not yet composed or read by the daemon, so they stay unknown names here.
+  // accepts a contributed id and refuses an unknown one with the list. The built-in backends' keys (sandbox.docker.socket,
+  // sandbox.podman.socket) are composed in the same call, so they are valid names with their docs.
   const scan = input.scanExtensions(extensionsDir);
   if (scan.errors.length > 0) return { ok: false, errors: scan.errors };
   const sandboxExtensions = scan.sandboxExtensions ?? [];
@@ -241,7 +260,10 @@ export function loadDaemonConfig(input: DaemonConfigInput): LoadedDaemonConfig |
   try {
     registry = composeRegistry(CONFIG_REGISTRY, {
       extensions: scan.extensions,
-      sandboxBackends: sandboxExtensions.flatMap((e) => contributedBackends(e.manifest.name, e.manifest.provides)),
+      sandboxBackends: [
+        ...(input.builtinBackends ?? builtinBackendDecls)(),
+        ...sandboxExtensions.flatMap((e) => contributedBackends(e.manifest.name, e.manifest.provides)),
+      ],
     });
   } catch (e) {
     if (e instanceof ConfigRegistryError) return { ok: false, errors: [...e.errors] };

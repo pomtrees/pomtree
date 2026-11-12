@@ -35,6 +35,7 @@ import {
   type ContributedSource,
   createContributedSource,
   createLocalSandbox,
+  openLocalFromConfig,
   remoteBootRefusal,
   resolveBackend,
 } from "./sandbox-backends.ts";
@@ -385,4 +386,24 @@ test("scanExtensionManifests lists each extension that provides a sandbox backen
 
 test("availableBackends lists auto, the carried built-ins and the contributed ids with their extensions", () => {
   assert.equal(availableBackends(counting().registry), "auto, docker, podman, toybox (extension toybox), toybox-two (extension toybox)");
+});
+
+test("openLocalFromConfig hands each engine's own configured socket to the opener, for an explicit engine and for auto", async () => {
+  const seen: { selection: EngineSelection | undefined; configured: unknown }[] = [];
+  const open = (async (input: { selection?: EngineSelection; configured?: unknown }) => {
+    seen.push({ selection: input.selection, configured: input.configured });
+    return scriptedLocalEngine({ profile: DOCKER_PROFILE });
+  }) as never;
+  const backendConfig = (id: string) => ({ [`sandbox.${id}.socket`]: id === "docker" ? "/run/d.sock" : "/run/p.sock" });
+  const openLocal = openLocalFromConfig({ backendConfig, env: {}, open });
+  await openLocal("podman");
+  await openLocal("auto");
+  assert.deepEqual(seen, [
+    { selection: "podman", configured: { docker: "/run/d.sock", podman: "/run/p.sock" } },
+    { selection: "auto", configured: { docker: "/run/d.sock", podman: "/run/p.sock" } },
+  ]);
+  // Negative: a backend view without the key (a core-only view) configures nothing, so detection runs.
+  seen.length = 0;
+  await openLocalFromConfig({ backendConfig: () => ({}), env: {}, open })("docker");
+  assert.deepEqual(seen[0]?.configured, { docker: undefined, podman: undefined });
 });

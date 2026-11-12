@@ -357,6 +357,48 @@ test("sandbox.backend=podman with a Docker engine answering on CONTAINER_HOST re
   }
 });
 
+test("sandbox.podman.socket pointing at a Docker engine refuses the start, naming both engines, the key and the action", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pomtreed-eng-"));
+  const sock = join(dir, "e.sock");
+  const server = await fakeEngine(sock, "docker");
+  try {
+    const r = await bootRefused(() => ({ POMTREED_SANDBOX_BACKEND: "podman", POMTREED_SANDBOX_PODMAN_SOCKET: sock }));
+    rmSync(r.root, { recursive: true, force: true });
+    assert.equal(r.code, 1, r.log);
+    assert.match(
+      r.log,
+      /^pomtreed: refusing to start: sandbox\.backend is "podman" but the engine answering on \S+e\.sock is docker; set sandbox\.backend to "docker", or point sandbox\.podman\.socket at a podman socket$/m,
+    );
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox.docker.socket from --set reaches engine detection: the configured engine answers, so no 'does not answer' finding is printed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pomtreed-eng-"));
+  const sock = join(dir, "d.sock");
+  const server = await fakeEngine(sock, "docker");
+  const root = mkdtempSync(join(tmpdir(), "pomtreed-smoke-"));
+  try {
+    const b = boot({}, root, await freePort(), ["--set", `sandbox.docker.socket=${sock}`]);
+    try {
+      const r = await until(async () => getSock(join(root, "p.sock"), "/readyz")).catch(() => undefined);
+      assert.ok(r, `pomtreed did not become ready: ${b.log().slice(-300)}`);
+      await until(async () => (/pomtreed listening on/.test(b.log()) ? true : undefined));
+      assert.doesNotMatch(b.log(), /the docker engine does not answer/, "DOCKER_HOST (absent) must lose to the configured socket");
+      b.child.kill("SIGTERM");
+      assert.equal(await b.exited, 0, b.log());
+    } finally {
+      b.child.kill("SIGKILL");
+    }
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("sandbox.backend=auto with both engines answering uses docker and names the other in a finding", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pomtreed-eng-"));
   const docker = await fakeEngine(join(dir, "d.sock"), "docker");

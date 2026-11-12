@@ -21,6 +21,7 @@ import {
   bootNeeds,
   createBackendRegistry,
   createLocalSandbox,
+  openLocalFromConfig,
   remoteBootRefusal,
   type ResolvedBackend,
   resolveBackend,
@@ -185,7 +186,7 @@ try {
   backend = await resolveBackend({
     configured: cfg["sandbox.backend"],
     registry: createBackendRegistry({ extensions: loaded.sandboxExtensions, reviewedBackends: cfg["sandbox.reviewedBackends"] }),
-    openLocal: (selection) => openLocalEngine({ selection, env: process.env }),
+    openLocal: openLocalFromConfig({ backendConfig: loaded.backendConfig, env: process.env, open: openLocalEngine }),
   });
 } catch (e) {
   refuseStart((e as Error).message);

@@ -23,7 +23,7 @@ function fixture() {
   const keyFile = join(dir, "upstream.key");
   writeFileSync(keyFile, `${SECRET}\n`, { mode: 0o600 });
   const base = { POMTREED_MODEL_BASE_URL: "http://127.0.0.1:1", POMTREED_MODEL_UPSTREAM_KEY_FILE: keyFile, POMTREED_PI_PROVIDER: "x" };
-  const load = (o: { env?: Record<string, string>; set?: string[]; file?: unknown; configFile?: string; scan?: ManifestScan } = {}) => {
+  const load = (o: { env?: Record<string, string>; set?: string[]; file?: unknown; configFile?: string; scan?: ManifestScan; builtin?: false } = {}) => {
     let configFile = o.configFile;
     if (o.file !== undefined) {
       configFile = join(dir, "pomtreed.json");
@@ -36,6 +36,7 @@ function fixture() {
       fileMode: (p) => statSync(p).mode,
       defaultStateDir: join(dir, "state"),
       scanExtensions: () => o.scan ?? { extensions: [], errors: [] },
+      ...(o.builtin === false && { builtinBackends: () => [] }),
     };
     return loadDaemonConfig(input);
   };
@@ -453,4 +454,28 @@ test("parseDaemonArgv: preflight and init hand their remaining arguments to the 
   });
   // negative control: `preflight` after other arguments is not the subcommand
   assert.deepEqual(parseDaemonArgv(["--set", "a.b=1", "preflight"]), { ok: false, errors: ["unknown command preflight (expected: config show)"] });
+});
+
+test("the built-in backends' socket keys are composed: accepted from a file, env and --set, documented, and shown in backendConfig", () => {
+  const f = fixture();
+  try {
+    const r = f.load({ file: { sandbox: { docker: { socket: "/run/docker.sock" } } }, env: { POMTREED_SANDBOX_PODMAN_SOCKET: "/run/podman.sock" } });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(r.backendConfig("docker")["sandbox.docker.socket"], "/run/docker.sock");
+    assert.equal(r.backendConfig("podman")["sandbox.podman.socket"], "/run/podman.sock");
+    assert.equal(r.backendConfig("docker")["sandbox.podman.socket"], undefined, "an engine's view holds only its own socket key");
+    assert.ok(r.registry.params.some((p) => p.path === "sandbox.podman.socket" && p.doc.includes("Podman")));
+    const d = f.load({});
+    assert.ok(d.ok);
+    assert.equal(d.config["sandbox.backend"], "docker");
+    assert.equal(d.backendConfig("docker")["sandbox.docker.socket"], "", "unset = detect");
+    // Negative: a build that composes no built-in backends refuses the key as an unknown name (the pre-change behavior).
+    const e = f.errors({ file: { sandbox: { docker: { socket: "/run/docker.sock" } } }, builtin: false });
+    assert.match(e.join("\n"), /sandbox\.docker\.socket|sandbox\.docker/);
+    // A segment no backend owns, and a key the docker backend does not declare, are still refused.
+    assert.match(f.errors({ set: ["sandbox.nosuch.socket=/x"] }).join("\n"), /sandbox\.nosuch/);
+    assert.match(f.errors({ file: { sandbox: { docker: { nosuch: "x" } } } }).join("\n"), /sandbox\.docker\.nosuch/);
+  } finally {
+    f.cleanup();
+  }
 });
