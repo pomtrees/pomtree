@@ -12,6 +12,8 @@
 // address, refuse loopback, link-local (169.254.0.0/16 including the cloud metadata address), unspecified and IPv4-mapped IPv6
 // addresses, and connect to the pinned address, not to the name. `assertDialRejectsPrivate` checks a dial against that contract.
 //
+// TODO(kit-terminator-private-ranges): the built-in deny does not cover RFC1918 private ranges or NAT64; current behavior: such literals pass it, so a
+// hosted adapter must refuse them through its allow-list.
 // The built-in deny (`denyIpLiterals`, default on) refuses IP-literal targets in loopback, link-local, unspecified and IPv4-mapped
 // or IPv4-compatible IPv6 ranges, and every non-canonical IPv4 spelling (decimal `2130706433`, hex `0x7f.1`, octal `0177.0.0.1`,
 // short `127.1`), whatever the allow-list says. The allow-list may still permit named hosts and ordinary public IP literals.
