@@ -70,6 +70,8 @@ git add -- "$@"
 
 L=$LOGDIR/gate-$(date +%s).log
 CONC=${WORKSPACE_TEST_CONCURRENCY:-6}
+# Loaded-machine multiplier for test deadlines (packages/testing/src/timing.ts); CI sets the same 3.
+export POMTREE_TEST_TIMEOUT_SCALE="${POMTREE_TEST_TIMEOUT_SCALE:-3}"
 # A brace group, not a subshell, so the exit codes survive the redirection and the verdict never has to read the log.
 { pnpm format:check; fmt_rc=$?; pnpm lint; lint_rc=$?; pnpm typecheck; tc_rc=$?; pnpm test:lite; test_rc=$?; } > "$L" 2>&1
 echo "gate legs: format:check=$fmt_rc lint=$lint_rc typecheck=$tc_rc test:lite=$test_rc" >> "$L"

@@ -12,3 +12,4 @@ export * from "./messaging-wire-contract.ts";
 export * from "./messaging-wire-stub.ts";
 export * from "./idempotency.ts";
 export * from "./probe-fake.ts";
+export * from "./timing.ts";

@@ -92,6 +92,7 @@ jobs:
         timeout-minutes: 15
         env:
           WORKSPACE_TEST_CONCURRENCY: "2"
+          POMTREE_TEST_TIMEOUT_SCALE: "3"
 
   # Builds the agent image once per run and hands it to the docker matrix through actions/cache (a Chromium image is likely
   # larger than the free artifact quota; cache has its own per-repo limit). This job passes even when tests fail, so the buildx
@@ -227,7 +228,8 @@ jobs:
         # Every variable in env below is passed through sudo explicitly (sudo resets the environment); ci-guard.test.ts checks it.
         run: |
           sudo -u "$E2E_USER" env HOME="$E2E_HOME" PATH="$PATH" PNPM_HOME="${PNPM_HOME:-}" CI="${CI:-}" DOCKER_GROUP="$DOCKER_GROUP" E2E_TAP="$E2E_TAP" \
-            E2E_TEST_CONCURRENCY="$E2E_TEST_CONCURRENCY" WORKSPACE_TEST_CONCURRENCY="$WORKSPACE_TEST_CONCURRENCY" PTREE_E2E_IMAGE="$PTREE_E2E_IMAGE" \
+            E2E_TEST_CONCURRENCY="$E2E_TEST_CONCURRENCY" WORKSPACE_TEST_CONCURRENCY="$WORKSPACE_TEST_CONCURRENCY" POMTREE_TEST_TIMEOUT_SCALE="$POMTREE_TEST_TIMEOUT_SCALE" \
+            PTREE_E2E_IMAGE="$PTREE_E2E_IMAGE" \
             PTREE_AGENT_TEST_REVISION="$PTREE_AGENT_TEST_REVISION" \
             bash -c 'set -o pipefail; pnpm test:docker:"$DOCKER_GROUP" 2>&1 | tee test-docker.log'
         # The hosted runner has 2 vCPUs (a hosted run: docker info CPUs 2, 7.7 GiB); at 6 concurrent e2e files pomtreed starts timed
@@ -238,6 +240,7 @@ jobs:
           DOCKER_GROUP: ${{ matrix.group }}
           E2E_TEST_CONCURRENCY: "2"
           WORKSPACE_TEST_CONCURRENCY: "2"
+          POMTREE_TEST_TIMEOUT_SCALE: "3"
           PTREE_E2E_IMAGE: pomtree/agent:dev
           # The group scripts also write a TAP stream here, or beside it per process (spec still goes to the log). It must stay outside the checkout:
           # see PTREE_AGENT_TEST_REVISION below for why a file under it turns the image suites into skips.
