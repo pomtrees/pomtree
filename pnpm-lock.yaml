@@ -161,7 +161,11 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
-  packages/sandbox-kit: {}
+  packages/sandbox-kit:
+    dependencies:
+      '@pomtree/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/sched:
     dependencies:
