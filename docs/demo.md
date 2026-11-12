@@ -40,6 +40,10 @@ Common optional settings: `POMTREED_DEMO_MODEL` (the model the keys allow, defau
 
 The key file rules and the live-run runbook are in [scripts/live](../scripts/live/README.md).
 
+### Wikipedia distillation (UI demo, not yet run live)
+
+`examples/wiki-distill` is a prepared demo in which an operator's session drives the web UI with `pomtree ui` while browser readers split one Wikipedia article, summarizers condense the slices and a distiller publishes a short static HTML report. All of it is validated offline only: the templates, the driver script against a fake `pomtree` and a zero-spend model-stub rehearsal have tests, and nothing has run against a live model or Wikipedia. `examples/wiki-distill/rehearse.sh` stands up the zero-spend rehearsal in one command. The run order, expected windows, cost ceiling and cleanup are in [the example's README](../examples/wiki-distill/README.md). The driver script calls `pomtree` from `PATH`, or the command words in `WIKI_DISTILL_CLI` when that variable is set (a test seam: the tests point it at a fake).
+
 ## The slim image
 
 The slim image is enough for runs that need no browser:
