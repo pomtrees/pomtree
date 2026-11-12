@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { until as sharedUntil } from "@pomtree/testing";
 
 const main = join(import.meta.dirname, "main.ts");
 const UPSTREAM_KEY = "upstream-key-sentinel-7f3a";
@@ -80,13 +81,16 @@ function getSock(sock: string, path: string): Promise<{ status: number; body: st
 }
 
 async function until<T>(f: () => Promise<T | undefined>, ms = 30_000): Promise<T> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = await f().catch(() => undefined);
-    if (v !== undefined) return v;
-    if (Date.now() > end) throw new Error("timeout");
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  let found: T | undefined;
+  await sharedUntil(
+    async () => {
+      found = await f().catch(() => undefined);
+      return found !== undefined;
+    },
+    ms,
+    { what: "the daemon under test", intervalMs: 100 },
+  );
+  return found as T;
 }
 
 test("pomtreed --version prints one build-identity line to stdout and exits 0 before any config or state", () => {

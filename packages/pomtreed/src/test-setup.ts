@@ -1,4 +1,4 @@
-import { FakeModelCatalog, TEST_MODEL, keyed, tmpDir } from "@pomtree/testing";
+import { FakeModelCatalog, TEST_MODEL, keyed, tmpDir, until as sharedUntil } from "@pomtree/testing";
 import { createFakes } from "@pomtree/testing";
 import type { AgentRecord, JournalEntry, SpawnSpec } from "@pomtree/core";
 import type { OtlpExporterOptions } from "@pomtree/observe";
@@ -193,10 +193,7 @@ export function scratch(prefix: string) {
   return { dir, dbPath: join(dir, "pomtreed.sqlite") };
 }
 
-export const until = async (cond: () => Promise<boolean> | boolean, ms = 2000) => {
-  const end = Date.now() + ms;
-  while (!(await cond())) {
-    if (Date.now() > end) throw new Error("timed out waiting for condition");
-    await new Promise((r) => setTimeout(r, 5));
-  }
-};
+// Default deadline of `until` before the timeout scale (was 2000); the shared helper adds load credit and the scale.
+export const UNTIL_DEFAULT_MS = 5000;
+
+export const until = (cond: () => Promise<boolean> | boolean, ms = UNTIL_DEFAULT_MS): Promise<void> => sharedUntil(cond, ms);
