@@ -7,7 +7,7 @@ import { E2B_DECLARATION, E2B_MAX_LIFETIME_MS, E2BSandbox } from "./sandbox.ts";
 // The provider object of the E2B hosted backend. Static: its declaration, params and credential names
 // are readable without creating anything, and `create` only builds the adapter (it makes no request). The keys are the ones
 // packages/sandbox-e2b/manifest.json gives the config composer; provider.test.ts pins the two together. Registering the provider in
-// pomtreed's BUILTIN_BACKENDS is a later task.
+// pomtreed's BUILTIN_BACKENDS is TODO(e2b-builtin-registration); current behavior: selecting e2b refuses to start.
 
 const entry = manifest.sandboxBackends.find((b) => b.id === BACKEND_ID);
 if (entry === undefined) throw new Error(`packages/sandbox-e2b/manifest.json declares no backend ${BACKEND_ID}; add its entry (id, params, credentials)`);
