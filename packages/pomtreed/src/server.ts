@@ -569,9 +569,11 @@ async function probe(
 ): Promise<void> {
   if (path === "/healthz") return sendJson(res, 200, { status: "ok" });
   let r: Readiness;
+  let backend: Awaited<ReturnType<Daemon["doctor"]>>["backend"];
   try {
     const d = await daemon.doctor();
     r = evaluateReadiness({ storeOpen: true, sandboxUp: d.sandboxUp, journalFailed: d.journalFailed, degraded: d.degraded }, { allowSandboxDown });
+    backend = d.backend;
   } catch {
     r = evaluateReadiness({ storeOpen: false, sandboxUp: false, journalFailed: false, degraded: false }, { allowSandboxDown });
   }
@@ -582,7 +584,12 @@ async function probe(
   } catch {
     // an unreadable spool root must not break the probe; ingestion reports it
   }
-  sendJson(res, r.ready ? 200 : 503, { status: r.ready ? "ready" : "unready", reasons: r.reasons, ...(egressAudit && { egressAudit }) });
+  sendJson(res, r.ready ? 200 : 503, {
+    status: r.ready ? "ready" : "unready",
+    reasons: r.reasons,
+    ...(backend && { backend }),
+    ...(egressAudit && { egressAudit }),
+  });
 }
 
 export function makeServer(

@@ -691,6 +691,13 @@ daemon = new Daemon({
   gateway,
   storeId,
   maxSessions,
+  backend: {
+    id: backend.id,
+    engine: {
+      binary: engine.binary,
+      ...(engine.socket && { socket: engine.socket.path, source: engine.socket.source, via: engine.socket.via }),
+    },
+  },
   untemplatedEgress: cfg["agent.untemplatedEgress"] as "none" | "registry",
   ...(repos && { repos }),
   // Spawn preflight: can the host reach its own agent endpoint? (a dead listener makes every agent exit unreachable)

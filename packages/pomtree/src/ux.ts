@@ -140,6 +140,20 @@ export function transportHint(message: string, stateDir: string): string {
   return `is pomtreed running? POMTREED_STATE_DIR=${stateDir}: nothing is listening on that socket/URL, or this shell points at the wrong state dir or socket; start it with scripts/pomtree-up REPO, or point this shell at the running one with eval "$(scripts/pomtree-up REPO --print-env)"`;
 }
 
+interface DoctorBackend {
+  id: string;
+  engine?: { binary: string; socket?: string; source?: string; via?: string };
+}
+
+// `docker (docker CLI, /run/docker.sock, from sandbox.docker.socket)`; a socket the daemon found itself reads `detected via <where>`.
+function renderBackend(b: DoctorBackend): string {
+  const e = b.engine;
+  if (!e) return b.id;
+  const socket =
+    e.socket === undefined ? "no socket found" : `${e.socket}, ${e.source === "config" ? `from ${e.via}` : `detected${e.via ? ` via ${e.via}` : ""}`}`;
+  return `${b.id} (${e.binary}, ${socket})`;
+}
+
 export function renderDoctor(
   d: { ok: boolean; host: string; agents: Record<string, number>; sandboxes: number; live: number } & Record<string, unknown>,
   clientVersion?: string,
@@ -147,6 +161,7 @@ export function renderDoctor(
   const reasons = doctorReasons(d);
   const ae = (d as { agentEndpoint?: { bind?: string[]; containerReachable?: boolean; hostProbe?: boolean } }).agentEndpoint;
   const ms = (d as { maxSessions?: { value: number; mode: string } }).maxSessions;
+  const be = (d as { backend?: DoctorBackend }).backend;
   const rev = d as { revisionMismatch?: boolean; gitSha?: string; imageRevision?: string };
   const warning =
     rev.revisionMismatch === true
@@ -167,6 +182,7 @@ export function renderDoctor(
     `  sandboxes:  ${d.sandboxes}`,
     `  live:       ${d.live}`,
     ...(ms ? [`  max sessions: ${ms.value} (${ms.mode})`] : []),
+    ...(be ? [`  backend:    ${renderBackend(be)}`] : []),
     ...(ae
       ? [
           `  agent api:  ${(ae.bind ?? []).join(", ") || "off"} (${ae.containerReachable === false || ae.hostProbe === false ? "NOT reachable from containers" : "reachable from containers"})`,

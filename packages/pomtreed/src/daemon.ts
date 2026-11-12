@@ -1210,6 +1210,7 @@ export class Daemon implements Driver {
       imageRevision: rev.imageRevision,
       revisionMismatch: rev.mismatch,
       ...(this.deps.maxSessions && { maxSessions: this.deps.maxSessions }),
+      ...(this.deps.backend && { backend: this.deps.backend }),
       ...(agentEndpoint !== undefined && { agentEndpoint }),
     };
   }

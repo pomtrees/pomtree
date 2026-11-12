@@ -64,9 +64,16 @@ export interface WorkspaceCleanupMarks {
   cleanedAgents(): Set<AgentId>;
 }
 
+// The resolved sandbox backend as reported to operators: ids, the CLI binary and the socket path with where it came from; never env values.
+export interface ResolvedBackendReport {
+  id: string;
+  engine?: { binary: string; socket?: string; source?: "config" | "env" | "cli" | "default"; via?: string };
+}
+
 export interface DaemonDeps {
   hostId: HostId;
   maxSessions?: { value: number; mode: "auto" | "manual" }; // effective session cap (surfaced by doctor); the cap itself lives in the Placement
+  backend?: ResolvedBackendReport; // the resolved sandbox backend (surfaced by doctor and /readyz)
   // Process-wide wall-clock policy. A request may shorten this interval; children never exceed
   // their requester's durable deadline.
   defaultSessionMs?: number;

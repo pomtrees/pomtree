@@ -511,6 +511,32 @@ test("/readyz carries the egress audit status next to the reasons, and omits it 
   }
 });
 
+test("/readyz and doctor carry the resolved backend (ids and socket path only, never env values); omitted when none is wired", async () => {
+  process.env.POMTREED_TEST_PLANTED_TOKEN = "planted-token-sentinel-5d1e";
+  const t = setup(async () => {}, {
+    backend: { id: "podman", engine: { binary: "podman", socket: "/run/p.sock", source: "config", via: "sandbox.podman.socket" } },
+  });
+  const s = sock();
+  const a = await listen(t.daemon, s);
+  const plain = setup(async () => {});
+  const s2 = sock();
+  const b = await listen(plain.daemon, s2);
+  try {
+    const r = await get(s, "/readyz");
+    assert.deepEqual(JSON.parse(r.body), {
+      status: "ready",
+      reasons: [],
+      backend: { id: "podman", engine: { binary: "podman", socket: "/run/p.sock", source: "config", via: "sandbox.podman.socket" } },
+    });
+    assert.ok(!r.body.includes("planted-token-sentinel"));
+    assert.equal((await t.daemon.doctor()).backend?.id, "podman");
+    assert.deepEqual(JSON.parse((await get(s2, "/readyz")).body), { status: "ready", reasons: [] });
+  } finally {
+    delete process.env.POMTREED_TEST_PLANTED_TOKEN;
+    for (const x of [a, b]) await new Promise((res) => x.close(res));
+  }
+});
+
 test("/healthz and /readyz are served unauthenticated on the unix socket only", async () => {
   const t = setup(async () => {});
   const s = sock();

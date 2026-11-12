@@ -1462,6 +1462,25 @@ test("doctor prints ok, or FAIL with the reason and exits 1", async () => {
   assert.equal(bad.out[0]!.split("\n")[0], "FAIL: sandbox unavailable; journal writes failing");
 });
 
+test("doctor names the resolved backend and where the engine socket came from, and prints no backend line without one", async () => {
+  const base = { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 };
+  const cfg = harness(
+    route({
+      "/v1/doctor": { ...base, backend: { id: "docker", engine: { binary: "docker", socket: "/run/d.sock", source: "config", via: "sandbox.docker.socket" } } },
+    }),
+  );
+  await run(["doctor"], cfg.io);
+  assert.match(cfg.out[0]!, /^  backend:    docker \(docker, \/run\/d\.sock, from sandbox\.docker\.socket\)$/m);
+  const det = harness(
+    route({ "/v1/doctor": { ...base, backend: { id: "podman", engine: { binary: "podman", socket: "/run/p.sock", source: "env", via: "CONTAINER_HOST" } } } }),
+  );
+  await run(["doctor"], det.io);
+  assert.match(det.out[0]!, /^  backend:    podman \(podman, \/run\/p\.sock, detected via CONTAINER_HOST\)$/m);
+  const none = harness(route({ "/v1/doctor": base }));
+  await run(["doctor"], none.io);
+  assert.doesNotMatch(none.out[0]!, /backend:/);
+});
+
 test("doctor prints the daemon's build identity when the daemon reports one", async () => {
   const h = harness(route({ "/v1/doctor": { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0, version: "v0.1.0* (abc1234)" } }));
   assert.equal(await run(["doctor"], h.io), EXIT.ok);
