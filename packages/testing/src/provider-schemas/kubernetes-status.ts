@@ -1,5 +1,6 @@
 import type { Schema } from "../schema-check.ts";
 
+// TODO(provider-schemas-unverified): written from memory; check against the official Kubernetes reference.
 // Provenance: inferred. meta/v1 Status (the body of a failed API call and of the exec status channel), written from memory; not fetched and not verified against the official reference.
 // Source to check against: https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/status/
 // Lenient: this validates RESPONSES, which the provider may extend, so extra fields are accepted and only the fields the adapter depends on (kind, apiVersion, status) are required.

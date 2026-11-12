@@ -1,6 +1,9 @@
 // One definition of test deadlines: a scale factor from the environment, a load-aware `until`,
 // and a real timer that survives `mock.timers`.
 
+// TODO(test-timing-fake-time): left to do: fake time (Node mock timers) for provider backoff, deadline firing, the watcher interval and orchestrator
+// timer arming; proxy tests in sandbox-docker (proxy-relay-class, public-proxy); about 107 raw sleeps to mark `// timing-ok: <reason>`; and an e2e
+// guard that flags new raw sleeps. Current behavior: only the scale and the load-aware `until` exist, and `pnpm test:lite` is load-sensitive.
 const SCALE_VAR = "POMTREE_TEST_TIMEOUT_SCALE";
 
 // Captured at module load, before any test can enable `mock.timers`; every poll sleep uses it.

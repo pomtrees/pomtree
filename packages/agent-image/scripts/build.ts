@@ -57,6 +57,8 @@ const PI_NPM_INTEGRITY = "sha512-rdu4pRvpQba2ep83nqHaN8L1pvY1OQ3i/2FucogA/eyRxwo
 // Build engine: AGENT_IMAGE_ENGINE=docker|podman (default docker). Images are per engine store, so the engine that builds is the one that
 // must run the image. Docker builds through buildx (single-manifest result, config digest from its metadata file); Podman builds with
 // `--format oci` and reads the digest from --iidfile (image-labels.ts, buildCommand).
+// TODO(agent-image-buildx-required): Docker builds need buildx (`--provenance=false`, `--metadata-file`); current behavior: a Docker without buildx fails the
+// build. Decide whether to document the requirement in onboarding or fall back to the classic builder.
 const engine = parseBuildEngine(process.env.AGENT_IMAGE_ENGINE);
 // Opt-in layer cache shared across builds (CI): AGENT_IMAGE_CACHE_DIR=<dir> makes buildx import from and export to a local cache directory
 // (type=local, mode=max so the slow apt layers are kept). Unset (the default) builds with no cache flags. Needs a buildx builder that
