@@ -1,5 +1,6 @@
 // Pure evaluation of the preflight observations into findings. Every non-ok finding names the onboarding step that fixes it
 // (steps.ts is the one source of fix text); needsRoot and network come from that step.
+import { engineDisplayName } from "@pomtree/sandbox-docker";
 import { evaluateGitVersion } from "@pomtree/workspace-git";
 import { revisionMismatch } from "../revision.ts";
 import { EGRESS_PROXY_PATH, type Observations } from "./probes.ts";
@@ -35,20 +36,21 @@ const atLeast = (have: number[], need: number[]): boolean => {
   return true;
 };
 
-// The one wording source of the image findings (the dynamic parts are arguments), so the wording can be swapped in one place.
+// The one wording source of the image findings (the dynamic parts are arguments, `b` the engine's binary), so the wording can be
+// swapped in one place.
 export const IMAGE_MESSAGES = {
   missing: (label: string) => `${label} is not present: an agent start would fail when the sandbox starts its containers`,
   noEgressProxy: (label: string) =>
     `${label} was built before the egress proxy existed (it lacks ${EGRESS_PROXY_PATH}), so the egress sidecar exits at once and every agent start fails`,
-  proxyUnknown: (label: string) =>
-    `could not check whether ${label} carries the egress proxy (the docker run probe gave no clear answer: it timed out, could not start, the image has no node, or node crashed); rebuild it if agent starts fail`,
+  proxyUnknown: (label: string, b: string) =>
+    `could not check whether ${label} carries the egress proxy (the ${b} run probe gave no clear answer: it timed out, could not start, the image has no node, or node crashed); rebuild it if agent starts fail`,
   stale: (label: string, built: string, checkout: string) =>
     `${label} was built from ${built}, checkout is ${checkout}: the baked pomtree CLI may skew from the daemon, and a start would run the old build`,
   unlabelled: (label: string) => `${label} carries no revision label, so skew with the checkout cannot be ruled out; rebuild it with the build step`,
   checkoutUnknown: (label: string, built: string) => `${label} was built from ${built}; the checkout's revision is unknown, so skew cannot be checked`,
-  daemonDown: "skipped: docker daemon not reachable",
+  daemonDown: (b: string) => `skipped: ${b} daemon not reachable`,
   revisionSkipped: "skipped: image not present",
-  proxySkipped: "skipped: image not present or docker daemon not reachable",
+  proxySkipped: (b: string) => `skipped: image not present or ${b} daemon not reachable`,
   egressDefaulted: " (egress image defaulted to the agent image; pass --egress-image to check the configured one)",
 } as const;
 
@@ -66,6 +68,9 @@ export function evaluateObservations(o: Observations, steps: readonly Onboarding
   };
   const { host } = o;
   const { facts } = host;
+  const engine = o.engine.profile;
+  const b = engine.binary;
+  const name = engineDisplayName(engine);
 
   // node
   const need = parseMinRange(facts.nodeRange);
@@ -136,14 +141,15 @@ export function evaluateObservations(o: Observations, steps: readonly Onboarding
   else if (o.pnpm !== facts.pnpmVersion) add("pnpm.version", "warn", `pnpm ${o.pnpm} differs from the pinned ${facts.pnpmVersion}`, "enable-pnpm");
   else add("pnpm.version", "ok", `pnpm ${o.pnpm}`);
 
-  // container runtimes: Docker is the validated runtime
-  if (o.docker.version === null) add("docker.cli", "error", "docker is not on PATH; Docker is the required runtime", "install-docker");
+  // container runtimes: the selected engine (Docker by default) is the required one. Finding ids carry the engine id, so the docker
+  // ids stay docker.cli, docker.daemon and docker.buildx. The install and start steps are written for Docker (steps.ts).
+  if (o.engine.version === null) add(`${engine.id}.cli`, "error", `${b} is not on PATH; ${name} is the required runtime`, "install-docker");
   else {
-    add("docker.cli", "ok", o.docker.version);
-    if (!o.docker.daemon) add("docker.daemon", "error", "the docker daemon does not answer (docker info failed)", "start-docker");
-    else add("docker.daemon", "ok", "the docker daemon answers");
-    if (!o.docker.buildx) add("docker.buildx", "error", "docker buildx is missing (the agent image build needs it)", "install-docker");
-    else add("docker.buildx", "ok", "docker buildx is available");
+    add(`${engine.id}.cli`, "ok", o.engine.version);
+    if (!o.engine.daemon) add(`${engine.id}.daemon`, "error", `the ${b} daemon does not answer (${b} info failed)`, "start-docker");
+    else add(`${engine.id}.daemon`, "ok", `the ${b} daemon answers`);
+    if (o.engine.buildx === false) add(`${engine.id}.buildx`, "error", `${b} buildx is missing (the agent image build needs it)`, "install-docker");
+    else if (o.engine.buildx === true) add(`${engine.id}.buildx`, "ok", `${b} buildx is available`);
   }
   if (o.podman !== null) add("podman.runtime", "info", `${o.podman} found; Podman is not validated as a runtime for pomtree`);
 
@@ -156,19 +162,19 @@ export function evaluateObservations(o: Observations, steps: readonly Onboarding
     const label = `${role === "agent" ? "agent" : "egress proxy"} image ${img.ref}`;
     const id = `image.${role}`;
     if (img.state === "skipped") {
-      add(`${id}.present`, "info", IMAGE_MESSAGES.daemonDown);
-      if (role === "egress") add(`${id}.proxy`, "info", IMAGE_MESSAGES.proxySkipped);
-      add(`${id}.revision`, "info", IMAGE_MESSAGES.daemonDown);
+      add(`${id}.present`, "info", IMAGE_MESSAGES.daemonDown(b));
+      if (role === "egress") add(`${id}.proxy`, "info", IMAGE_MESSAGES.proxySkipped(b));
+      add(`${id}.revision`, "info", IMAGE_MESSAGES.daemonDown(b));
     } else if (img.state === "missing") {
       add(`${id}.present`, "error", `${IMAGE_MESSAGES.missing(label)}${note}`, "build-image");
-      if (role === "egress") add(`${id}.proxy`, "info", IMAGE_MESSAGES.proxySkipped);
+      if (role === "egress") add(`${id}.proxy`, "info", IMAGE_MESSAGES.proxySkipped(b));
       add(`${id}.revision`, "info", IMAGE_MESSAGES.revisionSkipped);
     } else {
       add(`${id}.present`, "ok", `${label} is present${note}`);
       if (role === "egress") {
         if (img.egressProxy === "absent") add(`${id}.proxy`, "error", `${IMAGE_MESSAGES.noEgressProxy(label)}${note}`, "build-image");
         else if (img.egressProxy === "present") add(`${id}.proxy`, "ok", `${label} carries the egress proxy${note}`);
-        else add(`${id}.proxy`, "warn", `${IMAGE_MESSAGES.proxyUnknown(label)}${note}`, "build-image");
+        else add(`${id}.proxy`, "warn", `${IMAGE_MESSAGES.proxyUnknown(label, b)}${note}`, "build-image");
       }
       if (img.revision === undefined) add(`${id}.revision`, "warn", `${IMAGE_MESSAGES.unlabelled(label)}${note}`, "build-image");
       else if (o.checkoutRevision === undefined) add(`${id}.revision`, "info", `${IMAGE_MESSAGES.checkoutUnknown(label, img.revision)}${note}`);
@@ -178,24 +184,28 @@ export function evaluateObservations(o: Observations, steps: readonly Onboarding
     }
   }
 
-  // state dir visible to docker
+  // state dir visible to the engine
   const sv = o.stateVisible;
   if (sv.state === "skipped") add("state.visible", "info", `skipped: ${sv.why}`);
   else if (sv.state === "fail")
     add(
       "state.visible",
       "error",
-      `docker cannot see the state dir ${host.stateDir} (${sv.why}); on Docker Desktop add it under Settings > Resources > File sharing, or use a path under $HOME`,
+      `${b} cannot see the state dir ${host.stateDir} (${sv.why}); ${
+        engine.id === "podman"
+          ? "on macOS a Podman machine shares only $HOME by default, so use a path under $HOME"
+          : "on Docker Desktop add it under Settings > Resources > File sharing, or use a path under $HOME"
+      }`,
       "state-dir",
     );
   else if (sv.state === "unknown")
     add(
       "state.visible",
       "warn",
-      `could not check whether docker can bind-mount the state dir ${host.stateDir} (${sv.why}); re-run preflight, a cold first docker run can be slow`,
+      `could not check whether ${b} can bind-mount the state dir ${host.stateDir} (${sv.why}); re-run preflight, a cold first ${b} run can be slow`,
       "state-dir",
     );
-  else add("state.visible", "ok", `docker can bind-mount ${host.stateDir}`);
+  else add("state.visible", "ok", `${b} can bind-mount ${host.stateDir}`);
 
   // firewall
   if (o.ufw === "active")

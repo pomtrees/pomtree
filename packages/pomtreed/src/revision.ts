@@ -2,7 +2,7 @@
 // image bakes a `pomtree` CLI at build time (OCI label org.opencontainers.image.revision). When they
 // drift, agents hit protocol errors the operator cannot see, so this module centralises the two
 // revisions and a pure mismatch predicate. Both lookups are best-effort and memoised: a daemon not
-// in a git checkout, an unlabelled/old image, or an unreachable docker yield undefined (unknown),
+// in a git checkout, an unlabelled/old image, or an unreachable engine yield undefined (unknown),
 // never a throw.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVISION_LABEL } from "@pomtree/agent-image";
 import { type BuildIdentity, formatBuildIdentity, REVISION_FILE, resolveBuildIdentity } from "@pomtree/core";
+import { DOCKER_PROFILE, type LocalEngine, localEngineFrom } from "@pomtree/sandbox-docker";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const readOptional = (path: string): string | undefined => {
@@ -56,24 +57,14 @@ export function gitSha(): string | undefined {
 }
 
 const revisions = new Map<string, string | undefined>();
-// Best effort and memoised per image: a missing image, an unlabelled image, or an unreachable docker
-// yields undefined (unknown), never a throw. The docker CLI is shelled out (no runtime dependency).
-export function imageRevision(image: string): string | undefined {
-  if (!revisions.has(image)) {
-    let out: string | undefined;
-    try {
-      out =
-        execFileSync("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${REVISION_LABEL}" }}`, image], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 2000,
-        }).trim() || undefined;
-    } catch {
-      out = undefined;
-    }
-    revisions.set(image, out);
-  }
-  return revisions.get(image);
+// The engine for callers that are not handed one (the Daemon's default when main.ts injects none): Docker on the CLI's own socket.
+const defaultEngine = localEngineFrom({ profile: DOCKER_PROFILE });
+// Best effort and memoised per engine and image: a missing image, an unlabelled image, or an unreachable engine yields undefined
+// (unknown), never a throw. The engine's CLI is shelled out through the LocalEngine (no runtime dependency).
+export function imageRevision(image: string, engine: Pick<LocalEngine, "binary" | "imageLabel"> = defaultEngine): string | undefined {
+  const key = `${engine.binary}\0${image}`;
+  if (!revisions.has(key)) revisions.set(key, engine.imageLabel(image, REVISION_LABEL));
+  return revisions.get(key);
 }
 
 // True only when both revisions are known and unequal (an absent/unknown label is never a mismatch).

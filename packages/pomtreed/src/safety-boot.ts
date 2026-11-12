@@ -1,10 +1,11 @@
 // Boot refusals for dangerous silent defaults (TODO(safety-defaults)). Pure: the caller (main.ts) resolves the config and the facts
-// (the planned agent listener, the detected docker bridge gateway, whether a merge check runner is wired) and prints every
+// (the planned agent listener, the detected engine bridge gateway, whether a merge check runner is wired) and prints every
 // message at once, so the operator fixes everything in one pass. One explicit key per decision: there is no "acknowledge" key and
 // no warning stands in for a refusal. Modeled on messagingSendersError (channels.ts).
 
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { DOCKER_PROFILE, type EngineProfile } from "@pomtree/sandbox-docker";
 import type { AgentListenPlan } from "./agent-net.ts";
 import { isLoopbackListenHost } from "./config.ts";
 import { type DaemonConfig, envName } from "./daemon-config.ts";
@@ -14,8 +15,10 @@ export interface SafetyBootFacts {
   checkRunnerWired: boolean;
   /** The agent listener plan (planAgentListen); only an `explicit` plan can violate. */
   agentListen: AgentListenPlan;
-  /** The detected docker bridge gateway; undefined = not detected. */
+  /** The detected engine bridge gateway; undefined = not detected. */
   bridgeGateway: string | undefined;
+  /** The selected container engine, named in the refusal text; absent = Docker. */
+  engine?: EngineProfile;
   /** The directories pomtreed loads code and config from, as realpaths (realpathLoose); "" = skip. */
   loadDirs: { templates: string; extensions: string };
   /** Every host path an agent container can write, as realpaths (realpathLoose); `key` is the config key that places it. */
@@ -49,6 +52,7 @@ export interface SafetyBootFactsInput {
   socketPath: string;
   agentListen: AgentListenPlan;
   bridgeGateway: string | undefined;
+  engine?: EngineProfile;
 }
 
 /** The one place the load-dir and agent-writable layout under the state dir is built, shared by main.ts and the boot-refusal e2e test. No merge check runner is wired (TODO(merge-checks)). */
@@ -58,6 +62,7 @@ export function buildSafetyBootFacts(input: SafetyBootFactsInput): SafetyBootFac
     checkRunnerWired: false,
     agentListen: input.agentListen,
     bridgeGateway: input.bridgeGateway,
+    ...(input.engine && { engine: input.engine }),
     loadDirs: {
       templates: realpathLoose(input.templatesDir || join(stateDir, "templates")),
       extensions: realpathLoose(input.extensionsDir),
@@ -94,9 +99,12 @@ type SafetyConfig = Pick<
 /** Every boot-refusal message, in a fixed order; empty = safe to start. */
 export function safetyBootErrors(cfg: SafetyConfig, facts: SafetyBootFacts): string[] {
   const errors: string[] = [];
+  const engine = facts.engine ?? DOCKER_PROFILE;
+  // The local id is field 2 (engineLocalId) of the line the agent-image build prints, `<tag> <engineLocalId> <configDigest> [mediaType]`
+  // (agent-image buildResultLine), never field 3: the adapter compares the configured id with the engine's own .Id.
   if (cfg["agent.egressProxyImage"] === "")
     errors.push(
-      `pomtreed: refusing to start: agent.egressProxyImage is not set: every container spawn runs an egress-proxy sidecar, and without a pinned image the sidecar would run the worker's own image, so a template's author would choose its egress enforcer. Set ${envName("agent.egressProxyImage")} to a digest-pinned image (name[:tag]@sha256:<64 hex>, or the local image id that docker image inspect --format '{{.Id}}' <agent image> prints; see agent.egressProxyImage in docs/configuration.md)`,
+      `pomtreed: refusing to start: agent.egressProxyImage is not set: every container spawn runs an egress-proxy sidecar, and without a pinned image the sidecar would run the worker's own image, so a template's author would choose its egress enforcer. Set ${envName("agent.egressProxyImage")} to a digest-pinned image (name[:tag]@sha256:<64 hex>, or the agent image's engine-local id: field 2 of the line the agent image build prints, <tag> <engineLocalId> <configDigest> [mediaType], which is what ${engine.binary} image inspect --format '{{.Id}}' <agent image> prints; see agent.egressProxyImage in docs/configuration.md)`,
     );
   if (cfg["agent.untemplatedEgress"] === "") {
     const env = envName("agent.untemplatedEgress");
@@ -115,7 +123,7 @@ export function safetyBootErrors(cfg: SafetyConfig, facts: SafetyBootFacts): str
     const host = facts.agentListen.host.replace(/^\[(.*)\]$/, "$1");
     if (!isLoopbackListenHost(facts.agentListen.host) && host !== facts.bridgeGateway)
       errors.push(
-        `pomtreed: refusing to start: agent.listen binds ${host}, which is neither loopback nor the docker bridge gateway (${facts.bridgeGateway ?? "not detected"}): the agent listener is plain HTTP guarded only by agent tokens. Set ${envName("agent.listen")} to a loopback or bridge-gateway address (or leave it unset), or set ${envName("listen.allowNonloopback")}=1 to accept this`,
+        `pomtreed: refusing to start: agent.listen binds ${host}, which is neither loopback nor the ${engine.binary} bridge gateway (${facts.bridgeGateway ?? "not detected"}): the agent listener is plain HTTP guarded only by agent tokens. Set ${envName("agent.listen")} to a loopback or bridge-gateway address (or leave it unset), or set ${envName("listen.allowNonloopback")}=1 to accept this`,
       );
   }
   if (cfg["merge.check"].trim() !== "" && !facts.checkRunnerWired)

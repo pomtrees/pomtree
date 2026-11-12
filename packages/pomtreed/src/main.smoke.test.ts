@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createServer as createHttpServer, request, type Server } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,8 +34,14 @@ function stubDockerDir(root: string): string {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "docker");
   writeFileSync(file, `#!/bin/sh\n[ "$1 $2 $3" = "network inspect bridge" ] && { echo ${STUB_GATEWAY}; exit 0; }\nexit 1\n`, { mode: 0o755 });
+  // A podman-selected boot must never run the machine's real podman either: every podman subcommand fails, as with no engine.
+  writeFileSync(join(dir, "podman"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   return dir;
 }
+
+// The engine socket every boot is pointed at: a path in the temp root where nothing listens, so engine detection never reaches a real
+// Docker or Podman on the test machine (the engine is "not running", which boot reports and tolerates).
+const absentEngineSocket = (root: string) => `unix://${join(root, "no-engine.sock")}`;
 
 function boot(extra: Record<string, string>, root: string, port: number, args: string[] = []) {
   // The sensitive upstream key is read only from a file (model.upstreamKey via POMTREED_MODEL_UPSTREAM_KEY_FILE).
@@ -43,6 +49,7 @@ function boot(extra: Record<string, string>, root: string, port: number, args: s
   const child = spawn(process.execPath, [main, ...args], {
     env: {
       PATH: `${stubDockerDir(root)}:${process.env.PATH ?? ""}`,
+      DOCKER_HOST: absentEngineSocket(root),
       HOME: root,
       POMTREED_STATE_DIR: join(root, "s"),
       POMTREED_SOCKET_PATH: join(root, "p.sock"),
@@ -208,8 +215,31 @@ test("pomtreed boots offline, tightens the state dir, answers /readyz, warns on 
       assert.match(b.log(), /POMTREED_UI_LISTEN is off/);
       assert.doesNotMatch(b.log(), /SECURITY WARNING/, "the default config (ui-only) raises no security warning");
       assert.doesNotMatch(b.log(), /refusing to start/i);
+      // The engine is not running: boot names it and the cause through the LocalEngine finding, and starts anyway.
+      assert.match(b.log(), /^pomtreed: the docker engine does not answer on \S+no-engine\.sock \(from DOCKER_HOST\): .*pomtreed starts anyway/m);
       b.child.kill("SIGTERM");
       assert.equal(await b.exited, 0, b.log());
+    } finally {
+      b.child.kill("SIGKILL");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pomtreed refuses to start when the engine setting is one the LocalEngine refuses (a remote DOCKER_HOST), before any state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pomtreed-smoke-"));
+  try {
+    const b = boot({ DOCKER_HOST: "tcp://10.0.0.1:2375" }, root, await freePort());
+    try {
+      // Bounded: a pomtreed that wrongly starts never exits on its own, which must fail here rather than hang the suite.
+      const code = await Promise.race([b.exited, new Promise<string>((res) => setTimeout(() => res("still running after 30 s"), 30_000).unref())]);
+      assert.equal(code, 1, b.log());
+      assert.match(
+        b.log(),
+        /^pomtreed: refusing to start: DOCKER_HOST for the docker engine is "tcp:\/\/10\.0\.0\.1:2375", which is not a local unix socket .*; set DOCKER_HOST to unix:\/\/\/<absolute path> or unset it$/m,
+      );
+      assert.equal(existsSync(join(root, "s")), false, "a refused start creates no state dir");
     } finally {
       b.child.kill("SIGKILL");
     }
@@ -251,4 +281,96 @@ test("pomtreed boots with a chat channel when POMTREED_MESSAGING_SENDERS is set"
   const log = await bootClean({ POMTREED_MESSAGING_CHANNELS: "discord", POMTREED_ESCALATION_CHANNELS: "discord", POMTREED_MESSAGING_SENDERS: "discord:u1" });
   assert.doesNotMatch(log, /SECURITY WARNING/);
   assert.doesNotMatch(log, /refusing to start/i);
+});
+
+// A scripted engine API on a unix socket in the temp root: GET /_ping and /version answer as Docker or as Podman (the identity fields
+// the detector reads, nothing else), so engine selection is exercised without a real engine.
+async function fakeEngine(path: string, kind: "docker" | "podman"): Promise<Server> {
+  const server = createHttpServer((req, res) => {
+    if (req.url === "/_ping") {
+      res.writeHead(200, kind === "podman" ? { "Libpod-Api-Version": "6.2.0" } : {});
+      res.end("OK");
+    } else if (req.url === "/version") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ Components: [{ Name: kind === "podman" ? "Podman Engine" : "Engine" }] }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise<void>((res) => server.listen(path, res));
+  return server;
+}
+
+// Boots and waits (bounded) for the exit: a pomtreed that wrongly starts never exits on its own.
+async function bootRefused(extra: (root: string) => Record<string, string>): Promise<{ code: unknown; log: string; root: string }> {
+  const root = mkdtempSync(join(tmpdir(), "pomtreed-smoke-"));
+  const b = boot(extra(root), root, await freePort());
+  try {
+    const code = await Promise.race([b.exited, new Promise<string>((res) => setTimeout(() => res("still running after 30 s"), 30_000).unref())]);
+    return { code, log: b.log(), root };
+  } finally {
+    b.child.kill("SIGKILL");
+  }
+}
+
+test("sandbox.backend outside the local engines (kubernetes) refuses the start with the cause and the action, before any state", async () => {
+  const r = await bootRefused(() => ({ POMTREED_SANDBOX_BACKEND: "kubernetes" }));
+  try {
+    assert.equal(r.code, 1, r.log);
+    assert.match(
+      r.log,
+      /^pomtreed: refusing to start: sandbox\.backend is kubernetes; this daemon build only starts the local engines \(docker, podman, auto\) until the backend registry is wired in; set sandbox\.backend to docker, podman or auto$/m,
+    );
+    assert.equal(existsSync(join(r.root, "s")), false, "a refused start creates no state dir");
+  } finally {
+    rmSync(r.root, { recursive: true, force: true });
+  }
+});
+
+test("sandbox.backend=podman selects Podman: a Podman that is not running is named with podman's own socket variable, never docker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pomtreed-smoke-"));
+  try {
+    const log = await bootClean({ POMTREED_SANDBOX_BACKEND: "podman", CONTAINER_HOST: `unix://${join(root, "no-podman.sock")}` });
+    assert.match(log, /^pomtreed: the podman engine does not answer on \S+no-podman\.sock \(from CONTAINER_HOST\): .*until the podman engine answers$/m);
+    assert.doesNotMatch(log, /the docker engine/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sandbox.backend=podman with a Docker engine answering on CONTAINER_HOST refuses the start (selection and engine disagree)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pomtreed-eng-"));
+  const sock = join(dir, "e.sock");
+  const server = await fakeEngine(sock, "docker");
+  try {
+    const r = await bootRefused(() => ({ POMTREED_SANDBOX_BACKEND: "podman", CONTAINER_HOST: `unix://${sock}` }));
+    rmSync(r.root, { recursive: true, force: true });
+    assert.equal(r.code, 1, r.log);
+    assert.match(
+      r.log,
+      /^pomtreed: refusing to start: sandbox\.backend is "podman" but the engine answering on \S+e\.sock is docker; set sandbox\.backend to "docker"/m,
+    );
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox.backend=auto with both engines answering uses docker and names the other in a finding", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pomtreed-eng-"));
+  const docker = await fakeEngine(join(dir, "d.sock"), "docker");
+  const podman = await fakeEngine(join(dir, "p.sock"), "podman");
+  try {
+    const log = await bootClean({
+      POMTREED_SANDBOX_BACKEND: "auto",
+      DOCKER_HOST: `unix://${join(dir, "d.sock")}`,
+      CONTAINER_HOST: `unix://${join(dir, "p.sock")}`,
+    });
+    assert.match(log, /^pomtreed: both docker and podman answer; using docker \(set sandbox\.backend to "podman" to use the other\)$/m);
+  } finally {
+    docker.close();
+    podman.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

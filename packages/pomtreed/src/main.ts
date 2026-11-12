@@ -1,13 +1,21 @@
 #!/usr/bin/env node
 // The only non-test file that imports real adapters.
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import { cpus, freemem, homedir, hostname, tmpdir, totalmem } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { DEFAULT_CONTAINER_CPUS, DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
+import {
+  DEFAULT_CONTAINER_CPUS,
+  DiskEgressAudit,
+  DockerSandbox,
+  legacyContainerBootCheck,
+  type LocalEngine,
+  localEngineSelection,
+  openLocalEngine,
+} from "@pomtree/sandbox-docker";
 import { EgressAuditCollector, ingestEgressAuditSafely } from "./egress-audit.ts";
 import { nearCapTransition } from "./health.ts";
 import { openStateStore } from "@pomtree/store-sqlite";
@@ -151,18 +159,35 @@ if (sendersError) {
   console.error(sendersError);
   process.exit(1);
 }
+// The local container engine (sandbox-docker LocalEngine), built once from the detector and the configuration: every engine call
+// and every engine name in operator text below goes through it. sandbox.backend selects docker, podman or auto; any other backend
+// refuses the start (localEngineSelection; replaced by the backend registry task). A configuration the detector refuses (an engine
+// answering as another id, a remote socket) refuses the start; an engine that is simply not running is a printed finding, as the
+// daemon has always booted with its engine down.
+const backendChoice = localEngineSelection(cfg["sandbox.backend"]);
+if ("refuse" in backendChoice) {
+  console.error(`pomtreed: refusing to start: ${backendChoice.refuse}`);
+  process.exit(1);
+}
+let engine: LocalEngine;
+try {
+  engine = await openLocalEngine({ selection: backendChoice.selection, env: process.env });
+} catch (e) {
+  console.error(`pomtreed: refusing to start: ${(e as Error).message}`);
+  process.exit(1);
+}
+for (const finding of engine.findings) console.error(`pomtreed: ${finding}`);
 // "off" disables the agent TCP endpoint (agents then mount the unix socket); otherwise host:port, port 0 = ephemeral.
-// Default (TODO(agent-endpoint)): Linux binds the docker bridge gateway (+ loopback), others loopback; see agent-net.ts.
+// Default (TODO(agent-endpoint)): Linux binds the engine's bridge gateway (+ loopback), others loopback; see agent-net.ts.
 // Planned before the safety check below: an explicit non-loopback host is compared with the detected gateway (detection is cached).
-const dockerExec = (cmd: string, args: string[]) =>
-  new Promise<string>((res, rej) => execFile(cmd, args, { timeout: 5000 }, (e, out) => (e ? rej(e) : res(out))));
+const engineExec = (_binary: string, args: string[]) => engine.output(args, { timeoutMs: 5000 });
 const agentListenCfg = cfg["agent.listen"] === "" ? undefined : cfg["agent.listen"];
 // An explicit host is gateway-independent in the plan, so it shows whether detection is needed.
-const explicitListen = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: undefined });
+const explicitListen = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: undefined, engine: engine.profile });
 const needGateway =
   process.platform === "linux" && (agentListenCfg === undefined || (explicitListen.mode === "explicit" && !isLoopbackListenHost(explicitListen.host)));
-const agentGateway = needGateway ? await detectBridgeGateway(dockerExec) : undefined;
-const agentPlan = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: agentGateway });
+const agentGateway = needGateway ? await detectBridgeGateway(engineExec, false, engine.profile) : undefined;
+const agentPlan = planAgentListen({ listen: agentListenCfg, platform: process.platform, gateway: agentGateway, engine: engine.profile });
 // Dangerous silent defaults refuse the start (TODO(safety-defaults)): every violation is listed at once, before any state is created.
 // Agent-writable host paths (self-modification guard): the workspace clones, the session dirs, the per-agent Pi dirs, the env layer cache and the daemon socket.
 const safetyErrors = safetyBootErrors(
@@ -176,6 +201,7 @@ const safetyErrors = safetyBootErrors(
     socketPath,
     agentListen: agentPlan,
     bridgeGateway: agentGateway,
+    engine: engine.profile,
   }),
 );
 if (safetyErrors.length > 0) {
@@ -342,7 +368,7 @@ let agentPort = 0;
 let agentBound: string[] = []; // hosts actually bound
 let containerProbe: boolean | undefined; // startup probe from a container's network perspective (Linux default plan only)
 // The gateway for reachability analysis even when an explicit agent.listen skipped detection.
-const reachGateway = async () => agentGateway ?? (process.platform === "linux" ? await detectBridgeGateway(dockerExec) : undefined);
+const reachGateway = async () => agentGateway ?? (process.platform === "linux" ? await detectBridgeGateway(engineExec, false, engine.profile) : undefined);
 const agentEndpointStatus = async () => {
   const gateway = await reachGateway();
   const target = probeTarget({ platform: process.platform, boundHosts: agentBound, gateway });
@@ -366,6 +392,7 @@ const agentEndpointStatus = async () => {
     hostProbe,
     containerProbe,
     hostUid: process.getuid?.() ?? undefined,
+    engine: engine.profile,
   });
 };
 const sandboxSocketPath = cfg["sandbox.socket"];
@@ -405,6 +432,8 @@ const bootEpoch = String(Date.now());
 const image = cfg["agent.image"];
 const egressAuditRoot = join(realpathSync(stateDir), "egress-audit");
 let egressAudit: EgressAuditCollector;
+// The adapter instance wireLocalHost builds (synchronously), kept for the boot check below.
+const built: { sandbox?: DockerSandbox } = {};
 const { node, sandbox, placement } = wireLocalHost({
   hostId,
   hosts: stores.hosts,
@@ -416,9 +445,23 @@ const { node, sandbox, placement } = wireLocalHost({
   // egress-image: the daemon pins the egress-proxy image (agent.egressProxyImage, validated by the registry); relay traffic to the
   // daemon is capped at the push limit (relay-class).
   makeSandbox: (mounts) =>
-    new DockerSandbox(dockerSandboxDeps({ mounts, egressAuditRoot, cfg, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) })),
+    (built.sandbox = new DockerSandbox(
+      dockerSandboxDeps({ mounts, egressAuditRoot, cfg, engine, warn: (message) => console.error(stamp(`pomtreed: ${message}`)) }),
+    )),
   requires: async (id) => (await templates.resolve(id))?.requires ?? [],
 });
+// Containers from before the host and generation labels refuse the start, before this host registers or anything adopts,
+// reclaims or lists them; pomtreed never removes them (the text names the ids, the missing labels and the cleanup command). Off until
+// the adapter stamps those labels (ADAPTER_STAMPS_SANDBOX_TAGS, TODO(sandbox-host-generation-labels)).
+if (!built.sandbox) throw new Error("wireLocalHost did not build the sandbox adapter; the legacy container check cannot run");
+{
+  const legacy = await legacyContainerBootCheck(engine, built.sandbox);
+  if ("refuse" in legacy) {
+    console.error(`pomtreed: refusing to start: ${legacy.refuse}`);
+    process.exit(1);
+  }
+  if ("skipped" in legacy) console.error(`pomtreed: WARNING: ${legacy.skipped}`);
+}
 // The host row is written before recovery so the first sync/admit sees it; the running set and queue live in the store.
 await node.register(stores.hosts);
 const orchestrator = new LocalOrchestrator();
@@ -629,6 +672,7 @@ daemon = new Daemon({
   reportMaxBytes,
   templates,
   image,
+  imageRevision: (img: string) => imageRevision(img, engine),
   epoch: bootEpoch,
   // Every host path this daemon is configured with that error text could echo (the daemon adds sessionRoot, socketHostPath and realpaths).
   redactRoots: [stateDir, repoDir, reportsDir, templatesDir, envCacheRoot, envCacheRootReal, extensionsDir, extensionsDirReal, socketPath],
@@ -756,11 +800,11 @@ egressAuditTimer.unref?.();
 // when the daemon's git sha and the image's baked revision are both known and differ.
 {
   const sha = gitSha();
-  const img = imageRevision(daemon.deps.image);
+  const img = imageRevision(daemon.deps.image, engine);
   if (revisionMismatch(sha, img)) {
     console.error(`pomtreed: WARNING: client/server revision mismatch: pomtreed git ${sha} vs agent image ${img} (rebuild the image)`);
   }
-  await checkEgressImage(cfg["agent.egressProxyImage"]);
+  await checkEgressImage(cfg["agent.egressProxyImage"], engine, { revision: (i) => imageRevision(i, engine) });
 }
 
 placement.onAdmit((agent) => daemon.admitted(agent));
@@ -849,14 +893,14 @@ if (agentListen !== "off") {
   console.error(`pomtreed agent endpoint on ${agentBound.map((h) => `${h}:${a.port}`).join(", ")} (containers: POMTREE_API=${agentApiUrl})`);
   if (!containerReachable({ platform: process.platform, boundHosts: agentBound, gateway: await reachGateway() })) {
     console.error(
-      `pomtreed: WARNING: ${unreachableMessage({ bind: agentBound.map((h) => `${h}:${a.port}`), apiUrl: agentApiUrl, probe: `${agentBound[0]}:${a.port}`, listenable: true })}`,
+      `pomtreed: WARNING: ${unreachableMessage({ bind: agentBound.map((h) => `${h}:${a.port}`), apiUrl: agentApiUrl, probe: `${agentBound[0]}:${a.port}`, listenable: true, engine: engine.profile })}`,
     );
   }
 }
-// Linux default plan: prove reachability from a real container (one short `docker run`, no egress; agent.probe=false skips).
+// Linux default plan: prove reachability from a real container (one short `<engine> run`, no egress; agent.probe=false skips).
 // A host firewall that drops docker0 -> host ports defeats any bind address, so on failure fall back to the unix-socket mount.
 if (agentServer && agentPlan.mode === "gateway" && cfg["agent.probe"]) {
-  containerProbe = await new Promise<boolean>((res) => execFile("docker", containerProbeArgs(image, agentPort), { timeout: 30_000 }, (e) => res(!e)));
+  containerProbe = (await engine.run(containerProbeArgs(image, agentPort, engine.profile), { timeoutMs: 30_000 })).code === 0;
   console.error(`pomtreed: agent endpoint container probe ${containerProbe ? "ok" : "FAILED"}`);
   if (!containerProbe) {
     console.error(
@@ -889,7 +933,7 @@ const { proxy: proxyOptions } = buildModelProxyOptions({
 const proxy = new ModelProxy(proxyOptions);
 if (!catalog.found) console.error("pomtreed: WARNING: no model rates; unreported-usage responses are charged the full reservation (no estimate)");
 reservationReclaim = startReservationReclaim(modelDebits, upstreamTimeoutMs, (m) => console.error(m));
-const proxyPlan = planAgentListen({ listen: undefined, platform: process.platform, gateway: await reachGateway() });
+const proxyPlan = planAgentListen({ listen: undefined, platform: process.platform, gateway: await reachGateway(), engine: engine.profile });
 if (proxyPlan.warning) console.error(`pomtreed: WARNING: ${proxyPlan.warning}`);
 const proxyHost = proxyPlan.mode === "off" ? "127.0.0.1" : proxyPlan.host;
 const proxyServer = createModelProxyServer(proxy, {

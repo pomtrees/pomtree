@@ -1,7 +1,8 @@
 // Gathers what `pomtreed preflight` evaluates: every host observation goes through an injected ProbeRunner (commands) or an injected
 // stat (files), so the gathering is testable with FakeProbeRunner and nothing here touches the real host. Evaluation is findings.ts.
 import { REVISION_LABEL } from "@pomtree/agent-image";
-import { type ExecFn, imageCheckVerdict, probeEgressProxy } from "../image-check.ts";
+import { DOCKER_PROFILE, type EngineCli, type EngineProfile, engineInfoArgs, imageLabelArgs, PODMAN_PROFILE } from "@pomtree/sandbox-docker";
+import { imageCheckVerdict, probeEgressProxy } from "../image-check.ts";
 import { targetRepoRefusal } from "./repo.ts";
 import type { SetupFacts } from "./steps.ts";
 
@@ -51,6 +52,7 @@ export interface ProbeHost {
   image: string; // the agent image
   egressImage?: string; // the egress-proxy sidecar image; absent = the agent image (what the deploy example and pomtree-up use)
   keyFile?: string;
+  engine?: EngineProfile; // the container engine to check; absent = Docker
   stat(path: string): FileStat | null;
   realpath(path: string): string; // realpathLoose in the shell
 }
@@ -74,8 +76,9 @@ export interface Observations {
   pnpm: string | null;
   pnpmSpawnError: string | null; // the errno code of a pnpm spawn refused for a reason other than ENOENT (EACCES, ENOEXEC): the binary exists but cannot be run
   pnpmUnresolved: boolean; // pnpm (or corepack's shim) is on PATH but gave no version offline: the pinned pnpm is not downloaded yet
-  docker: { version: string | null; daemon: boolean; buildx: boolean };
-  podman: string | null;
+  // The selected engine's CLI version, whether its daemon or service answers, and (Docker only) whether buildx is present.
+  engine: { profile: EngineProfile; version: string | null; daemon: boolean; buildx: boolean | null };
+  podman: string | null; // `podman --version` when the selected engine is Docker (reported as not validated); null otherwise
   images: { agent: ImageObs; egress: ImageObs; egressDefaulted: boolean };
   checkoutRevision: string | undefined;
   stateVisible: { state: StateVisible; why: string };
@@ -105,23 +108,27 @@ function safeRun(runner: ProbeRunner): ProbeRunner["run"] {
 
 export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): Promise<Observations> {
   const run = safeRun(runner);
-  const [git, corepack, pnpm, dockerVersion, podman, ufw] = await Promise.all([
+  const engine = host.engine ?? DOCKER_PROFILE;
+  const b = engine.binary;
+  const isDocker = engine.id === DOCKER_PROFILE.id;
+  const [git, corepack, pnpm, engineVersion, podman, ufw] = await Promise.all([
     run("git", ["--version"]),
     run("corepack", ["--version"]),
     run("pnpm", ["--version"], { cwd: host.checkout, env: PNPM_PROBE_ENV }),
-    run("docker", ["--version"]),
-    run("podman", ["--version"]),
+    run(b, ["--version"]),
+    isDocker ? run(PODMAN_PROFILE.binary, ["--version"]) : Promise.resolve(undefined),
     host.platform === "linux" ? run("systemctl", ["is-active", "ufw"]) : Promise.resolve(undefined),
   ]);
-  const dockerFound = dockerVersion.code === 0;
-  const [info, buildx] = dockerFound
-    ? await Promise.all([run("docker", ["info", "--format", "{{.ServerVersion}}"]), run("docker", ["buildx", "version"])])
+  const engineFound = engineVersion.code === 0;
+  // buildx is Docker's builder plugin; Podman builds with its own `podman build`.
+  const [info, buildx] = engineFound
+    ? await Promise.all([run(b, engineInfoArgs(engine)), isDocker ? run(b, ["buildx", "version"]) : Promise.resolve(undefined)])
     : [undefined, undefined];
   const daemon = info?.code === 0 && info.stdout.trim() !== "";
 
   const inspect = async (ref: string): Promise<ImageObs> => {
     if (!daemon) return { ref, state: "skipped", revision: undefined };
-    const r = await run("docker", ["image", "inspect", "--format", `{{ index .Config.Labels "${REVISION_LABEL}" }}`, ref]);
+    const r = await run(b, imageLabelArgs(ref, REVISION_LABEL));
     const label = out(r);
     return r.code === 0
       ? { ref, state: "present", revision: label === null || label === "" || label === "<no value>" ? undefined : label }
@@ -133,14 +140,11 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
   const egressInspected = egressRef === host.image ? { ...agent } : await inspect(egressRef);
   // Existence only: proxy.ts itself errors without config even when healthy, so it is never run as a probe. The probe and its
   // verdict are the boot check's (image-check.ts): exit 0 present, its own exit 3 absent, anything else (node's 1 for any crash,
-  // docker's 125-127, a timeout) unknown. The runner is adapted to its ExecFn, keeping preflight's docker-run timeout.
+  // the engine CLI's 125-127, a timeout) unknown. The runner is adapted to the engine CLI, keeping preflight's run timeout.
   let egressProxy: NonNullable<ImageObs["egressProxy"]> = "skipped";
   if (egressInspected.state === "present") {
-    const exec: ExecFn = async (file, args) => {
-      const r = await run(file, args, { timeoutMs: DOCKER_RUN_TIMEOUT_MS });
-      return { code: r.code, stderr: r.stderr };
-    };
-    const v = imageCheckVerdict({ image: egressRef, revision: egressInspected.revision, ...(await probeEgressProxy(egressRef, exec)) });
+    const cli: EngineCli = { binary: b, run: (args) => run(b, args, { timeoutMs: DOCKER_RUN_TIMEOUT_MS }) };
+    const v = imageCheckVerdict({ image: egressRef, revision: egressInspected.revision, ...(await probeEgressProxy(egressRef, cli)) });
     egressProxy = "ok" in v ? "present" : "refuse" in v ? "absent" : "unknown";
   }
   const egress = { ...egressInspected, egressProxy };
@@ -148,20 +152,20 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
   const checkoutRevision = out(await run("git", ["-C", host.checkout, "rev-parse", "--short", "HEAD"])) || undefined;
 
   // The bind-mount visibility probe formerly in scripts/pomtree-up (TODO(doctor-state-visible)); this is its pomtreed-side home.
-  // It never creates the state dir: docker would create a missing bind source as root.
+  // It never creates the state dir: the engine would create a missing bind source as root.
   let stateVisible: Observations["stateVisible"];
-  if (!daemon) stateVisible = { state: "skipped", why: "docker daemon not reachable" };
+  if (!daemon) stateVisible = { state: "skipped", why: `${b} daemon not reachable` };
   else if (images.agent.state !== "present") stateVisible = { state: "skipped", why: `image ${host.image} is not present` };
   else if (!host.stat(host.stateDir)?.isDirectory) stateVisible = { state: "skipped", why: `state dir ${host.stateDir} does not exist yet` };
   else if (/[,"]/.test(host.stateDir))
     stateVisible = {
       state: "skipped",
-      why: `state dir ${host.stateDir} contains a comma or double quote, which docker's --mount syntax cannot carry; it cannot be probed`,
+      why: `state dir ${host.stateDir} contains a comma or double quote, which ${b}'s --mount syntax cannot carry; it cannot be probed`,
     };
   else {
     // --mount, not -v: a ":" in the path would mis-parse as -v's separator.
     const r = await run(
-      "docker",
+      b,
       [
         "run",
         "--rm",
@@ -176,13 +180,13 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
       ],
       { timeoutMs: DOCKER_RUN_TIMEOUT_MS },
     );
-    // A null code is no answer (timeout, spawn failure; a cold first docker run can exceed the timeout), so it must not block.
+    // A null code is no answer (timeout, spawn failure; a cold first engine run can exceed the timeout), so it must not block.
     stateVisible =
       r.code === 0
         ? { state: "ok", why: "" }
         : r.code === null
-          ? { state: "unknown", why: `the docker run probe did not answer within ${DOCKER_RUN_TIMEOUT_MS / 1000} s or could not start` }
-          : { state: "fail", why: r.stderr.trim().split("\n")[0] || "docker run failed" };
+          ? { state: "unknown", why: `the ${b} run probe did not answer within ${DOCKER_RUN_TIMEOUT_MS / 1000} s or could not start` }
+          : { state: "fail", why: r.stderr.trim().split("\n")[0] || `${b} run failed` };
   }
 
   let repo: RepoState = "skipped";
@@ -202,8 +206,8 @@ export async function gatherObservations(host: ProbeHost, runner: ProbeRunner): 
     pnpmSpawnError: pnpm.spawnError !== undefined && pnpm.spawnError !== "ENOENT" ? pnpm.spawnError : null,
     pnpmUnresolved: pnpm.code !== null && pnpm.code !== 0,
     ...(repoRefusal !== null && { repoRefusal }),
-    docker: { version: out(dockerVersion), daemon, buildx: buildx?.code === 0 },
-    podman: out(podman),
+    engine: { profile: engine, version: out(engineVersion), daemon, buildx: isDocker ? buildx?.code === 0 : null },
+    podman: podman === undefined ? null : out(podman),
     images,
     checkoutRevision,
     stateVisible,
