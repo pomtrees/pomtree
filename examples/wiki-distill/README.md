@@ -6,7 +6,7 @@ Nothing in this directory has been run live; read [What is real and what is stub
 
 Three spawn templates for a four-stage pipeline. Readers (browser agents) each read a different slice of one Wikipedia article and write plain-text notes. An orchestrator agent spawns one summarizer per block of notes and returns condensed briefs. A distiller agent turns the briefs into a few tasteful paragraphs and publishes them as a static HTML report. The aim is a thesis, ordering by importance rather than page order, concrete specifics, no filler, and the source URL cited. The prompts in `prompts/` carry those demands and `templates/*.json` embed the same text.
 
-There is no driver script here: you spawn the readers and the distiller as root children with the plain `pomtree` CLI, and the orchestrator spawns its own summarizers.
+`drive.sh` spawns the readers and the distiller as root children with the plain `pomtree` CLI (the orchestrator spawns its own summarizers) and steers the web UI with `pomtree ui`; [Drive it](#drive-it) says how to run it.
 
 ## Install the templates
 
@@ -29,6 +29,16 @@ All validation so far is offline. `templates.test.mts` loads the three templates
 `stub.test.mts` checks the rehearsal script `stub/wiki-distill.json` against the model stub's validator, that each role matches only its own rules, that the canned shell commands parse, and that each stub template equals its real twin in every field except the system prompt.
 
 Unverified, because nothing has run live (tag `wiki-distill-live-validation`, marked in `templates.test.mts`): the editorial quality of the distillation, whether a small model follows the 24-step reader plan, and that the slice URLs return what the reader prompt expects and fit the interactive browser's result cap.
+
+## Drive it
+
+Open `/ui` in a browser, then run `examples/wiki-distill/drive.sh --title "<article>" --readers 4 --yes` with `POMTREED_STATE_DIR` set (`eval "$(scripts/pomtree-up <repo> --print-env)"`). Without `--yes` the script prints the plan, the cost ceiling and the pool and exits 2; `--dry-run` prints every command and calls nothing; `drive.sh --help` lists the flags and timeouts. The script spends real money unless the daemon runs the model stub. It never reads or prints the operator token. `WIKI_DISTILL_CLI` replaces the `pomtree` binary (the tests use it to run a fake CLI).
+
+The UI sequence is: probe the UI with `pomtree ui reset` (exit 3 means no tab is connected, so open `/ui` and rerun); follow terminal and browser windows while the readers are spawned, then arrange them in a grid; close reader browser windows as the readers finish; spawn the orchestrator and follow its terminal and its summarizers'; spawn the distiller; and, when it publishes, open its report window. A missing window is never fatal, the driver only warns; open it yourself with `pomtree ui open terminal|browser <id>` or `pomtree ui open report <agent> <report>`. There is at most 16 tiles, and a narrow screen shows one window at a time. `pomtree ui` has no acknowledgement that a tab applied a command (the ui-command-ack tag in `packages/pomtreed/src/builtin/uiDrive.ts`).
+
+The cost ceiling is N x `READER_MICROS` + `ORCHESTRATOR_MICROS` + `DISTILLER_MICROS` from `budgets.env` (2.5 USD for four readers at the shipped values), and the pool (`POMTREED_BUDGET_ROOT_MICROS` and `POMTREED_BUDGET_TOP_LEVEL_MICROS`, set to the same value) must cover it; `drive.sh` passes `--budget` on every spawn. A spawn refused with 409 `budget_exceeds_parent` means the pool is too small.
+
+If a reader fails, its block becomes `NOT READ` and the run continues; if all fail the driver exits 1 with the cause. On failure it prints the commands to cancel the agents it spawned instead of cancelling them. A key is reusable only while its agent lives, so rerun with a new `--run-id`. Clean up with `pomtree cancel <id>`, `pomtree ui follow off`, `pomtree ui reset` and `pomtree report rm <distiller id> <report id>`.
 
 ## Rehearse for free
 
