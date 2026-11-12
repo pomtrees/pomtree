@@ -448,6 +448,15 @@ A backend's keys live under `sandbox.<id>.*`, where `<id>` is the backend id in 
 | --- | --- | --- | --- | --- | --- | --- |
 | `sandbox.podman.socket` | `POMTREED_SANDBOX_PODMAN_SOCKET` | string | unset |  | operator | Unix socket path of the Podman engine's Docker-compatible API. Empty = detect it (CONTAINER_HOST, `podman machine inspect`, then the standard locations). A remote (tcp or ssh) endpoint is refused. |
 
+##### `sandbox.e2b` (built-in `@pomtree/sandbox-e2b`, backend `e2b`)
+
+| Key | Environment variable | Kind | Default | Limits | Scope | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sandbox.e2b.baseUrl` | `POMTREED_SANDBOX_E2B_BASE_URL` | string | `https://api.e2b.dev` |  | operator | Base URL of the E2B REST API. Must be https (plain http is accepted only for a loopback address). |
+| `sandbox.e2b.template` | `POMTREED_SANDBOX_E2B_TEMPLATE` | string | unset |  | operator | E2B template id every sandbox starts from. Empty = the sandbox's image reference is used as the template id; it must then be an E2B template id, not an OCI reference. |
+
+Declared credential of `e2b`: `POMTREED_SANDBOX_E2B_APIKEY_FILE` (secret file).
+
 ##### `sandbox.sail` (built-in `@pomtree/sandbox-sail`, backend `sail`)
 
 | Key | Environment variable | Kind | Default | Limits | Scope | Description |

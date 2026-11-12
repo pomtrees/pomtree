@@ -1,0 +1,22 @@
+{
+  "sandboxBackends": [
+    {
+      "id": "e2b",
+      "params": [
+        {
+          "key": "baseUrl",
+          "kind": "string",
+          "default": "https://api.e2b.dev",
+          "doc": "Base URL of the E2B REST API. Must be https (plain http is accepted only for a loopback address)."
+        },
+        {
+          "key": "template",
+          "kind": "string",
+          "default": "",
+          "doc": "E2B template id every sandbox starts from. Empty = the sandbox's image reference is used as the template id; it must then be an E2B template id, not an OCI reference."
+        }
+      ],
+      "credentials": ["apiKey"]
+    }
+  ]
+}
