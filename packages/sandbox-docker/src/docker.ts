@@ -75,6 +75,8 @@ export interface DockerDeps {
   spawn?: SpawnFn;
   // Test seam: the process launcher behind the default exec. Ignored when `exec` is given.
   execFile?: ExecFileFn;
+  // The capability declaration this adapter reports. Default: Docker's (DOCKER_DECLARATION); provider.ts passes Podman's for the podman engine.
+  declaration?: SandboxDeclaration;
   // The container engine this adapter runs against: its CLI binary, host alias and error dialect. Default: the Docker profile.
   profile?: EngineProfile;
   // The engine's resolved unix socket path (engine-detect.ts). It is used for terminals and handed to the CLI through the profile's
@@ -351,7 +353,7 @@ const CONTAINERD_STORE = /io\.containerd\.snapshotter/;
 const egressOwner = (o: SandboxOwner): EgressOwner => ({ storeId: o.storeId, epoch: String(o.epoch) });
 
 export class DockerSandbox implements Sandbox {
-  readonly declaration: SandboxDeclaration = DOCKER_DECLARATION;
+  readonly declaration: SandboxDeclaration;
   resultWork(id: SandboxId, opts?: { save?: boolean; expectedFingerprint?: string; maxBytes?: number }) {
     return collectResultWork(this.spawnFn, name(id), opts, this.profile.binary);
   }
@@ -384,6 +386,7 @@ export class DockerSandbox implements Sandbox {
   private readonly exited = new Map<SandboxId, { exitCode: number; oomKilled: boolean }>();
 
   constructor(deps: DockerDeps) {
+    this.declaration = deps.declaration ?? DOCKER_DECLARATION;
     this.profile = deps.profile ?? DOCKER_PROFILE;
     this.socket = deps.socket;
     this.selinuxRelabel = deps.selinuxRelabel === true;

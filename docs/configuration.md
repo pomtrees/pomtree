@@ -436,6 +436,18 @@ A backend's keys live under `sandbox.<id>.*`, where `<id>` is the backend id in 
 | `sandbox.<id>.maxDayMicros` | `POMTREED_SANDBOX_<ID>_MAX_DAY_MICROS` | micros | `0` |  | operator | Daily runtime spend ceiling for this backend, in micro-dollars. 0 = a billed backend admits nothing until the operator sets it; unbilled local backends ignore it. |
 | `sandbox.<id>.maxRunMicros` | `POMTREED_SANDBOX_<ID>_MAX_RUN_MICROS` | micros | `0` |  | operator | Most one agent may spend on this backend over all its generations, in micro-dollars. 0 = unset. |
 
+##### `sandbox.docker` (built-in `@pomtree/sandbox-docker`, backend `docker`)
+
+| Key | Environment variable | Kind | Default | Limits | Scope | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sandbox.docker.socket` | `POMTREED_SANDBOX_DOCKER_SOCKET` | string | unset |  | operator | Unix socket path of the Docker engine pomtreed talks to. Empty = detect it (DOCKER_HOST, the active Docker context, then the standard locations). A remote (tcp or ssh) endpoint is refused. |
+
+##### `sandbox.podman` (built-in `@pomtree/sandbox-docker`, backend `podman`)
+
+| Key | Environment variable | Kind | Default | Limits | Scope | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sandbox.podman.socket` | `POMTREED_SANDBOX_PODMAN_SOCKET` | string | unset |  | operator | Unix socket path of the Podman engine's Docker-compatible API. Empty = detect it (CONTAINER_HOST, `podman machine inspect`, then the standard locations). A remote (tcp or ssh) endpoint is refused. |
+
 #### Extension keys: `hn-digest`
 
 Composed with `extendRegistry` from `examples/hn-digest/manifest.json`, exactly as the daemon composes a present extension, so these are the names and bounds it resolves. Keys exist only while the extension is present in `extensions.dir`; extension keys are host-side only and never sensitive.

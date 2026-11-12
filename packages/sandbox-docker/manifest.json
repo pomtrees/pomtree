@@ -1,0 +1,26 @@
+{
+  "sandboxBackends": [
+    {
+      "id": "docker",
+      "params": [
+        {
+          "key": "socket",
+          "kind": "string",
+          "default": "",
+          "doc": "Unix socket path of the Docker engine pomtreed talks to. Empty = detect it (DOCKER_HOST, the active Docker context, then the standard locations). A remote (tcp or ssh) endpoint is refused."
+        }
+      ]
+    },
+    {
+      "id": "podman",
+      "params": [
+        {
+          "key": "socket",
+          "kind": "string",
+          "default": "",
+          "doc": "Unix socket path of the Podman engine's Docker-compatible API. Empty = detect it (CONTAINER_HOST, `podman machine inspect`, then the standard locations). A remote (tcp or ssh) endpoint is refused."
+        }
+      ]
+    }
+  ]
+}

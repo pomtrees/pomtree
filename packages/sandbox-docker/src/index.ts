@@ -25,3 +25,4 @@ export {
 } from "./engine-detect.ts";
 export * from "./local-engine.ts";
 export * from "./local-engine-fake.ts";
+export * from "./provider.ts";
