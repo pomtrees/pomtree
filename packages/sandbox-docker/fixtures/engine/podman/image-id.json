@@ -1,7 +1,7 @@
 {
   "engine": "podman",
   "provenance": "captured",
-  "source": "p9/results.md: podman image inspect --format {{.Id}} prints bare hex on Podman 6.2.0 (digest is a placeholder)",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): podman image inspect --format {{.Id}} prints bare 64-hex (digest is a placeholder)",
   "accepted": [
     {
       "digestRaw": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",

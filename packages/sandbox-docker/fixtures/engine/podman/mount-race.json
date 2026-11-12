@@ -1,8 +1,8 @@
 {
   "engine": "podman",
   "class": "mountRace",
-  "provenance": "inferred",
-  "source": "libpod wording for a missing bind source",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): run with a bind source that does not exist (-v and --mount type=bind print the same line); path scrubbed",
   "verb": "run",
   "exitCode": 125,
   "stderr": "Error: statfs <path>: no such file or directory",

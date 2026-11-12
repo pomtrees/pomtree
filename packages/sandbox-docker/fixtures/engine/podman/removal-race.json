@@ -2,7 +2,7 @@
   "engine": "podman",
   "class": "removalRace",
   "provenance": "inferred",
-  "source": "libpod wording not captured; written from the libpod error names, replace when a real run is captured",
+  "source": "libpod wording not captured: on rootless Podman 5.7.0 (runc, netavark, pasta) a second `rm -f` of a container that is being force-removed prints nothing and exits 0, and `rm` of a removed container says \"no such container\", so the race was not reproduced; written from the libpod error names, replace when a real run is captured",
   "verb": "rm",
   "exitCode": 125,
   "stderr": "Error: container <id> has already been removed",

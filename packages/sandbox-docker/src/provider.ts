@@ -32,8 +32,9 @@ export interface LocalBackendProvider extends SandboxBackendProvider {
 // - isolation.gvisor: detection of `runsc` on Podman is inferred from documentation, not run, so Podman does not declare it and the daemon refuses a template with a gVisor runtime block on Podman (admitTemplateSpec in pomtreed).
 // Everything else is the shared argv floor (terminal, host mounts, image pull and digest identity, tag listing, host alias, resource
 // limits, seccomp, ipv6 sysctl); resources.limits is narrowed at runtime by the engine probe on a rootless host without cgroup v2 delegation.
-// TODO(podman-inferred-details): Podman error patterns and the info and gateway-inspect formats come from documentation and fixtures, not a real Podman;
-// `firewallHint` and the onboarding steps stay Docker-only and the doctor payload carries no engine id. Run against a real Podman and fix.
+// TODO(podman-inferred-details): the Podman error patterns, info and gateway-inspect formats, network inspect and engine identity are recorded from a real rootless Podman 5.7.0;
+// still inferred: the removal-race wording (not reproducible, a repeated `rm -f` succeeds), the permission-denied tail of the socket-permission line and the registry-auth-denied
+// image wording. Rootless Podman has no host-side gateway; `firewallHint` and the onboarding steps stay Docker-only and the doctor payload carries no engine id.
 // TODO(podman-egress-isolation): Podman does not declare egress.denyAll or egress.allowHost, so the daemon refuses every template that sets egress
 // (fail closed); Podman therefore runs only egress-none templates. Trigger: before Podman is documented as a supported backend or a template
 // relies on egress isolation. Fix: declare both once the gated Podman suites pass the rootless sidecar path.

@@ -1,10 +1,10 @@
 {
   "engine": "podman",
   "class": "noSuchVolume",
-  "provenance": "inferred",
-  "source": "libpod wording",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): volume rm of an absent volume; exit status 1, not 125",
   "verb": "volume rm",
-  "exitCode": 125,
+  "exitCode": 1,
   "stderr": "Error: no volume with name \"pomtree-egress-<id>\" found: no such volume",
   "negative": {
     "stderr": "Error: no container with name or ID \"pomtree-<id>\" found: no such container",

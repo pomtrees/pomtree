@@ -1,11 +1,11 @@
 {
   "engine": "podman",
   "class": "daemonUnreachable",
-  "provenance": "inferred",
-  "source": "libpod wording, composed from engine-profile.test.ts strings",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): podman --remote --url unix://<missing socket> ps; socket path scrubbed",
   "verb": "ps",
   "exitCode": 125,
-  "stderr": "Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`, or try `podman machine init` and `podman machine start` to manage a new Linux VM\nError: unable to connect to Podman socket: failed to connect: dial unix <socket>: connect: no such file or directory",
+  "stderr": "Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`, or try `podman machine init` and `podman machine start` to manage a new Linux VM\nError: unable to connect to Podman socket: Get \"http://d/v5.7.0/libpod/_ping\": dial unix <socket>: connect: no such file or directory: unix://<socket>",
   "negative": {
     "stderr": "Error: crun: executable file `/opt/x` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found",
     "note": "similar-looking line that must not classify as this class"

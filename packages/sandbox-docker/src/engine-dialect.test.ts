@@ -147,7 +147,8 @@ test("network inspect: each engine's field names normalize to one view; the othe
     assert.ok(typeof view !== "string", String(view));
     assert.equal(view.driver, f.expected.driver);
     assert.equal(view.internal, f.expected.internal);
-    assert.equal(view.options?.["com.docker.network.bridge.enable_icc"], "false");
+    // Podman refuses `--opt com.docker.network.bridge.enable_icc` ("unsupported bridge network option"), so a real Podman network has no options.
+    assert.equal(view.options?.["com.docker.network.bridge.enable_icc"], engine === "docker" ? "false" : undefined);
     assert.equal(view.labels?.["pomtree.egress"], "1");
     const wrong = networkInspectView(profile, f.negativeOutput);
     assert.ok(typeof wrong !== "string");

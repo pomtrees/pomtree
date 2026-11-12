@@ -1,8 +1,8 @@
 {
   "engine": "podman",
   "class": "networkExists",
-  "provenance": "inferred",
-  "source": "libpod wording",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): network create of an existing name",
   "verb": "network create",
   "exitCode": 125,
   "stderr": "Error: network name pomtree-egress already used: network already exists",

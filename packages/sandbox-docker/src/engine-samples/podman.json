@@ -1,18 +1,27 @@
 {
   "engine": "podman",
-  "provenance": "inferred",
-  "source": "the scripted Podman 6.2 answers in engine-detect.test.ts, whose header calls them captured; this file was not re-captured against a live engine, so treat it as inferred. Machine paths and tokens are absent.",
+  "provenance": "captured",
+  "source": "GET /_ping and GET /version on a rootless Podman 5.7.0 API socket (runc, netavark, pasta, cgroup v2), plus `podman info` and `podman network inspect` run against it; the socket path, build details and host names are scrubbed or left out.",
   "socket": "/sockets/podman.sock",
   "ping": {
     "headers": {
-      "api-version": "1.44",
-      "libpod-api-version": "6.2.0",
-      "libpod-buildah-version": "1.46.0",
-      "server": "Libpod/6.2.0 (linux)",
+      "api-version": "1.41",
+      "libpod-api-version": "5.7.0",
+      "libpod-buildah-version": "1.42.1",
+      "server": "Libpod/5.7.0 (linux)",
       "buildkit-version": ""
     }
   },
   "version": {
-    "Components": [{ "Name": "Podman Engine" }, { "Name": "OCI Runtime (crun)" }]
+    "Components": [{ "Name": "Podman Engine" }, { "Name": "Conmon" }, { "Name": "OCI Runtime (runc)" }]
+  },
+  "cli": {
+    "info": { "format": "{{.Version.Version}}", "stdout": "5.7.0\n" },
+    "gatewayInspect": {
+      "network": "podman",
+      "format": "{{(index .Subnets 0).Gateway}}",
+      "stdout": "<gateway>\n",
+      "note": "the network definition names a bridge gateway; a rootless container on pasta does not use it, and its /etc/hosts maps host.docker.internal and host.containers.internal to the pasta address 169.254.1.2"
+    }
   }
 }

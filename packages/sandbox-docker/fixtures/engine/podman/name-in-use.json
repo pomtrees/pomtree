@@ -2,7 +2,7 @@
   "engine": "podman",
   "class": "nameInUse",
   "provenance": "captured",
-  "source": "p9/results.md, duplicate-name run on Podman 6.2.0 (container id scrubbed)",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): duplicate-name run (container name and ids scrubbed); the wording matches Podman 6.2.0",
   "verb": "run",
   "exitCode": 125,
   "stderr": "Error: creating container storage: the container name \"pomtree-<id>\" is already in use by <id>. You have to remove that container to be able to reuse that name: that name is already in use",

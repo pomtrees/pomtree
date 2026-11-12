@@ -1,11 +1,11 @@
 {
   "engine": "podman",
   "class": "pullFailed",
-  "provenance": "inferred",
-  "source": "libpod wording",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): pull from a registry host that does not resolve; resolver address scrubbed",
   "verb": "pull",
   "exitCode": 125,
-  "stderr": "Error: initializing source docker://<registry>/x:1: pinging container registry <registry>: Get \"https://<registry>/v2/\": dial tcp: lookup <registry>: no such host",
+  "stderr": "Error: unable to copy from source docker://<registry>/x:1: initializing source docker://<registry>/x:1: pinging container registry <registry>: Get \"https://<registry>/v2/\": dial tcp: lookup <registry> on <resolver>: no such host",
   "negative": {
     "stderr": "Error: pomtree/agent:nope: image not known",
     "note": "similar-looking line that must not classify as this class"

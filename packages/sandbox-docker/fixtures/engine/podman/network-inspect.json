@@ -1,8 +1,8 @@
 {
   "engine": "podman",
-  "provenance": "inferred",
-  "source": "podman network inspect: lowercase field names, as netavark networks are listed; the one-element array form is also accepted",
-  "output": "[{\"name\":\"pomtree-egress\",\"driver\":\"bridge\",\"internal\":false,\"options\":{\"com.docker.network.bridge.enable_icc\":\"false\"},\"labels\":{\"pomtree.egress\":\"1\",\"pomtree.egress.network\":\"shared\"}}]",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): network inspect --format {{json .}} of a network created with the pomtree labels; lowercase field names, a bare object (not an array) under --format, no `options` key at all, and `network create --opt com.docker.network.bridge.enable_icc=false` is refused (\"unsupported bridge network option\"). id, creation time and addresses scrubbed",
+  "output": "{\"name\":\"pomtree-egress\",\"id\":\"<id>\",\"driver\":\"bridge\",\"network_interface\":\"<interface>\",\"created\":\"<time>\",\"subnets\":[{\"subnet\":\"<subnet>\",\"gateway\":\"<gateway>\"}],\"ipv6_enabled\":false,\"internal\":false,\"dns_enabled\":true,\"labels\":{\"pomtree.egress\":\"1\",\"pomtree.egress.network\":\"shared\"},\"ipam_options\":{\"driver\":\"host-local\"},\"containers\":{}}",
   "expected": {
     "driver": "bridge",
     "internal": false

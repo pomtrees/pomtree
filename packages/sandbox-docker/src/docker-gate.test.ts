@@ -10,6 +10,7 @@ import { DockerSandbox } from "./docker.ts";
 import type { ExecFileFn } from "./docker.ts";
 import { identifyEngine, type PingInfo, type VersionInfo } from "./engine-detect.ts";
 import { DOCKER_PROFILE, PODMAN_PROFILE, type EngineId } from "./engine-profile.ts";
+import { engineInfoArgs, gatewayInspectArgs } from "./local-engine.ts";
 import {
   checkGateEngine,
   gateCommand,
@@ -53,6 +54,19 @@ test("engine samples: each carries honest provenance and source, scrubbed conten
     const raw = JSON.stringify({ socket: s.socket, ping: s.ping, version: s.version });
     assert.ok(!/\/(Users|home)\/|token|secret|key/i.test(raw), `${id}: no machine path or credential`);
   }
+});
+
+test("podman sample: the recorded info and gateway-inspect commands are the argv the adapter runs, and Docker's argv is not them", () => {
+  const { info, gatewayInspect } = (
+    JSON.parse(readFileSync(new URL("./engine-samples/podman.json", import.meta.url), "utf8")) as {
+      cli: { info: { format: string; stdout: string }; gatewayInspect: { network: string; format: string; stdout: string } };
+    }
+  ).cli;
+  assert.deepEqual(engineInfoArgs(PODMAN_PROFILE), ["info", "--format", info.format]);
+  assert.match(info.stdout, /^\d+\.\d+\.\d+\n$/);
+  assert.deepEqual(gatewayInspectArgs(PODMAN_PROFILE), ["network", "inspect", gatewayInspect.network, "-f", gatewayInspect.format]);
+  assert.notDeepEqual(engineInfoArgs(DOCKER_PROFILE), ["info", "--format", info.format]);
+  assert.notDeepEqual(gatewayInspectArgs(DOCKER_PROFILE), ["network", "inspect", gatewayInspect.network, "-f", gatewayInspect.format]);
 });
 
 test("runtimeSkip: a sample of the requested engine opens the gate; the skip reasons are unchanged", () => {
