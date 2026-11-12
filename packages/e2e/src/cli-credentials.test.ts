@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { describeCall, type ModelScript } from "@pomtree/testing";
+import { gateCommand } from "../../sandbox-docker/src/docker-gate.ts";
 import { docker, freePort, showAgent } from "./cli-crash.ts";
 import { type AgentJson, agentErrorDump, bash, cliScenarioSkip, image, MODEL, PROVIDER, type Stack, startStack } from "./cli-scenarios-harness.ts";
 
@@ -42,14 +43,15 @@ interface Scan {
 }
 
 // Runs `cmd args`, feeding its stdout (and stderr when `both`) to a Counter; fails on a nonzero exit so a failed command is not a clean scan.
-function scanCommand(cmd: string, args: string[], both = false): Promise<Scan> {
+function scanCommand(args: string[], both = false): Promise<Scan> {
   return new Promise((resolve, reject) => {
     const c = counter();
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", both ? "pipe" : "ignore"] });
+    const g = gateCommand(args, { stdio: ["ignore", "pipe", both ? "pipe" : "ignore"] as ("ignore" | "pipe")[] });
+    const p = spawn(g.file, g.args, g.options);
     p.stdout?.on("data", (b: Buffer) => c.push(b));
     if (both) p.stderr?.on("data", (b: Buffer) => c.push(b));
     p.on("error", reject);
-    p.on("close", (code) => (code === 0 ? resolve({ count: c.count, bytes: c.bytes }) : reject(new Error(`${cmd} ${args[0]} exited ${code}`))));
+    p.on("close", (code) => (code === 0 ? resolve({ count: c.count, bytes: c.bytes }) : reject(new Error(`${g.file} ${args[0]} exited ${code}`))));
   });
 }
 
@@ -57,7 +59,8 @@ function scanCommand(cmd: string, args: string[], both = false): Promise<Scan> {
 function scanExport(container: string): Promise<Scan> {
   return new Promise((resolve, reject) => {
     const c = counter();
-    const exp = spawn("docker", ["export", container], { stdio: ["ignore", "pipe", "ignore"] });
+    const g = gateCommand(["export", container], { stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"] });
+    const exp = spawn(g.file, g.args, g.options);
     const tar = spawn("tar", ["-xO"], { stdio: ["pipe", "pipe", "ignore"] });
     exp.stdout.pipe(tar.stdin);
     tar.stdin.on("error", () => {}); // tar may close early on a corrupt member; the exit codes decide
@@ -69,13 +72,13 @@ function scanExport(container: string): Promise<Scan> {
       expCode = code;
     });
     tar.on("close", () =>
-      expCode === 0 || expCode === null ? resolve({ count: c.count, bytes: c.bytes }) : reject(new Error(`docker export exited ${expCode}`)),
+      expCode === 0 || expCode === null ? resolve({ count: c.count, bytes: c.bytes }) : reject(new Error(`${g.file} export exited ${expCode}`)),
     );
   });
 }
 
-const scanInspect = (container: string) => scanCommand("docker", ["inspect", container, "--format", "{{json .Config.Env}}"]);
-const scanLogs = (container: string) => scanCommand("docker", ["logs", container], true);
+const scanInspect = (container: string) => scanCommand(["inspect", container, "--format", "{{json .Config.Env}}"]);
+const scanLogs = (container: string) => scanCommand(["logs", container], true);
 
 async function scanFile(path: string): Promise<Scan> {
   const c = counter();

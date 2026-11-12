@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { DockerSandbox } from "./docker.ts";
 import { CONFIG_DEFAULTS } from "@pomtree/core";
 import { collectResultWork, RESULT_WORK_SCRIPT } from "./result-work.ts";
-import { IMAGE, gate, testEgressNetwork } from "./docker-gate.ts";
+import { IMAGE, gate, gateSandboxDeps, testEgressNetwork } from "./docker-gate.ts";
 import { PODMAN_PROFILE } from "./engine-profile.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 const egressNetwork = testEgressNetwork();
@@ -273,7 +273,7 @@ test("negative: the in-container script refuses a missing or invalid maxBytes be
 
 test("Docker result collection uses the actual workspace and base environment", { skip: gate(), timeout: 120_000 }, async () => {
   const f = fixture();
-  const sandbox = new DockerSandbox({ mounts: stubMounts(() => f.dir), egressNetwork });
+  const sandbox = new DockerSandbox({ ...gateSandboxDeps(), mounts: stubMounts(() => f.dir), egressNetwork });
   // Docker's sandbox uid differs from the host test uid; permit writes in this disposable fixture.
   const writable = (dir: string) => {
     chmodSync(dir, 0o777);

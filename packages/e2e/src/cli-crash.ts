@@ -1,12 +1,13 @@
 // Helpers for the S1 crash and credential scenarios (cli-recovery.test.ts, cli-credentials.test.ts) beside the CLI scenario harness
 // (cli-scenarios-harness.ts): a real SIGKILL of the stack's pomtreed, read-only views of the debit store, and `docker` queries by label.
 // Observation only; nothing here drives pomtreed except by killing it.
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { gateCommand, gateExecFileSync } from "../../sandbox-docker/src/docker-gate.ts";
 import type { DebitRow } from "./browser-live-audit.ts";
 import type { AgentJson, Stack } from "./cli-scenarios-harness.ts";
 import type { AgentView, ContainerView } from "./crash-recovery-decisions.ts";
@@ -26,7 +27,9 @@ export const freePort = () =>
   });
 
 export async function docker(args: string[], timeoutMs = 30_000): Promise<string> {
-  const r = await execFileP("docker", args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  // The gate's verified engine CLI (docker or podman), never a hard-coded `docker`.
+  const c = gateCommand(args, { encoding: "utf8" as const, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  const r = await execFileP(c.file, c.args, c.options);
   return r.stdout.trim();
 }
 
@@ -122,7 +125,7 @@ export const agentView = (a: AgentJson & { sandbox?: string | null }): AgentView
 
 // Containers and volumes left behind with the framework's labels (for the final leak check of a run).
 export function leftovers(): string[] {
-  const run = (a: string[]) => execFileSync("docker", a, { encoding: "utf8", timeout: 20_000 }).trim();
+  const run = (a: string[]) => gateExecFileSync(a, { timeout: 20_000 }).trim();
   return [
     ...run(["ps", "-a", "--filter", "label=pomtree=1", "--format", "{{.Names}}"]).split("\n"),
     ...run(["ps", "-a", "--filter", "label=pomtree.egress=1", "--format", "{{.Names}}"]).split("\n"),

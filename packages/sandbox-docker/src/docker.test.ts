@@ -2,7 +2,6 @@
 // Requires the ONE normally rebuilt agent image; unsupported permissions/sandboxing fail honestly.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -13,7 +12,7 @@ import { CONFIG_DEFAULTS } from "@pomtree/core";
 import { buildRunArgs, chromiumSeccompProfile, runEnv } from "./args.ts";
 import { DockerSandbox } from "./docker.ts";
 import { DiskEgressAudit } from "./audit.ts";
-import { IMAGE, pinnedImage, gate, testEgressNetwork } from "./docker-gate.ts";
+import { IMAGE, pinnedImage, gate, gateEngine, gateExecFile, gateExecFileSync, gateSandboxDeps, testEgressNetwork } from "./docker-gate.ts";
 import { containerConfigTestEnv, OFFLINE_RELAY_PROBE_EXT, offlineRelayProbeExtMount, stubMounts, wsMount } from "./test-mounts.ts";
 
 const skip = gate();
@@ -25,6 +24,7 @@ function fixture() {
   // Worker uid1000 can traverse this test-only workspace; no world-writable paths.
   chmodSync(root, 0o755);
   const sb = new DockerSandbox({
+    ...gateSandboxDeps(),
     mounts: stubMounts(() => work),
     egressProxyImage: pinnedImage(),
     egressAuditRoot: join(root, "audit"),
@@ -62,10 +62,7 @@ test("Docker network-none worker lifecycle uses the packaged bridge and nonroot 
   try {
     assert.equal((await wait(h)).exitCode, 0);
     assert.match(await output(h), /local-lifecycle\n1000/);
-    assert.equal(
-      execFileSync("docker", ["inspect", "-f", "{{.HostConfig.NetworkMode}}", `pomtree-${h.id}`], { encoding: "utf8", timeout: 10000 }).trim(),
-      "none",
-    );
+    assert.equal(gateExecFileSync(["inspect", "-f", "{{.HostConfig.NetworkMode}}", `pomtree-${h.id}`], { timeout: 10000 }).trim(), "none");
   } finally {
     await f.sb.kill(h.id, `test-kill:${h.id}`);
     f.clean();
@@ -136,8 +133,7 @@ test("real Docker confines TCP/IPv6/DNS/UDP and socket mutation; scoped relay an
     assert.equal((await wait(h)).exitCode, 0, await output(h));
     assert.match(await output(h), /tcp-ipv6-dns-udp-readonly-proxy-ok/);
     // Sidecar has NO TCP listener, even on its own loopback/external bridge.
-    execFileSync(
-      "docker",
+    gateExecFileSync(
       [
         "exec",
         `pomtree-egress-proxy-${h.id}`,
@@ -263,7 +259,7 @@ test("browser worker: page script is denied and audited at a relay authority tha
     );
     // The real worker path: Chromium came up under the custom profile with every capability dropped, no sandbox fallback.
     assert.doesNotMatch(logs, /No usable sandbox/);
-    const info = JSON.parse(execFileSync("docker", ["inspect", `pomtree-${h.id}`], { encoding: "utf8", timeout: 10000 }))[0].HostConfig;
+    const info = JSON.parse(gateExecFileSync(["inspect", `pomtree-${h.id}`], { timeout: 10000 }))[0].HostConfig;
     assert.ok(
       info.SecurityOpt.some((o: string) => o.startsWith("seccomp=")),
       "browser worker runs under the custom profile",
@@ -313,13 +309,18 @@ test("Chromium starts under the custom seccomp profile and renders a local page 
     ],
     { PTREE_BROWSER: "1" },
   );
-  const argv = buildRunArgs(id, s, { mounts: [{ type: "bind", hostPath: join(f.root, "work"), containerPath: "/work", readOnly: false }] });
+  const argv = buildRunArgs(
+    id,
+    s,
+    { mounts: [{ type: "bind", hostPath: join(f.root, "work"), containerPath: "/work", readOnly: false }] },
+    gateEngine().profile,
+  );
   const sep = argv.indexOf("--");
   const docker = (args: string[], ms: number) =>
     new Promise<{ stdout: string; stderr: string }>((resolve, reject) =>
       // Async so this process's HTTP server keeps serving while the container runs.
-      execFile("docker", args, { encoding: "utf8", timeout: ms, env: { ...process.env, ...runEnv(s) } }, (err, stdout, stderr) =>
-        err ? reject(Error(`docker ${args[0]}: ${stderr || err.message}`)) : resolve({ stdout, stderr }),
+      gateExecFile(args, { timeout: ms, env: { ...process.env, ...runEnv(s) } }, (err, stdout, stderr) =>
+        err ? reject(Error(`${gateEngine().profile.binary} ${args[0]}: ${stderr || err.message}`)) : resolve({ stdout, stderr }),
       ),
     );
   try {

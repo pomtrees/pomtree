@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { contract, createFakes, sandboxContractBody, type SandboxContractWorld } from "@pomtree/testing";
 import { DockerSandbox } from "./docker.ts";
-import { IMAGE, pinnedImage, gate, testEgressNetwork } from "./docker-gate.ts";
+import { IMAGE, pinnedImage, gate, gateSandboxDeps, testEgressNetwork } from "./docker-gate.ts";
 import { stubMounts } from "./test-mounts.ts";
 const egressNetwork = testEgressNetwork();
 
@@ -25,6 +25,7 @@ const sandbox = contract<SandboxContractWorld>("Sandbox", {
     const work = join(root, "work");
     mkdirSync(work, { mode: 0o755 });
     const docker = new DockerSandbox({
+      ...gateSandboxDeps(),
       mounts: stubMounts(work),
       egressProxyImage: pinnedImage(),
       egressAuditRoot: join(root, "audit"),

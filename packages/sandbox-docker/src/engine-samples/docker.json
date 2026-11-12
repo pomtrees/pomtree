@@ -1,0 +1,12 @@
+{
+  "engine": "docker",
+  "provenance": "inferred",
+  "source": "the scripted Docker Desktop 4.46 answers in engine-detect.test.ts, whose header calls them captured; this file was not re-captured against a live engine, so treat it as inferred. Machine paths and tokens are absent.",
+  "socket": "/sockets/docker.sock",
+  "ping": {
+    "headers": { "api-version": "1.51", "buildkit-version": "v0.23.0", "server": "Docker/28.4.0 (linux)" }
+  },
+  "version": {
+    "Components": [{ "Name": "Engine" }, { "Name": "containerd" }, { "Name": "runc" }]
+  }
+}

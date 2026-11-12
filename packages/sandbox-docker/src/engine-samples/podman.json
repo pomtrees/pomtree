@@ -1,0 +1,18 @@
+{
+  "engine": "podman",
+  "provenance": "inferred",
+  "source": "the scripted Podman 6.2 answers in engine-detect.test.ts, whose header calls them captured; this file was not re-captured against a live engine, so treat it as inferred. Machine paths and tokens are absent.",
+  "socket": "/sockets/podman.sock",
+  "ping": {
+    "headers": {
+      "api-version": "1.44",
+      "libpod-api-version": "6.2.0",
+      "libpod-buildah-version": "1.46.0",
+      "server": "Libpod/6.2.0 (linux)",
+      "buildkit-version": ""
+    }
+  },
+  "version": {
+    "Components": [{ "Name": "Podman Engine" }, { "Name": "OCI Runtime (crun)" }]
+  }
+}

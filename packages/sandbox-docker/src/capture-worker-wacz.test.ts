@@ -5,7 +5,6 @@
 // fake daemon report endpoint and checked by the pure validator.
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -21,7 +20,7 @@ import { verifyWacz } from "../../agent-image/src/wacz.ts";
 import { HOST_A, HOST_B, PAGE_PATH, PLACEHOLDER_PHRASE, RENDERED_PHRASE, SITE_PORT, START_PATH } from "../../agent-image/test-fixtures/capture-site.ts";
 import { DiskEgressAudit } from "./audit.ts";
 import { DockerSandbox } from "./docker.ts";
-import { IMAGE, engineGate, testEgressNetwork } from "./docker-gate.ts";
+import { IMAGE, engineGate, gateEngine, gateExecFileSync, gateSandboxDeps, gateSpawn, testEgressNetwork } from "./docker-gate.ts";
 import { captureWorkerMounts, containerConfigTestEnv, workerReadyMount, stubMounts, wsMount } from "./test-mounts.ts";
 
 // engineGate, not gate(): gate() proves the image carries the committed adapter/image sources and skips on any uncommitted file. This
@@ -45,24 +44,24 @@ function buildProxyImage(ctx: string): string {
     `FROM ${IMAGE}\nCOPY --chmod=0644 capture-site.ts capture-proxy-seam.ts /opt/pomtree/egress/\nENV NODE_OPTIONS=--import=/opt/pomtree/egress/capture-proxy-seam.ts\n`,
   );
   const tag = `pomtree-test-capture-proxy:${process.pid}`;
-  execFileSync("docker", ["build", "-q", "-t", tag, ctx], { stdio: "pipe", timeout: 120000 });
+  gateExecFileSync(["build", "-q", "-t", tag, ctx], { stdio: "pipe", timeout: 120000 });
   after(() => {
     try {
-      execFileSync("docker", ["rmi", tag], { stdio: "ignore", timeout: 20000 });
+      gateExecFileSync(["rmi", tag], { stdio: "ignore", timeout: 20000 });
     } catch {
       /* already gone */
     }
   });
-  return execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", tag], { encoding: "utf8", timeout: 10000 }).trim();
+  return gateExecFileSync(["image", "inspect", "--format", "{{.Id}}", tag], { timeout: 10000 }).trim();
 }
 
-// Every command line in the container's pid namespace, sampled while it runs. `docker exec` ends once the container does.
+// Every command line in the container's pid namespace, sampled while it runs. `<engine> exec` ends once the container does.
 function sampleProcesses(name: string, seen: Set<string>): () => Promise<void> {
   let stop = false;
   const loop = (async () => {
     while (!stop) {
       await new Promise<void>((resolve) => {
-        const p = spawn("docker", ["exec", name, "sh", "-c", 'for p in /proc/[0-9]*; do tr "\\0" " " < $p/cmdline 2>/dev/null; echo; done']);
+        const p = gateSpawn(["exec", name, "sh", "-c", 'for p in /proc/[0-9]*; do tr "\\0" " " < $p/cmdline 2>/dev/null; echo; done']);
         let out = "";
         p.stdout.on("data", (c: Buffer) => {
           out += c;
@@ -90,6 +89,7 @@ test("model-free capture worker records a cross-host redirect and script-rendere
   chmodSync(root, 0o755);
   const proxyImage = buildProxyImage(join(root, "ctx"));
   const sb = new DockerSandbox({
+    ...gateSandboxDeps(),
     mounts: stubMounts(() => work),
     egressProxyImage: proxyImage,
     egressAuditRoot: join(root, "audit"),
@@ -259,7 +259,7 @@ test("model-free capture worker records a cross-host redirect and script-rendere
     // No model: the container command is the capture worker and no Pi (or browser-run, which only launches Pi) process ever existed.
     // The sample is every command line in the container's pid namespace, polled every ~150 ms during the run; it must have caught the
     // capture worker and Chromium, so a miss of Pi cannot be a blind sampler.
-    const inspected = JSON.parse(execFileSync("docker", ["inspect", `pomtree-${h.id}`], { encoding: "utf8", timeout: 10000 }))[0];
+    const inspected = JSON.parse(gateExecFileSync(["inspect", `pomtree-${h.id}`], { timeout: 10000 }))[0];
     assert.deepEqual(inspected.Config.Cmd, ["/usr/local/bin/node", "/opt/pomtree/capture-worker.ts"]);
     const lines = [...seen];
     assert.ok(

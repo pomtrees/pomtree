@@ -13,6 +13,8 @@ import { POMTREED_KINDS, secretFileEnv } from "@pomtree/core";
 import { FakeModelUpstream, type ModelScript, until as pollUntil } from "@pomtree/testing";
 import { envName } from "../../pomtreed/src/daemon-config.ts";
 import { gitRepo } from "./harness.ts";
+import { cliSocketEnv } from "../../sandbox-docker/src/engine-profile.ts";
+import { gateBackend, gateEngine, gateExecFileSync, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -55,19 +57,29 @@ const sh = (cmd: string, args: string[]) => {
   }
 };
 
-// Gate mirrors docker-proxy-path.test.ts: Docker tests opted in, an agent image named and present, built from this checkout.
+// The gate's verified engine CLI (docker or podman, PTREE_SANDBOX_BACKEND), never a hard-coded `docker`.
+const engineSh = (args: string[]) => {
+  try {
+    return gateExecFileSync(args, { timeout: 20_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return undefined;
+  }
+};
+
+// Gate mirrors docker-proxy-path.test.ts: Docker tests opted in, the requested engine verified, an agent image named and present, built from this checkout.
 export function cliScenarioSkip(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (!image) return "PTREE_E2E_IMAGE unset";
-  if (sh("docker", ["info"]) === undefined) return "docker daemon unreachable";
-  if (sh("docker", ["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
+  if (engineSh(["info"]) === undefined) return "docker daemon unreachable";
+  if (engineSh(["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
   const revision = process.env.PTREE_AGENT_TEST_REVISION ?? sh("git", ["rev-parse", "--short", "HEAD"]);
   const paths = [":(top)packages/agent-image", ":(top)packages/sandbox-docker"];
   const dirty =
     sh("git", ["diff", "HEAD", "--stat", "--", ...paths]) !== "" || sh("git", ["ls-files", "--others", "--exclude-standard", "--", ...paths]) !== "";
   return imageRevisionSkip(
     image,
-    sh("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
+    engineSh(["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
     revision,
     dirty,
   );
@@ -181,7 +193,7 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
   const catalogDir = join(root, "pi-catalog");
   writeCatalogFixture(catalogDir);
 
-  const agentImageId = (image && sh("docker", ["image", "inspect", "--format", "{{.Id}}", image])) || image || "";
+  const agentImageId = (image && engineSh(["image", "inspect", "--format", "{{.Id}}", image])) || image || "";
   const sets: Record<string, string> = {
     "state.dir": stateDir,
     "repo.dir": repo,
@@ -192,6 +204,8 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
     "agent.image": agentImageId,
     // The sidecar runs the agent image; pomtreed refuses to start while this is empty (a dummy id when no image is named: the gate skips then).
     "agent.egressProxyImage": agentImageId.startsWith("sha256:") ? agentImageId : `sha256:${"0".repeat(64)}`,
+    // The daemon under test runs on the engine the gate verified, selected by id; its socket reaches it through the engine's CLI variable below.
+    "sandbox.backend": gateBackend(),
     "agent.untemplatedEgress": "registry", // required; registry keeps the prior behavior (untemplated agents reach package registries)
     "extensions.approval": "all", // required; what unset resolved to with the default ["ui"] escalation channel
     "model.baseUrl": stub.baseUrl,
@@ -206,7 +220,11 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
   };
   // The operator's own POMTREED_*/POMTREE_* settings must not leak into the stack under test; the key arrives only through its 0600 file.
   const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("POMTREED_") && !k.startsWith("POMTREE_")));
-  const pomtreedEnv = { ...baseEnv, [secretFileEnv(envName("model.upstreamKey"))]: keyFile };
+  const engine = gateEngine();
+  // The Docker child keeps exactly its prior environment; only Podman is told its socket (and loses any named connection that would outrank it).
+  const { CONTAINER_CONNECTION: _namedConnection, ...podmanBase } = baseEnv;
+  const engineEnv = engine.profile.id === "docker" ? baseEnv : { ...podmanBase, ...cliSocketEnv(engine.profile, engine.socket) };
+  const pomtreedEnv = { ...engineEnv, [secretFileEnv(envName("model.upstreamKey"))]: keyFile };
   const pomtreeEnv = { ...baseEnv, POMTREED_STATE_DIR: stateDir, POMTREE_SOCKET: socket };
 
   let child: ChildProcess | undefined;

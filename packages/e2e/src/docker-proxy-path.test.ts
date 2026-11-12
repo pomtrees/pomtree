@@ -15,7 +15,7 @@ import { CLI_POMTREE_TIMEOUT_MS } from "../../agent-image/src/container-contract
 import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
-import { pinnedImage } from "./live-model.ts";
+import { gateEngine, gatePinnedImage, gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 
 // Behavioral smoke of the browser worker's daemon path, before any paid run. A live digest once read 0/3 articles because the scrubbed
 // `pomtree` child envs dropped the egress proxy selectors: the sandbox is --network none, so every publish and capture_finish failed, while
@@ -36,19 +36,28 @@ const sh = (cmd: string, args: string[]) => {
     return undefined;
   }
 };
+// The gate's verified engine CLI (docker or podman), never a hard-coded `docker`.
+const engineSh = (args: string[]) => {
+  try {
+    return gateExecFileSync(args, { timeout: 20_000 }).trim();
+  } catch {
+    return undefined;
+  }
+};
 function dockerSkip(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (!image) return "PTREE_E2E_IMAGE unset";
   if (process.getuid?.() === 0) return "audited-public requires unprivileged host uid";
-  if (sh("docker", ["info"]) === undefined) return "docker daemon unreachable";
-  if (sh("docker", ["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
+  if (engineSh(["info"]) === undefined) return "docker daemon unreachable";
+  if (engineSh(["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
   const revision = process.env.PTREE_AGENT_TEST_REVISION ?? sh("git", ["rev-parse", "--short", "HEAD"]);
   const paths = [":(top)packages/agent-image", ":(top)packages/sandbox-docker"];
   const dirty =
     sh("git", ["diff", "HEAD", "--stat", "--", ...paths]) !== "" || sh("git", ["ls-files", "--others", "--exclude-standard", "--", ...paths]) !== "";
   return imageRevisionSkip(
     image,
-    sh("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
+    engineSh(["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
     revision,
     dirty,
   );
@@ -151,7 +160,12 @@ test("browser worker pomtree paths reach a fake daemon through the real egress p
   });
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
   const platform = process.platform;
-  const plan = await agentBindPlan(platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
+  const { profile } = gateEngine();
+  const plan = await agentBindPlan(
+    platform,
+    () => detectBridgeGateway(async (_binary, a) => gateExecFileSync(a, { timeout: 10_000 }), false, profile),
+    profile,
+  );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, plan.mode === "off" ? "127.0.0.1" : plan.host, resolve);
@@ -173,7 +187,14 @@ test("browser worker pomtree paths reach a fake daemon through the real egress p
     },
   };
   const auditRoot = join(root, "audit");
-  const sandbox = new DockerSandbox({ mounts, egressProxyImage: pinnedImage(image!), egressAuditRoot: auditRoot, startRetries: 0, startTimeoutMs: 60_000 });
+  const sandbox = new DockerSandbox({
+    ...gateSandboxDeps(),
+    mounts,
+    egressProxyImage: gatePinnedImage(image!),
+    egressAuditRoot: auditRoot,
+    startRetries: 0,
+    startTimeoutMs: 60_000,
+  });
   let id: string | undefined;
   try {
     const h = await sandbox.start(

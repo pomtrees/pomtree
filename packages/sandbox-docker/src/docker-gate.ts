@@ -1,18 +1,29 @@
 // Shared gate for the real-engine suites: the image must be the one built from a committed revision whose adapter/image sources are unchanged.
 // Default `pnpm test` skips these suites, so they drift silently: rerun them (PTREE_DOCKER_TESTS=1, the rebuilt image and its revision)
 // at the end of any wave that changes the agent image, browser-run.ts, the browser extension or this adapter's run args.
-// PTREE_SANDBOX_BACKEND=docker|podman (default docker) picks the engine the suites target. What holds today: the gate verifies that the
-// daemon behind the requested backend's socket identifies as that backend (from its own /_ping and /version, never from the socket path)
-// and throws on a mismatch instead of skipping. What does not hold yet: the suites themselves still build DockerSandbox, and run the
-// `docker` CLI, without the gate's engine, so a Podman job is not yet guaranteed to exercise Podman.
-// TODO(gate-engine-threading): every gated suite must pass `gateEngine().profile` and `gateEngine().socket` into DockerSandbox and use that
-// profile's binary for direct CLI calls. Current behavior: not done in docker.test.ts, sandbox-contract.test.ts, result-work.test.ts,
-// capture-worker-wacz.test.ts, browser-real-article.test.ts, network-docker.test.ts, args-runtime.test.ts (direct `docker` calls), the e2e
-// docker-fanout, docker-pi and docker-proxy-path suites; they always run Docker defaults.
+// PTREE_SANDBOX_BACKEND=docker|podman (default docker) picks the engine the suites target. The gate verifies that the daemon behind the
+// requested backend's socket identifies as that backend (from its own /_ping and /version, never from the socket path) and throws on a
+// mismatch instead of skipping. The suites named in the drift guard (docker-gate.test.ts) then run against that engine: they build DockerSandbox
+// with gateSandboxDeps() and run the engine CLI through gateExecFileSync / gateExecFile / gateSpawn / gateCommand, which use the verified
+// profile's binary and socket. docker-pi is only partly threaded: the live-model.ts helper it calls (startLiveModel) remains on the list below.
+// TODO(gate-engine-threading): the gated suites outside this package still hard-code `docker` or build DockerSandbox without
+// gateSandboxDeps(). Current behavior: they always run the Docker defaults, so a Podman job can still run them on Docker. Remaining:
+// packages/e2e/src/live-model.ts and live-model.test.ts, browser-live-run.ts and browser-live-run.test.ts, docker-browse-smoke.test.ts,
+// crash-recovery-live.ts and crash-recovery-live-multi.ts;
+// packages/harness-pi/src/pi-ext-live.test.ts; packages/pomtreed/src/agent-net.docker.test.ts;
+// examples/hn-digest/content-live-smoke.test.mts, content-live-browser-smoke.test.mts, content-live-runtime.mts and model-runtime.mts.
 // Behavior change for the docker backend: the gate now runs detectLocalEngine in a child process first (the gates are synchronous) where it
 // used to run `docker info` directly. It throws, fail-closed by design, on a remote DOCKER_HOST (tcp://, ssh://), an unidentifiable engine, a
 // detector crash or the 30 s child timeout. An engine that is not installed or not running still skips.
-import { execFileSync } from "node:child_process";
+import {
+  execFile,
+  execFileSync,
+  spawn,
+  type ExecFileException,
+  type ExecFileOptions,
+  type ExecFileSyncOptionsWithStringEncoding,
+  type SpawnOptionsWithoutStdio,
+} from "node:child_process";
 import { after } from "node:test";
 import { pathToFileURL } from "node:url";
 import { cliSocketEnv, engineProfile, ENGINE_IDS, isEngineId, type EngineId, type EngineProfile } from "./engine-profile.ts";
@@ -102,8 +113,7 @@ export function lookupEngineSync(requested: EngineId, env: NodeJS.ProcessEnv = p
 // Resolved once per process: gates and helpers share one answer.
 let resolved: GateEngine | string | undefined;
 function resolveGateEngine(): GateEngine | string {
-  resolved ??= checkGateEngine(gateBackend(), lookupEngineSync(gateBackend()));
-  return resolved;
+  return cachedResolve(gateBackend());
 }
 
 // The engine a gated suite runs against (profile, socket): pass `profile` and `socket` to DockerSandbox. Call it only once a gate is open.
@@ -115,22 +125,100 @@ export function gateEngine(): GateEngine {
 
 // Runs the backend's CLI synchronously against the gate's engine.
 function cli(args: string[], options: { stdio?: "ignore"; encoding?: "utf8"; timeout: number }): string {
-  const engine = gateEngine();
-  return execFileSync(engine.profile.binary, args, { ...options, ...(engine.env ? { env: engine.env } : {}) }) as unknown as string;
+  return gateExecFileSync(args, options);
 }
 
 // IMAGE pinned by its local image id (`sha256:<hex>`), the digest-pinned form DockerSandbox requires for egressProxyImage.
 // Call it only once a gate is open (inside a test body or fixture): it runs `<binary> image inspect` and throws without the engine.
-let pinned: string | undefined;
 export function pinnedImage(): string {
-  pinned ??= cli(["image", "inspect", "--format", "{{.Id}}", IMAGE], { encoding: "utf8", timeout: 10000 }).trim();
-  return pinned;
+  return gatePinnedImage(IMAGE);
 }
-export function gate(): string | false {
-  const optedOut = optInSkip();
+// The engine for a backend, resolved once per process and cached; tests inject their own resolver into runtimeSkip.
+const cachedResolve = (backend: EngineId): GateEngine | string => {
+  resolved ??= checkGateEngine(backend, lookupEngineSync(backend));
+  return resolved;
+};
+
+// The shared first step of every gate: the opt-in, then the requested backend's engine. Returns the skip reason, or false when the
+// opt-in is set and the engine identified as the requested backend. Throws on an identity mismatch or a refused setting (a failure, never a
+// skip). `dockerAbsent` is the legacy wording a gate keeps for an absent Docker engine; Podman reasons always name the backend.
+export function runtimeSkip(
+  dockerAbsent?: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  resolve: (backend: EngineId) => GateEngine | string = cachedResolve,
+): string | false {
+  const optedOut = optInSkip(env);
   if (optedOut) return optedOut;
-  const engine = resolveGateEngine();
-  if (typeof engine === "string") return gateBackend() === "docker" ? "Docker unavailable; network-none/UDS/browser confinement unverified" : engine;
+  const backend = gateBackend(env);
+  const r = resolve(backend);
+  if (typeof r !== "string") return false;
+  return backend === "docker" && dockerAbsent !== undefined ? dockerAbsent : r;
+}
+
+// What a gated suite passes to `new DockerSandbox({ ... })` so the adapter targets the verified engine. Call it only once a gate is open.
+export function gateSandboxDeps(engine: GateEngine = gateEngine()): { profile: EngineProfile; socket: string } {
+  return { profile: engine.profile, socket: engine.socket };
+}
+
+// Which engine CLI a direct call runs and with what environment. The engine's socket variable wins over a caller-supplied env, so a
+// process-wide DOCKER_HOST or CONTAINER_HOST cannot redirect the call to another engine.
+export function gateCommand<O extends object>(
+  args: readonly string[],
+  options: O,
+  engine: GateEngine = gateEngine(),
+): { file: string; args: string[]; options: O } {
+  const callerEnv = (options as { env?: NodeJS.ProcessEnv }).env;
+  const socketEnv = engine.profile.id === "docker" ? undefined : cliSocketEnv(engine.profile, engine.socket);
+  const env = socketEnv ? { ...(callerEnv ?? process.env), ...socketEnv } : callerEnv;
+  // CONTAINER_CONNECTION (and CONTAINER_HOST) pick a Podman connection; a named connection outranks CONTAINER_HOST, so drop it.
+  if (socketEnv && env) delete env.CONTAINER_CONNECTION;
+  return { file: engine.profile.binary, args: [...args], options: env ? { ...options, env } : options };
+}
+
+// Synchronous CLI call against the gate's engine (execFileSync with the engine's binary).
+export function gateExecFileSync(
+  args: readonly string[],
+  options: Omit<ExecFileSyncOptionsWithStringEncoding, "encoding"> = {},
+  deps: { engine?: GateEngine; run?: typeof execFileSync } = {},
+): string {
+  const c = gateCommand(args, { ...options, encoding: "utf8" as const }, deps.engine);
+  return (deps.run ?? execFileSync)(c.file, c.args, c.options);
+}
+
+// Asynchronous CLI call against the gate's engine (execFile with the engine's binary).
+export function gateExecFile(
+  args: readonly string[],
+  options: ExecFileOptions,
+  callback: (err: ExecFileException | null, stdout: string, stderr: string) => void,
+  deps: { engine?: GateEngine; run?: typeof execFile } = {},
+): void {
+  const c = gateCommand(args, options, deps.engine);
+  (deps.run ?? execFile)(c.file, c.args, { ...c.options, encoding: "utf8" }, callback);
+}
+
+// Long-lived CLI child against the gate's engine (spawn with the engine's binary).
+export function gateSpawn(args: readonly string[], options: SpawnOptionsWithoutStdio = {}, deps: { engine?: GateEngine; run?: typeof spawn } = {}) {
+  const c = gateCommand(args, options, deps.engine);
+  return (deps.run ?? spawn)(c.file, c.args, c.options);
+}
+
+// A local image name pinned by its image id, resolved once per name; an already pinned reference (`name@sha256:<hex>` or `sha256:<hex>`)
+// is returned as is. Like pinnedImage, call it only once a gate is open.
+const pinnedByName = new Map<string, string>();
+export function gatePinnedImage(image: string, deps: { engine?: GateEngine; run?: typeof execFileSync } = {}): string {
+  if (/^sha256:[0-9a-f]{64}$/.test(image) || /@sha256:[0-9a-f]{64}$/.test(image)) return image;
+  let id = pinnedByName.get(image);
+  if (id === undefined) {
+    id = gateExecFileSync(["image", "inspect", "--format", "{{.Id}}", image], { timeout: 10000 }, deps).trim();
+    pinnedByName.set(image, id);
+  }
+  return id;
+}
+
+export function gate(): string | false {
+  const early = runtimeSkip("Docker unavailable; network-none/UDS/browser confinement unverified");
+  if (early) return early;
+  const engine = gateEngine();
   const revision = process.env.PTREE_AGENT_TEST_REVISION;
   if (!revision || !/^[0-9a-f]{7,40}$/.test(revision)) return "explicit committed PTREE_AGENT_TEST_REVISION required; no old-image proof";
   let expected: string;
@@ -175,10 +263,9 @@ export function gate(): string | false {
 // than image confinement: Docker reachable and IMAGE present, without the committed-revision proof, so the suite also
 // runs against an uncommitted adapter. It must not be used to claim anything about the image's own sources.
 export function engineGate(): string | false {
-  const optedOut = optInSkip();
-  if (optedOut) return optedOut;
-  const engine = resolveGateEngine();
-  if (typeof engine === "string") return gateBackend() === "docker" ? "Docker unavailable; egress network isolation unverified" : engine;
+  const early = runtimeSkip("Docker unavailable; egress network isolation unverified");
+  if (early) return early;
+  const engine = gateEngine();
   try {
     cli(["info"], { stdio: "ignore", timeout: 10000 });
   } catch {

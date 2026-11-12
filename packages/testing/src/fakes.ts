@@ -3269,14 +3269,17 @@ export interface ContractAdapters<W> {
 
 // TODO(fakes): bridge only. sandbox-contract.test.ts still throws docker-gate.ts's reason from `real`; list every
 // reason gate() and engineGate() can return. Delete this list once that test passes gate() through `gate` instead.
-const DOCKER_GATE_REASONS: RegExp[] = [
+export const DOCKER_GATE_REASONS: RegExp[] = [
   /^PTREE_DOCKER_TESTS not set \(no Docker execution\)$/,
+  /^PTREE_DOCKER_TESTS not set \(no Podman execution; backend podman\)$/,
+  /^Docker unavailable \(backend docker\): .+$/,
+  /^Podman unavailable \(backend podman\): .+$/,
   /^explicit committed PTREE_AGENT_TEST_REVISION required; no old-image proof$/,
   /^commit adapter\/image checkpoint before Docker gates; untracked sources are not image proof$/,
   /^adapter\/image source differs from requested committed image revision$/,
-  /^Docker unavailable; network-none\/UDS\/browser confinement unverified$/,
-  /^Docker unavailable; egress network isolation unverified$/,
-  /^(rebuilt )?\S+ unavailable; this gate never pulls or builds$/,
+  /^(Docker|Podman) unavailable; network-none\/UDS\/browser confinement unverified$/,
+  /^(Docker|Podman) unavailable; egress network isolation unverified$/,
+  /^(rebuilt )?\S+ unavailable( in the (docker|podman) image store)?; this gate never pulls or builds$/,
   /^image revision \S+ does not match approved \S+$/,
   /^cannot establish rebuilt image revision$/,
 ];

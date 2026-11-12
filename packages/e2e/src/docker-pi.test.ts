@@ -11,6 +11,7 @@ import { GitWorkspace } from "@pomtree/workspace-git";
 import { startLiveModel } from "./live-model.ts";
 import { SECRET, gitRepo, tmp } from "./harness.ts";
 import { join } from "node:path";
+import { gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 
 const ok = (cmd: string, args: string[]) => {
   try {
@@ -21,11 +22,21 @@ const ok = (cmd: string, args: string[]) => {
   }
 };
 
+const engineOk = (args: string[]) => {
+  try {
+    gateExecFileSync(args, { stdio: "ignore", timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 // Needs a running Docker daemon, `pi` on PATH, and an agent image that contains Pi (PTREE_E2E_IMAGE).
 function skipReason(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   const missing: string[] = [];
-  if (!ok("docker", ["info"])) missing.push("docker daemon unreachable");
+  if (!engineOk(["info"])) missing.push("docker daemon unreachable");
   if (!ok("pi", ["--version"])) missing.push("pi not usable");
   if (!process.env.PTREE_E2E_IMAGE) missing.push("PTREE_E2E_IMAGE unset");
   for (const k of ["POMTREED_PI_PROVIDER", "PTREE_E2E_MODEL_BASE_URL", "POMTREED_MODEL_UPSTREAM_KEY_FILE"]) {
@@ -53,7 +64,7 @@ test("real Docker + Pi: one agent runs through pomtreed", { skip: skipReason(), 
     sessionRoot: join(stateDir, "sessions"),
     image: process.env.PTREE_E2E_IMAGE!,
     capacity: { maxSessions: 1 },
-    makeSandbox: (mounts) => new DockerSandbox({ mounts }),
+    makeSandbox: (mounts) => new DockerSandbox({ mounts, ...gateSandboxDeps() }),
   });
   const orchestrator = new LocalOrchestrator();
   const live = await startLiveModel({

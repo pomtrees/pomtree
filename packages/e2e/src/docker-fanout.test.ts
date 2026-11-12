@@ -13,6 +13,7 @@ import { DirReportStore } from "@pomtree/report-dir";
 import { GitWorkspace } from "@pomtree/workspace-git";
 import { SECRET, gitRepo, tmp } from "./harness.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
+import { gateEngine, gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { sandboxOwner } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 const IMAGE = process.env.PTREE_E2E_IMAGE ?? "pomtree/agent:dev";
@@ -34,6 +35,15 @@ const out = (cmd: string, args: string[]) => {
   }
 };
 
+// The engine CLI of the gate's verified engine (docker or podman), never a hard-coded `docker`.
+const engineOut = (args: string[]) => {
+  try {
+    return gateExecFileSync(args, { timeout: 10000 }).trim();
+  } catch {
+    return undefined;
+  }
+};
+
 // Same dirty-source rule as packages/sandbox-docker/src/docker-gate.ts: tracked changes against the revision, or any
 // untracked file under the image sources, make the image unprovable. A git error counts as dirty.
 function sourcesDirty(revision: string): boolean {
@@ -44,13 +54,14 @@ function sourcesDirty(revision: string): boolean {
 
 // Needs a reachable Docker daemon and an agent image built from this checkout; uses no model.
 function skipReason(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
-  if (!ok("docker", ["info"])) return "docker daemon unreachable";
-  if (!ok("docker", ["image", "inspect", IMAGE])) return `image ${IMAGE} not present (build it or set PTREE_E2E_IMAGE)`;
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
+  if (engineOut(["info"]) === undefined) return "docker daemon unreachable";
+  if (engineOut(["image", "inspect", IMAGE]) === undefined) return `image ${IMAGE} not present (build it or set PTREE_E2E_IMAGE)`;
   const revision = process.env.PTREE_AGENT_TEST_REVISION ?? out("git", ["rev-parse", "--short", "HEAD"]);
   return imageRevisionSkip(
     IMAGE,
-    out("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', IMAGE]),
+    engineOut(["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', IMAGE]),
     revision,
     sourcesDirty(revision ?? "HEAD"),
   );
@@ -102,9 +113,7 @@ pomtree result --summary "wrote section-${name}.txt" "{\\"file\\":\\"section-${n
 `;
 
 const dockerPs = (agent?: string): string[] =>
-  execFileSync("docker", ["ps", "-aq", "--filter", agent ? `label=pomtree.agent=${agent}` : "label=pomtree.agent"], {
-    encoding: "utf8",
-  })
+  gateExecFileSync(["ps", "-aq", "--filter", agent ? `label=pomtree.agent=${agent}` : "label=pomtree.agent"])
     .split("\n")
     .filter((l) => l !== "");
 
@@ -124,7 +133,7 @@ test("real Docker, no model: scripted root spawns two children, waits, reaps, re
     sessionRoot: join(stateDir, "sessions"),
     image: IMAGE,
     capacity: { maxSessions: 4 },
-    makeSandbox: (mounts) => new DockerSandbox({ mounts }),
+    makeSandbox: (mounts) => new DockerSandbox({ mounts, ...gateSandboxDeps() }),
   });
   const orchestrator = new LocalOrchestrator();
   let apiUrl: string | undefined;
@@ -167,7 +176,12 @@ test("real Docker, no model: scripted root spawns two children, waits, reaps, re
   });
   const server = await listen(daemon, socketPath);
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-  const plan = await agentBindPlan(process.platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
+  const { profile } = gateEngine();
+  const plan = await agentBindPlan(
+    process.platform,
+    () => detectBridgeGateway(async (_binary, a) => gateExecFileSync(a, { timeout: 10_000 }), false, profile),
+    profile,
+  );
   const agents = await listenAgents(daemon, plan.host, 0);
   apiUrl = `http://host.docker.internal:${agents.port}`;
   // Containers from other stacks (a live pomtreed on this Docker host) are not this test's to assert on.

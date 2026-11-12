@@ -1,7 +1,6 @@
 // Docker-gated AND network-gated: scripted offline Pi (no model call) drives browser_capture at a real public article through the audited-public egress path.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -12,7 +11,7 @@ import { CONFIG_DEFAULTS } from "@pomtree/core";
 import { DockerSandbox } from "./docker.ts";
 import { BROWSER_BACKGROUND } from "./egress.ts";
 import { AUDIT_CHAIN_RE, DiskEgressAudit, sealAuditChain, type EgressAuditRecord } from "./audit.ts";
-import { IMAGE, pinnedImage, gate, testEgressNetwork } from "./docker-gate.ts";
+import { IMAGE, pinnedImage, gate, gateExecFileSync, gateSandboxDeps, testEgressNetwork } from "./docker-gate.ts";
 import { containerConfigTestEnv, OFFLINE_BROWSER_EXT, offlineBrowserExtMount, stubMounts, wsMount } from "./test-mounts.ts";
 const egressNetwork = testEgressNetwork();
 
@@ -32,6 +31,7 @@ test("scripted Pi browser_capture reads a real public article through the audite
   mkdirSync(work, { mode: 0o755 });
   chmodSync(root, 0o755);
   const sb = new DockerSandbox({
+    ...gateSandboxDeps(),
     mounts: stubMounts(() => work),
     egressProxyImage: pinnedImage(),
     egressAuditRoot: join(root, "audit"),
@@ -165,7 +165,7 @@ test("scripted Pi browser_capture reads a real public article through the audite
       assert.notEqual(r.outcome, "denied", `denied ${r.authority}`);
     }
     // Worker never had a direct route: network-none, reachable only through the audited proxy.
-    const hc = JSON.parse(execFileSync("docker", ["inspect", `pomtree-${h.id}`], { encoding: "utf8", timeout: 10000 }))[0].HostConfig;
+    const hc = JSON.parse(gateExecFileSync(["inspect", `pomtree-${h.id}`], { timeout: 10000 }))[0].HostConfig;
     assert.equal(hc.NetworkMode, "none");
     assert.deepEqual(hc.CapDrop, ["ALL"]);
 

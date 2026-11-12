@@ -1,13 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import type { SandboxSpec } from "@pomtree/core";
 import { buildEgressProxyArgs, buildRunArgs, CODE_DOCKER_SHAPE, describeRunHardening, parseDockerShape } from "./args.ts";
 import { EGRESS_NETWORK } from "./network.ts";
 import { NetSandbox } from "./test-network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 import type { Exec } from "./docker.ts";
-import { gateBackend, optInSkip } from "./docker-gate.ts";
+import { gateBackend, gateExecFileSync, runtimeSkip } from "./docker-gate.ts";
 
 const base: SandboxSpec = { agent: "ag1", image: "img@sha256:abc", env: {}, mounts: [wsMount("/work")] };
 const runsc = (s: SandboxSpec = base): SandboxSpec => ({ ...s, runtime: { ociRuntime: "runsc" } });
@@ -138,24 +137,20 @@ test("start: the default shape never calls docker info", async () => {
 // Real-Docker proof, only where gVisor is registered; skipped with an explicit reason otherwise. The gVisor probe reads Docker's
 // `.Runtimes` shape, so it runs on the docker backend only.
 function runscSkip(): string | false {
-  const optedOut = optInSkip();
-  if (optedOut) return optedOut;
+  const early = runtimeSkip("Docker unavailable; runsc unverified");
+  if (early) return early;
   if (gateBackend() !== "docker") return `gVisor detection is only implemented for the docker backend (backend ${gateBackend()})`;
   try {
-    const out = execFileSync("docker", ["info", "--format", "{{json .Runtimes}}"], { encoding: "utf8", timeout: 10000 });
+    const out = gateExecFileSync(["info", "--format", "{{json .Runtimes}}"], { timeout: 10000 });
     return Object.hasOwn(JSON.parse(out), "runsc") ? false : "docker info lists no runsc runtime; gVisor is not installed here";
   } catch {
     return "Docker unavailable; runsc unverified";
   }
 }
 test("docker: a runsc worker runs under gVisor", { skip: runscSkip() }, () => {
-  const out = execFileSync(
-    "docker",
+  const out = gateExecFileSync(
     ["run", "--rm", "--runtime=runsc", process.env.PTREE_AGENT_TEST_IMAGE ?? "pomtree/agent:dev", "node", "-e", "console.log('ok')"],
-    {
-      encoding: "utf8",
-      timeout: 60000,
-    },
+    { timeout: 60000 },
   );
   assert.equal(out.trim(), "ok");
 });

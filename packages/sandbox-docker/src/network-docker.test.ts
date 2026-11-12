@@ -2,7 +2,6 @@
 // model, no pulls). Creates only `pomtree-test-` named resources and removes them.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -11,15 +10,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DockerSandbox, type Exec } from "./docker.ts";
 import { egressProxyName } from "./egress.ts";
-import { engineGate, IMAGE, pinnedImage } from "./docker-gate.ts";
+import { engineGate, gateEngine, gateExecFile, gateExecFileSync, gateSandboxDeps, IMAGE, pinnedImage } from "./docker-gate.ts";
 import { ICC_OPTION, removeEgressNetwork } from "./network.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const skip = engineGate();
-const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", timeout: 20000 }).trim();
+const docker = (args: string[]) => gateExecFileSync(args, { timeout: 20000 }).trim();
 const exec: Exec = (args) =>
   new Promise((resolve, reject) =>
-    execFile("docker", args, (err, stdout, stderr) => (err ? reject(new Error(`docker ${args[0]} failed: ${stderr || err.message}`)) : resolve(stdout.trim()))),
+    gateExecFile(args, {}, (err, stdout, stderr) =>
+      err ? reject(new Error(`${gateEngine().profile.binary} ${args[0]} failed: ${stderr || err.message}`)) : resolve(stdout.trim()),
+    ),
   );
 
 // Runs inside a container: a TCP connect (sending a minimal HTTP request, so an HTTP peer answers too) that prints
@@ -40,6 +41,7 @@ test("two sidecars on the shared ICC-off network: policy-path and direct outboun
   await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", resolve));
   const port = (server.address() as AddressInfo).port;
   const sb = new DockerSandbox({
+    ...gateSandboxDeps(),
     mounts: stubMounts(() => work),
     egressProxyImage: pinnedImage(),
     egressNetwork: network,
