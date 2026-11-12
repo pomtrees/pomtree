@@ -1,0 +1,7 @@
+{
+  "provider": "openrouter",
+  "model": "anthropic/claude-haiku-5.5",
+  "egress": { "kind": "registry" },
+  "budgetMicros": 600000,
+  "systemPrompt": "[[stub:wiki-orchestrator]] rehearsal"
+}

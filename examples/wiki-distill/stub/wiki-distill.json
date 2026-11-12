@@ -1,0 +1,235 @@
+{
+  "name": "wiki-distill-rehearsal",
+  "rules": [
+    {
+      "id": "reader-nav",
+      "when": {
+        "marker": "wiki-reader",
+        "toolResults": 0,
+        "offersTool": "browser_navigate"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "browser_navigate",
+            "arguments": {
+              "url": "https://example.com/"
+            }
+          }
+        ],
+        "usage": {
+          "input": 120,
+          "output": 20
+        }
+      }
+    },
+    {
+      "id": "reader-hold",
+      "when": {
+        "marker": "wiki-reader",
+        "toolResults": 1,
+        "lastTool": "browser_navigate"
+      },
+      "times": 4,
+      "reply": {
+        "kind": "fault",
+        "fault": {
+          "type": "slow_stream",
+          "chunkDelayMs": 500,
+          "chunks": 50
+        }
+      }
+    },
+    {
+      "id": "reader-finish",
+      "when": {
+        "marker": "wiki-reader",
+        "toolResults": 1,
+        "lastTool": "browser_navigate",
+        "offersTool": "capture_finish"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "capture_finish",
+            "arguments": {
+              "status": "succeeded",
+              "summary": "=== NOTES r0 ===\nREV: 1000001\n[0] Lead: the page is a placeholder domain reserved for illustrative examples in documents; no coordination or permission is needed to use it.\n[1] Usage: it may be used in documentation and tutorials as written; it is maintained for that purpose, and the page itself carries one short paragraph and one outbound link.\n[2] Structure: a title, a single paragraph of explanation and a link to further information; no images, scripts or other sections.\n[3] Note: this text is canned by the zero-spend rehearsal and is identical for every reader.\nNOT READ: none"
+            }
+          }
+        ],
+        "usage": {
+          "input": 300,
+          "output": 160
+        }
+      }
+    },
+    {
+      "id": "orch-delay",
+      "when": {
+        "marker": "wiki-orchestrator",
+        "toolResults": 0
+      },
+      "times": 1,
+      "reply": {
+        "kind": "fault",
+        "fault": {
+          "type": "slow_stream",
+          "chunkDelayMs": 500,
+          "chunks": 8
+        }
+      }
+    },
+    {
+      "id": "orch-spawn",
+      "when": {
+        "marker": "wiki-orchestrator",
+        "toolResults": 0,
+        "offersTool": "bash"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "ts=$(date +%s)\nids=\"\"\nfor i in 1 2 3 4; do\n  cat > /workspace/task-$i.txt <<'TASK'\nWIKI-SUMMARIZER-TASK\nCondense the reader notes below into one brief of at most 1500 bytes. Write it to /workspace/brief.txt with a quoted heredoc and report it with the summary-file form of the result command.\n=== BLOCK ===\nStub block text (rehearsal).\nTASK\n  id=$(pomtree spawn --name wiki-summarizer-$i --budget 60000 --key wd-stub-sum-$ts-$i --task \"$(cat /workspace/task-$i.txt)\")\n  ids=\"$ids $id\"\ndone\nfor id in $ids; do\n  rc=7\n  n=0\n  while [ $rc -eq 7 ] && [ $n -lt 8 ]; do\n    pomtree wait \"$id\" --timeout 15000 > /dev/null\n    rc=$?\n    n=$((n + 1))\n  done\n  pomtree reap \"$id\" > /dev/null\ndone\ncat > /workspace/summary.txt <<'BRIEFS'\n=== BRIEF 1 ===\nThe source is a placeholder page reserved for documentation examples (stub brief 1).\n=== END BRIEF 1 ===\n=== BRIEF 2 ===\nIt may be used without permission in documents and tutorials (stub brief 2).\n=== END BRIEF 2 ===\n=== BRIEF 3 ===\nThe page has a title, one paragraph and one outbound link (stub brief 3).\n=== END BRIEF 3 ===\n=== BRIEF 4 ===\nNothing was read beyond the single page; this is a rehearsal (stub brief 4).\n=== END BRIEF 4 ===\nBRIEFS\npomtree result --summary-file /workspace/summary.txt"
+            }
+          }
+        ],
+        "usage": {
+          "input": 400,
+          "output": 200
+        }
+      }
+    },
+    {
+      "id": "orch-done",
+      "when": {
+        "marker": "wiki-orchestrator",
+        "toolResults": 1,
+        "lastTool": "bash"
+      },
+      "reply": {
+        "kind": "text",
+        "text": "STUB-DONE",
+        "usage": {
+          "input": 420,
+          "output": 8
+        }
+      }
+    },
+    {
+      "id": "dist-write",
+      "when": {
+        "marker": "wiki-distiller",
+        "toolResults": 0,
+        "offersTool": "bash"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "cat > /workspace/distillation.html <<'HTML'\n<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Distillation (rehearsal)</title>\n<style>\nbody { font-family: Georgia, serif; max-width: 38rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; color: #222; }\nh1 { font-size: 1.6rem; line-height: 1.25; }\np.src { color: #666; font-size: 0.9rem; }\n</style>\n</head>\n<body>\n<h1>A placeholder page that exists to be cited</h1>\n<p>This is the zero-spend rehearsal of the distillation report. Its thesis is simple: the page it read is reserved for examples, so nothing here is a claim about the world.</p>\n<p>Rehearse the window choreography, then run the real pipeline.</p>\n<p class=\"src\">Source: example.com (rehearsal, canned text).</p>\n</body>\n</html>\nHTML\npomtree report publish /workspace/distillation.html --name distillation.html --key wd-stub-$(date +%s)"
+            }
+          }
+        ],
+        "usage": {
+          "input": 300,
+          "output": 190
+        }
+      }
+    },
+    {
+      "id": "dist-result",
+      "when": {
+        "marker": "wiki-distiller",
+        "toolResults": 1,
+        "lastTool": "bash"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "pomtree result --summary 'published distillation.html'"
+            }
+          }
+        ],
+        "usage": {
+          "input": 340,
+          "output": 30
+        }
+      }
+    },
+    {
+      "id": "dist-done",
+      "when": {
+        "marker": "wiki-distiller",
+        "toolResults": 2,
+        "lastTool": "bash"
+      },
+      "reply": {
+        "kind": "text",
+        "text": "STUB-DONE",
+        "usage": {
+          "input": 360,
+          "output": 8
+        }
+      }
+    },
+    {
+      "id": "summarizer-brief",
+      "when": {
+        "lastUserIncludes": "WIKI-SUMMARIZER-TASK",
+        "toolResults": 0,
+        "offersTool": "bash"
+      },
+      "reply": {
+        "kind": "tool_calls",
+        "calls": [
+          {
+            "name": "bash",
+            "arguments": {
+              "command": "cat > /workspace/brief.txt <<'BRIEF'\nStub brief: the block describes a placeholder page reserved for documentation examples.\nBRIEF\npomtree result --summary-file /workspace/brief.txt"
+            }
+          }
+        ],
+        "usage": {
+          "input": 150,
+          "output": 40
+        }
+      }
+    },
+    {
+      "id": "summarizer-done",
+      "when": {
+        "lastUserIncludes": "WIKI-SUMMARIZER-TASK",
+        "toolResults": 1,
+        "lastTool": "bash",
+        "offersTool": "bash"
+      },
+      "reply": {
+        "kind": "text",
+        "text": "STUB-DONE",
+        "usage": {
+          "input": 170,
+          "output": 8
+        }
+      }
+    }
+  ],
+  "fallback": {
+    "kind": "text",
+    "text": "STUB-DONE",
+    "usage": {
+      "input": 120,
+      "output": 8
+    }
+  }
+}

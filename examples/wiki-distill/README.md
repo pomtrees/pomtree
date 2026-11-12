@@ -26,4 +26,12 @@ pomtreed reads templates from `templates.dir` (`POMTREED_TEMPLATES_DIR`, an abso
 
 All validation so far is offline. `templates.test.mts` loads the three templates through the real template loader, checks that their prompts equal `prompts/*.md`, that `budgets.env` agrees with the template budgets, that the reader prompt names only the one Wikipedia host and the distiller prompt carries the publish command, with negative controls showing each check can fail. It runs in `pnpm test:examples`.
 
+`stub.test.mts` checks the rehearsal script `stub/wiki-distill.json` against the model stub's validator, that each role matches only its own rules, that the canned shell commands parse, and that each stub template equals its real twin in every field except the system prompt.
+
 Unverified, because nothing has run live (tag `wiki-distill-live-validation`, marked in `templates.test.mts`): the editorial quality of the distillation, whether a small model follows the 24-step reader plan, and that the slice URLs return what the reader prompt expects and fit the interactive browser's result cap.
+
+## Rehearse for free
+
+The rehearsal swaps the real model for the scripted model stub and costs nothing. It uses `stub/templates/*.json` (same ids as the real ones, so use one set per state directory) and `stub/wiki-distill.json`, one script that plays the reader, orchestrator, summarizer and distiller roles by marker and task token. Its readers fetch only `https://example.com/`, one audited public fetch and no spend; Wikipedia is never fetched. The `times` counters in the script are per stub process, so restart the stub between rehearsals.
+
+Copy `stub/templates/*.json` into the templates folder, start the stub with `node packages/testing/bin/model-stub.ts --script examples/wiki-distill/stub/wiki-distill.json --port 0`, and point `scripts/pomtree-up` at the `baseUrl` it prints as in [Zero-spend first agent](../../docs/operating.md). The pool must cover the budgets and the daemon refuses to start unless `POMTREED_BUDGET_TOP_LEVEL_MICROS` is at most `POMTREED_BUDGET_ROOT_MICROS`, so set both to the same value (2600000 covers four readers).
