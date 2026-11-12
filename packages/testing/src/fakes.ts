@@ -1386,6 +1386,8 @@ export class FakeTerminal implements TerminalSession {
 export class FakeByteStream implements ByteStream {
   writes: Uint8Array[] = [];
   closes = 0;
+  // Test hook: every accepted write is also emitted back as output.
+  echo = false;
   readonly closed: Promise<TerminalClose>;
   private settle!: (c: TerminalClose) => void;
   private ended = false;
@@ -1423,6 +1425,7 @@ export class FakeByteStream implements ByteStream {
   async write(data: Uint8Array): Promise<void> {
     if (this.ended) throw new Error("byte stream closed");
     this.writes.push(data);
+    if (this.echo) this.emit(data);
   }
   async *output(): AsyncGenerator<Uint8Array> {
     while (true) {
@@ -1610,6 +1613,8 @@ export class FakeSandbox implements Sandbox {
   // Scripted loopback.open failures, consumed in order (one per call that passed the port and availability checks); an
   // entry of null lets that call succeed.
   loopbackErrors: (Error | null)[] = [];
+  // When set, the next loopback stream opened echoes every written byte back as output (one-shot).
+  echoNextLoopback = false;
   private n = 0;
   private startKeys = new Map<string, SandboxHandle>();
   // The ordered one-shot fault plan; empty unless options.faults was given or a test adds to it.
@@ -1658,6 +1663,10 @@ export class FakeSandbox implements Sandbox {
             if (err) throw err;
           }
           const b = new FakeByteStream();
+          if (this.echoNextLoopback) {
+            b.echo = true;
+            this.echoNextLoopback = false;
+          }
           this.loopbackStreams.set(id, [...(this.loopbackStreams.get(id) ?? []), b]);
           void s.done.then(() => b.end());
           return b;
