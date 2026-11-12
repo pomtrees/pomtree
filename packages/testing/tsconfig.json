@@ -1,1 +1,5 @@
-{ "extends": "../../tsconfig.base.json", "include": ["src", "bin"] }
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", "bin"],
+  "exclude": ["src/**/*-missing-mode.fixture.ts"]
+}
