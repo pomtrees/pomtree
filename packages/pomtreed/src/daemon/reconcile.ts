@@ -607,6 +607,8 @@ export class Reconcile {
   // consecutive passes before the single alert; the memory is in-process and forgets a container the moment it is not a
   // stray. The alert is keyed by sandbox id, so a daemon restart or a replay does not repeat it. Skipped (memory cleared)
   // while the host is down, since nothing listed then can be trusted.
+  // TODO(multi-backend-strays): strays are listed on the selected backend only (`d.sandbox` is not backend-aware); current behavior: a stray on another
+  // active backend is never reported. Same for reclaimEgressOrphans below.
   private async phaseStrays(): Promise<void> {
     const d = this.ctx.deps;
     if (!this.ctx.hub.store.hostUp()) {
@@ -840,6 +842,7 @@ export class Reconcile {
   }
 
   // Remove egress sets (network + proxy) whose sandbox is gone; only safe before any spawn starts. Runs once.
+  // TODO(multi-backend-strays): lists the selected backend only; see phaseStrays.
   async reclaimEgressOrphans(): Promise<void> {
     if (this.egressReclaimed) return;
     this.egressReclaimed = true;

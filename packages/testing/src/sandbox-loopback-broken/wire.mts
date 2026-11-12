@@ -93,6 +93,8 @@ export function parseRecord(raw: unknown): LoopbackRecord {
   return o as LoopbackRecord;
 }
 
+// TODO(loopback-stamp-mirror): this mirrors core's stamp-reading rule inline because the example must stay import-free; the two can drift.
+// Current behavior: no test compares them.
 // A record as the port's listing. Host and generation are the stamp the create body carried, read back by the rule core's readOwnerStamp applies (kept inline: this file imports nothing at runtime): an empty host or a generation that is not a non-negative integer reads null.
 export function toListing(r: LoopbackRecord): SandboxListing {
   return {

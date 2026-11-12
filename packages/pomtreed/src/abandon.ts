@@ -37,7 +37,8 @@ export function abandonAgent(daemon: Daemon, agent: AgentId, o: AbandonOptions =
 // KNOWN GAP, in plain words: after a "left" outcome nothing remembers that backend X may still hold this sandbox. Boot reconcile lists
 // the selected backend and every backend a non-terminal record names; the abandoned record names none and the journal has no
 // by-kind read, so a left sandbox is found again only when X is the selected backend (sandbox.backend) at a later boot. If X is
-// reachable only through sandboxFor and nothing else names it, its orphan is never listed. Tracked as a ledger item, not built here.
+// reachable only through sandboxFor and nothing else names it, its orphan is never listed.
+// TODO(abandon-orphan-listing): remember left sandboxes per backend; current behavior as above.
 const leftMessage = (agent: AgentId, backend: string, sandbox: string, cause: string) =>
   `agent ${agent} abandoned; sandbox ${sandbox} left on ${backend}: ${cause}; it may still run and bill, so remove it with ${backend}'s own tooling, or select ${backend} (sandbox.backend) and restart so boot reconcile lists it and stops it`;
 

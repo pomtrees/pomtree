@@ -82,6 +82,8 @@ export function tokenProblem(secret: string, token: string): "invalid" | "expire
 // absolute epoch ms the cookie stops being valid; the HMAC binds it to the daemon's secret so the
 // daemon holds no session table. Expiry is checked on verify, so a stolen cookie decays on
 // its own rather than living forever.
+// TODO(auth-now-inject): the cookie expiry reads the real clock (Date.now here and in the verify functions), so expiry tests cannot control time;
+// current behavior: real clock only. Take a `now` parameter, defaulting to Date.now, like the daemon's injected clock.
 export function issueUiCookie(secret: string, ttlMs: number): string {
   const expiry = Date.now() + ttlMs;
   return `pomtreed_ui=${expiry}.${mac(secret, `ui:${expiry}`)}`;

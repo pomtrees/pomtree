@@ -3502,6 +3502,7 @@ export async function assertProbeSubset(s: Sandbox): Promise<void> {
   checkProbe(s.declaration, await s.probe({ ociRuntime: "runsc" }));
 }
 
+// TODO(sandbox-contract-body-removal): remove this once the conformance suite has run green for a release cycle; current behavior: both run.
 export async function sandboxContractBody(w: SandboxContractWorld): Promise<void> {
   const s = w.sandbox;
   const image = w.imageRef ?? "i";

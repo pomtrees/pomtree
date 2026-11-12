@@ -385,6 +385,7 @@ export class SailSandbox implements Sandbox {
 }
 
 // What inspect reports when the sandbox is gone and its provider record cannot be read.
+// TODO(sail-inspect-terminated-test): the inspect branch for an adapter-terminated sandbox (NO_STAMP) is reached by no test; current behavior: untested.
 const NO_STAMP = { host: null, generation: null } as const;
 
 const tagOf = (d: Decoded, key: string): string | undefined =>

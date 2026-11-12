@@ -11,6 +11,8 @@ import { listen, listenAgents } from "./server.ts";
 import { kinds, op, setup, spawnSpec } from "./test-setup.ts";
 import { bearer, sockRequest } from "./test-http.ts";
 
+// TODO(daemon-stamp-test-hang): the test fails fast, but the daemon then keeps retrying the refused start and the process does not exit, so a
+// regression shows up as the file hitting its time limit.
 test("the daemon starts every sandbox with its host id and the run's generation; a daemon that omits them fails here, fast", async () => {
   const t = setup(async () => {});
   const a = await t.spawn();

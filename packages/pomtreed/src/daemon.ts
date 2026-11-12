@@ -152,6 +152,8 @@ export class Daemon implements Driver {
   // Runtime host-health flags (not durable; the durable facts are the journal's
   // host_error entry and the registry state). sandboxUp=false holds admission until the periodic probe
   // succeeds; journalFailed is set once on a resource-error journal append and holds admission too.
+  // TODO(sandbox-up-memory): the sandbox-reachable flag is daemon memory, against the no-state-in-daemon-memory rule in SPEC.md; current behavior: a
+  // restart assumes the sandbox is up until the first probe says otherwise. Pre-existing.
   private sandboxUp = true;
   private journalFailed = false;
   // Store down (SQLITE_FULL/IOERR/CORRUPT/BUSY or ENOSPC): a durable write failed, so admission holds
@@ -1218,6 +1220,8 @@ export class Daemon implements Driver {
       ...(this.deps.maxSessions && { maxSessions: this.deps.maxSessions }),
       ...(this.deps.backend && { backend: this.deps.backend }),
       // Agents held for an unreachable sandbox backend (ids only); absent when none. `pomtree abandon <agent>` resolves each.
+      // TODO(held-agent-visibility): agents held for an unreachable backend appear only as `heldAgents` in this payload; current behavior: no CLI code
+      // reads the field and evaluateReadiness (health.ts) does not consult it, so an operator sees a hold only in the raw payload.
       ...(this.reconciler.held().length > 0 && { heldAgents: this.reconciler.held() }),
       ...(agentEndpoint !== undefined && { agentEndpoint }),
     };
@@ -1312,6 +1316,8 @@ export class Daemon implements Driver {
       // previous recovery passes keep re-latching the store (then back off so a failing phase cannot drive a pass per probe).
       if (this.now() < this.nextRecoveryAt) return;
       this.reconciler.rearmLostWakeScan();
+      // TODO(store-probe-await): the recovery reconcile is fire-and-forget, so probeStore resolves before the pass ends and tests settle with a
+      // 15 ms sleep; current behavior: the pass runs unawaited and its failure is only logged. Await it (or return the promise) once the callers allow.
       this.reconcile()
         .then(() => this.noteRecoveryPass())
         .catch((e) => console.error("post-recovery reconcile failed:", e));

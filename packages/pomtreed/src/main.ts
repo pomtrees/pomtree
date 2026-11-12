@@ -124,6 +124,8 @@ const loaded = loadDaemonConfig({
   env: process.env,
   args: { ...argv.args, ...(argv.args.configFile !== undefined && { configFile: resolvePath(argv.args.configFile) }) },
   readFile: (path) => readFileSync(path, "utf8"),
+  // TODO(secret-file-mode-fail-closed): a platform with no file-mode injector skips the secret-file mode check silently; current behavior: skipped on
+  // win32. Decide whether to refuse to start there instead.
   // POSIX modes only: win32 reports a synthetic 0666 for every file, which would refuse every secret.
   ...(process.platform !== "win32" && { fileMode: (path: string) => statSync(realpathSync(path)).mode }),
   defaultStateDir: join(homedir(), ".pomtreed"),
