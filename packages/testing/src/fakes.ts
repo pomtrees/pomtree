@@ -75,6 +75,7 @@ import type {
   SandboxCapability,
   SandboxDeclaration,
   SandboxFacets,
+  SandboxChannel,
   SandboxHandle,
   SandboxId,
   SandboxListing,
@@ -158,7 +159,10 @@ import {
   rankOfRung,
   rungsAbove,
   sameMergeRequest,
+  SandboxOutcomeUnknownError,
+  SandboxTransferError,
   SandboxUnavailableError,
+  sandboxIdForKey,
   SANDBOX_CAPABILITIES,
   FACET_OF,
   checkProbe,
@@ -179,6 +183,8 @@ import {
 } from "@pomtree/core";
 import type { AgentLedger, CredentialCheck, LedgerNode, ModelCallMeta, QuotaCounters, RequestReservation, ReserveResult, SettleResult } from "@pomtree/core";
 import { FakeCaptureIndex, FakeCaptureParser } from "./capture-fakes.ts";
+import { FaultPlan, preemptedError } from "./sandbox-faults.ts";
+import type { FaultOp } from "./sandbox-faults.ts";
 
 export interface Call {
   port: string;
@@ -1482,6 +1488,63 @@ export interface FakeSandboxOptions {
   facets?: { [K in keyof SandboxFacets]?: SandboxFacets[K] | undefined };
   // Makes probe() present and return this result (a copy); `probeResult` stays settable. Absent = the fake has no probe.
   probe?: ProbeResult;
+  // Fault plan consulted by start, stop, kill, list, inspect, wait, probe, files and connect; default is an empty plan.
+  faults?: FaultPlan;
+  // Remote mode: declares connect, files.put and files.get and installs in-memory facets for them (a loopback connect channel and
+  // a per-sandbox file store); `declaration` and `facets` still override.
+  remote?: boolean;
+  // Sandbox ids are sandboxIdForKey(idempotencyKey), as the port specifies, instead of the default sbx-1, sbx-2, ... that older
+  // tests assert on. Implied by `remote`.
+  derivedIds?: boolean;
+}
+
+// A connect channel that loops written bytes back as output. With dropAfter set, the stream breaks after that many output bytes.
+export class FakeChannel extends FakeTerminal {
+  readonly id: SandboxId;
+  readonly channel: SandboxChannel;
+  private readonly dropAfter: number | undefined;
+  private sent = 0;
+  private shut = false;
+  constructor(id: SandboxId, channel: SandboxChannel, dropAfter?: number) {
+    super();
+    this.id = id;
+    this.channel = channel;
+    this.dropAfter = dropAfter;
+    if (dropAfter === 0) this.drop();
+  }
+  private drop() {
+    this.end(
+      new SandboxUnavailableError("provider-outage", `connect channel ${this.channel} of sandbox ${this.id} dropped (injected fault); reopen the channel`),
+    );
+  }
+  // Backpressure is not modelled: write() always resolves as soon as the bytes are accepted.
+  override end(error?: Error) {
+    this.shut = true;
+    super.end(error);
+  }
+  override close() {
+    this.shut = true;
+    super.close();
+  }
+  override async write(data: Uint8Array | string): Promise<void> {
+    if (this.shut) throw new SandboxUnavailableError("provider-outage", `connect channel ${this.channel} of sandbox ${this.id} is closed; reopen the channel`);
+    await super.write(data);
+    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    const room = this.dropAfter === undefined ? bytes.length : Math.max(0, this.dropAfter - this.sent);
+    const out = bytes.subarray(0, room);
+    if (out.length > 0) this.emit(out);
+    this.sent += out.length;
+    if (this.dropAfter !== undefined && this.sent >= this.dropAfter) this.drop();
+  }
+}
+
+// One recorded call to a fault-injectable operation of FakeSandbox, in call order (before any fault takes effect).
+export interface SandboxOpCall {
+  op: FaultOp;
+  key?: string;
+  id?: SandboxId;
+  path?: string;
+  channel?: SandboxChannel;
 }
 
 export class FakeSandbox implements Sandbox {
@@ -1549,10 +1612,30 @@ export class FakeSandbox implements Sandbox {
   loopbackErrors: (Error | null)[] = [];
   private n = 0;
   private startKeys = new Map<string, SandboxHandle>();
+  // The ordered one-shot fault plan; empty unless options.faults was given or a test adds to it.
+  readonly faults: FaultPlan;
+  // Every fault-injectable operation call in order, recorded before its fault (if any) takes effect.
+  ops: SandboxOpCall[] = [];
+  // Accepted file content by sandbox id and path (remote mode); a rejected or partial transfer leaves nothing here.
+  readonly fileStore = new Map<SandboxId, Map<string, Uint8Array>>();
+  // Connect channels opened per sandbox id, in open order (remote mode).
+  channels = new Map<SandboxId, FakeChannel[]>();
+  private putKeys = new Set<string>();
+  private readonly derivedIds: boolean;
+  // The sandbox ids in the fake's store, in creation order (exited ones included).
+  get sandboxes(): SandboxId[] {
+    return [...this.running.keys()];
+  }
   constructor(exitCodes: number[] = [], stopPolicy: SandboxStop = "graceful", options: FakeSandboxOptions = {}) {
     this.exitCodes = [...exitCodes];
     this.stopPolicy = stopPolicy;
-    this.declaration = fakeSandboxDeclaration(options.declaration);
+    this.faults = options.faults ?? new FaultPlan();
+    const remote = options.remote === true;
+    this.derivedIds = remote || options.derivedIds === true;
+    this.declaration = fakeSandboxDeclaration({
+      ...options.declaration,
+      ...(remote ? { capabilities: { connect: true, "files.put": true, "files.get": true, ...options.declaration?.capabilities } } : {}),
+    });
     const facets: { [K in keyof SandboxFacets]?: SandboxFacets[K] | undefined } = {
       terminal: {
         open: async (id, size): Promise<TerminalSession> => {
@@ -1580,6 +1663,7 @@ export class FakeSandbox implements Sandbox {
           return b;
         },
       },
+      ...(remote ? { connect: this.remoteConnect(), files: this.remoteFiles() } : {}),
       ...options.facets,
     };
     for (const k of Object.keys(facets) as (keyof SandboxFacets)[]) {
@@ -1589,11 +1673,44 @@ export class FakeSandbox implements Sandbox {
     if (options.probe !== undefined) {
       this.probe = async (runtime) => {
         this.probeCalls.push(runtime);
+        const fault = this.fault("probe", {});
+        if (fault?.kind === "timeout") await this.faults.hold("probe");
         return structuredClone(this.probeResult ?? { withheld: [], problems: [], account: null });
       };
     }
   }
+  // Records the call, then takes the next matching fault: an error fault throws here, and any other kind is returned for the caller
+  // to apply (a timeout is awaited by the caller through this.faults.hold). No await on the fault-free path, so a call without a
+  // fault mutates the fake synchronously exactly as it did before fault injection existed.
+  private fault(op: FaultOp, call: { key?: string; id?: SandboxId }, extra: Partial<SandboxOpCall> = {}) {
+    this.ops.push({ op, ...call, ...extra });
+    const fault = this.faults.take(op, call);
+    if (fault?.kind === "error") throw fault.error;
+    return fault;
+  }
+  private preempt(id: SandboxId) {
+    const err = preemptedError(id);
+    this.waitErrors.set(id, err);
+    this.statuses.set(id, "preempted");
+    for (const c of this.channels.get(id) ?? []) c.end(err);
+    this.running.get(id)?.finish(137);
+  }
   async start(spec: SandboxSpec, idempotencyKey: string): Promise<SandboxHandle> {
+    const fault = this.fault("start", { key: idempotencyKey });
+    if (fault?.kind === "timeout") await this.faults.hold("start");
+    if (fault?.kind === "unknown-outcome" && !fault.applied) throw new SandboxOutcomeUnknownError(this.nextIdFor(idempotencyKey), idempotencyKey);
+    const handle = this.create(spec, idempotencyKey);
+    if (fault?.kind === "unknown-outcome") throw new SandboxOutcomeUnknownError(handle.id, idempotencyKey);
+    if (fault?.kind === "preempt") this.preempt(handle.id);
+    if (fault?.kind === "duplicate-key") return this.start(spec, idempotencyKey);
+    return handle;
+  }
+  // The id a start with this key has or will get: the existing sandbox's, else the derived id, else the next sbx-N (exact unless
+  // another sandbox is created in between).
+  private nextIdFor(idempotencyKey: string): SandboxId {
+    return this.startKeys.get(idempotencyKey)?.id ?? (this.derivedIds ? sandboxIdForKey(idempotencyKey) : `sbx-${this.n + 1}`);
+  }
+  private create(spec: SandboxSpec, idempotencyKey: string): SandboxHandle {
     const prior = this.startKeys.get(idempotencyKey);
     if (prior) return prior;
     for (const k of Object.keys(spec.labels ?? {}))
@@ -1603,7 +1720,7 @@ export class FakeSandbox implements Sandbox {
       if (err) throw err;
     }
     this.started.push(spec);
-    const id = `sbx-${++this.n}`;
+    const id = this.derivedIds ? sandboxIdForKey(idempotencyKey) : `sbx-${++this.n}`;
     let resolveWait!: (v: { exitCode: number; oomKilled?: boolean }) => void;
     const done = new Promise<{ exitCode: number; oomKilled?: boolean }>((r) => {
       resolveWait = r;
@@ -1638,6 +1755,14 @@ export class FakeSandbox implements Sandbox {
     return { id, output: async function* () {}, wait: () => this.waitFor(id, s.done) };
   }
   private waitFor(id: SandboxId, done: Promise<{ exitCode: number; oomKilled?: boolean }>) {
+    let fault: ReturnType<FakeSandbox["fault"]>;
+    try {
+      fault = this.fault("wait", { id });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    if (fault?.kind === "preempt") this.preempt(id);
+    if (fault?.kind === "timeout") return this.faults.hold("wait");
     const err = this.waitErrors.get(id);
     return err ? Promise.reject(err) : done;
   }
@@ -1651,6 +1776,8 @@ export class FakeSandbox implements Sandbox {
   }
   async stop(id: SandboxId, graceMs: number, idempotencyKey: string): Promise<void> {
     this.stopCalls.push({ id, graceMs, idempotencyKey });
+    const fault = this.fault("stop", { id, key: idempotencyKey });
+    if (fault?.kind === "timeout") await this.faults.hold("stop");
     const s = this.running.get(id);
     if (!s || s.exitCode !== null) return; // unknown or already-exited: Docker's stop is a no-op
     if (this.stopPolicy === "graceful") s.finish(0);
@@ -1668,6 +1795,8 @@ export class FakeSandbox implements Sandbox {
   }
   async kill(id: SandboxId, idempotencyKey: string): Promise<void> {
     this.killCalls.push({ id, idempotencyKey });
+    const fault = this.fault("kill", { id, key: idempotencyKey });
+    if (fault?.kind === "timeout") await this.faults.hold("kill");
     const s = this.running.get(id);
     if (!s || s.exitCode !== null) return;
     s.finish(137);
@@ -1679,6 +1808,9 @@ export class FakeSandbox implements Sandbox {
   // running, paused and restarting, false for created, exited and dead, otherwise the lifecycle's. The lifecycle is unchanged.
   statuses = new Map<SandboxId, string | null>();
   async inspect(id: SandboxId) {
+    const fault = this.fault("inspect", { id });
+    if (fault?.kind === "timeout") await this.faults.hold("inspect");
+    if (fault?.kind === "preempt") this.preempt(id);
     const err = this.inspectErrors.get(id);
     if (err) throw err;
     const s = this.running.get(id);
@@ -1704,6 +1836,8 @@ export class FakeSandbox implements Sandbox {
   // (reserved label names are refused), so host and generation are null, which a real daemon reads as foreign.
   async list(owner: SandboxOwner): Promise<SandboxListing[]> {
     this.listOwners.push({ ...owner });
+    const fault = this.fault("list", {});
+    if (fault?.kind === "timeout") await this.faults.hold("list");
     return [...this.running]
       .filter(([, s]) => {
         // Same exclusion rule as DockerSandbox.list: a store_id label other than the owner's, or a daemon_epoch label newer
@@ -1735,6 +1869,67 @@ export class FakeSandbox implements Sandbox {
           ...(s.labels ? { labels: { ...s.labels } } : {}),
         };
       });
+  }
+  private remoteConnect(): NonNullable<SandboxFacets["connect"]> {
+    return {
+      open: async (id, channel) => {
+        const fault = this.fault("connect", { id }, { channel });
+        if (fault?.kind === "timeout") await this.faults.hold("connect");
+        const s = this.running.get(id);
+        if (!s || s.exitCode !== null) throw new SandboxUnavailableError("not-found");
+        const c = new FakeChannel(id, channel, fault?.kind === "drop" ? fault.afterBytes : undefined);
+        this.channels.set(id, [...(this.channels.get(id) ?? []), c]);
+        void s.done.then(() => c.end());
+        return c;
+      },
+    };
+  }
+  private remoteFiles(): NonNullable<SandboxFacets["files"]> {
+    return {
+      put: async (id, path, body, sha256, idempotencyKey) => {
+        const fault = this.fault("files.put", { id, key: idempotencyKey }, { path });
+        if (fault?.kind === "timeout") await this.faults.hold("files.put");
+        const s = this.running.get(id);
+        if (!s || s.exitCode !== null) throw new SandboxUnavailableError("not-found");
+        // Idempotent by key per sandbox and path: a repeat accepts nothing new, but a transfer fault planned for it still fires.
+        const putKey = `${id}\0${path}\0${idempotencyKey}`;
+        if (this.putKeys.has(putKey) && fault?.kind !== "partial" && fault?.kind !== "hash-mismatch") return;
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        for await (const chunk of body) {
+          chunks.push(chunk);
+          size += chunk.length;
+          if (fault?.kind === "partial" && size >= fault.afterBytes) throw new SandboxTransferError(id, "partial");
+        }
+        if (fault?.kind === "partial") throw new SandboxTransferError(id, "partial");
+        const data = Buffer.concat(chunks);
+        if (fault?.kind === "hash-mismatch" || createHash("sha256").update(data).digest("hex") !== sha256) throw new SandboxTransferError(id, "hash-mismatch");
+        const files = this.fileStore.get(id) ?? new Map<string, Uint8Array>();
+        files.set(path, data);
+        this.fileStore.set(id, files);
+        this.putKeys.add(putKey);
+      },
+      get: async (id, path, maxBytes) => {
+        const fault = this.fault("files.get", { id }, { path });
+        if (fault?.kind === "timeout") await this.faults.hold("files.get");
+        const data = this.fileStore.get(id)?.get(path);
+        if (!data) throw new SandboxUnavailableError("not-found", `sandbox ${id} has no file ${path}; put it first or check the path`);
+        if (data.length > maxBytes) throw new SandboxTransferError(id, "too-large");
+        const cut = fault?.kind === "partial" ? fault.afterBytes : undefined;
+        return {
+          body: (async function* () {
+            yield cut === undefined ? data : data.subarray(0, cut);
+            if (cut !== undefined) throw new SandboxTransferError(id, "partial");
+          })(),
+          // A hash-mismatch fault reports a sha256 that does not match the body; the caller verifies, as the port requires.
+          sha256: Promise.resolve(
+            createHash("sha256")
+              .update(fault?.kind === "hash-mismatch" ? Buffer.concat([data, Buffer.from("corrupt")]) : data)
+              .digest("hex"),
+          ),
+        };
+      },
+    };
   }
   // Scripted: the sandbox ids the next reclaim() reports as reclaimed (the fake owns no adapter-side resources).
   egressOrphans: SandboxId[] = [];
