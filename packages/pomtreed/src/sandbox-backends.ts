@@ -7,6 +7,7 @@ import {
   type SandboxBackendProvider,
   type SandboxDeclaration,
   type SandboxRequester,
+  type SpawnSpec,
 } from "@pomtree/core";
 import {
   dockerProvider,
@@ -186,10 +187,8 @@ export async function resolveBackend(input: ResolveBackendInput): Promise<Resolv
 // always passed the token in the container env on the operator's own machine and has no post-start channel yet. Hosted built-ins
 // (kubernetes, sail, e2b) and contributed backends never take this path. Remove the exception when the local engines gain a
 // post-start delivery channel.
-// TODO(sandbox-template-admission): check each template's egress and runtime block against the selected declaration when the
-// template is admitted. Security-relevant fail-open: boot admits with no egress or isolation need, because templates are read per spawn, and
-// nothing refuses a template the backend cannot honour (a Podman template that sets egress still starts, with egress isolation not enforced).
-// Trigger: before Podman is documented as a supported backend or a template relies on egress isolation.
+// Boot knows nothing about templates, so it states no egress or isolation need; each template's needs are checked against the same
+// declaration when the template is admitted (admitTemplateSpec).
 export function bootNeeds(resolved: Pick<ResolvedBackend, "origin" | "localEngine">, secretsInEnv: boolean): BackendNeeds {
   return {
     egress: false,
@@ -198,6 +197,27 @@ export function bootNeeds(resolved: Pick<ResolvedBackend, "origin" | "localEngin
     workspace: "mount",
     secrets: { agentToken: true, envAllowed: secretsInEnv || resolved.localEngine },
   };
+}
+
+// The needs one template adds to the boot needs: any egress policy but `none` (the adapter then enforces a default-deny allowlist; `none`
+// grants no destination at all) and a gVisor runtime block (`runtime.ociRuntime` of `runsc`).
+export function templateNeeds(boot: BackendNeeds, spec: Pick<SpawnSpec, "egress" | "runtime">): BackendNeeds {
+  return {
+    ...boot,
+    egress: spec.egress.kind !== "none",
+    ...(spec.runtime?.ociRuntime === "runsc" && { isolation: "gvisor" as const }),
+  };
+}
+
+// Template admission, at spawn and again at start or resume: the template's needs run through the same admitBackend rows as boot, so a
+// template the selected backend cannot honour (egress isolation or gVisor the declaration omits) is refused, never started with a
+// weaker mode. The boot needs are passed through unchanged, so nothing boot already admitted is reported again. One refusal line per
+// reason, each naming the template, the backend, the cause and the action; [] = admitted.
+export function admitTemplateSpec(declaration: SandboxDeclaration, boot: BackendNeeds, spec: Pick<SpawnSpec, "egress" | "runtime" | "template">): string[] {
+  const result = admitBackend(declaration, null, templateNeeds(boot, spec));
+  return result.ok
+    ? []
+    : result.refusals.map((r) => `template ${spec.template ?? "code"} cannot run on sandbox backend ${declaration.backend}: ${r.cause}; ${r.action}`);
 }
 
 // Boot admission of the selected backend: the declaration must be registrable (validateDeclaration: an idempotency mechanism of

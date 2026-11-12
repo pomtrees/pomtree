@@ -117,6 +117,9 @@ export interface DaemonDeps {
   // Operator/root spawns may use any template; agents are default-deny unless this predicate
   // grants them (v1: operator-only). Called with the spawner's agent id and the resolved template.
   mayUseTemplate?: (caller: AgentId, t: Template) => boolean | Promise<boolean>;
+  // Template admission against the selected sandbox backend's declaration (main.ts: admitTemplateSpec): the refusal lines for a spec the
+  // backend cannot honour, [] when admitted. Checked at spawn and again at start and resume. Absent = no check, on purpose: main.ts is the only production composition root and wires it; the e2e harness and demos run a fake or unconstrained sandbox and omit it.
+  admitSpec?: (spec: SpawnSpec) => string[];
   publicEgressReady?: () => boolean; // composition's durable audit collector health; blocks new public workers when unhealthy
   // Per-agent credential lifetime; defaults to AGENT_TOKEN_TTL_MS. main.ts passes agent.tokenTtlMs so stale-container
   // tokens decay even without a fence.
