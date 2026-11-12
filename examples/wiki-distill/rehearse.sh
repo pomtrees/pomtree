@@ -7,8 +7,9 @@
 #   --port N      UI port, passed to scripts/pomtree-up (default: its own default, the next free port from 8787)
 #   --keep        keep the scratch directory (key file, catalog copy, logs) and a temp target repo on exit
 #   --no-wait     do not stop for Enter (sign-in, and before cleanup); for scripted runs
-#   --open        pass --open to scripts/pomtree-up so it tries to open the UI in your default browser (best effort). We never
-#                 pass --show-token, so the link is the plain UI URL and the operator token is not in it or in our output.
+#   --open        pass --open to scripts/pomtree-up so it tries to open the UI in your default browser, already signed in (best
+#                 effort; no pasting needed). The opener receives the signed-in link, so the operator token is in the opener's
+#                 and the browser's argv (readable from /proc/<pid>/cmdline; see docs/operating.md); we never pass --show-token, so it is not printed in our output or the pomtree-up log.
 #
 # Needs: docker (working without sudo), the built agent image (POMTREED_AGENT_IMAGE, else the newest local
 # pomtree/agent:* tag; this script never builds one), node, git. Run it from anywhere; it finds the checkout itself.
@@ -172,9 +173,10 @@ echo "model stub: $stub_url"
 # --no-build: use the image as found, never build one.
 up_args=("$target" --init --no-build --provider openrouter --model-base-url "$stub_url" --model-key-file "$key")
 [ -z "$port" ] || up_args+=(--port "$port")
-# --open: pomtree-up picks the opener (xdg-open or open) and opens its own login link; without --show-token that is the plain UI URL.
+# --open: pomtree-up picks the opener (xdg-open or open) and opens its own signed-in link; the token is not printed (no --show-token).
 [ "$open_ui" = 0 ] || up_args+=(--open)
-POMTREED_BUDGET_ROOT_MICROS=2600000 POMTREED_BUDGET_TOP_LEVEL_MICROS=2600000 "${up_cmd[@]}" "${up_args[@]}" > "$scratch/up.log" 2>&1 &
+# The access log goes to stdout (up.log) and, off a TTY, defaults to errors only; "all" records every UI request so a page that cannot connect (e.g. /live/ui) shows up there. It never logs tokens or cookies.
+POMTREED_ACCESS_LOG_MODE="${POMTREED_ACCESS_LOG_MODE:-all}" POMTREED_BUDGET_ROOT_MICROS=2600000 POMTREED_BUDGET_TOP_LEVEL_MICROS=2600000 "${up_cmd[@]}" "${up_args[@]}" > "$scratch/up.log" 2>&1 &
 up_pid=$!
 echo "$up_pid" > "$scratch/up.pid"
 # pomtree-up prints "pomtreed is up" only after the daemon answered its own readiness probe. Wait at most 60 s.
@@ -192,8 +194,12 @@ echo "pomtreed doctor: $("${cli_cmd[@]}" doctor 2>&1 | head -n1 || true)"
 ui_url="$(sed -n 's/^UI: *//p' "$scratch/up.log" | head -n1)"
 echo
 echo "UI:          ${ui_url:-see $scratch/up.log}"
-echo "token file:  $state/operator.token   (paste its contents into the sign-in page; this script does not show it)"
-if [ "$open_ui" = 1 ]; then echo "A browser tab should have opened (best effort); if not, open the UI URL yourself."; fi
+if [ "$open_ui" = 1 ]; then
+  echo "token file:  $state/operator.token"
+  echo "A browser tab should have opened already signed in (best effort); if not, open the UI URL and paste the token file's contents (this script does not show it)."
+else
+  echo "token file:  $state/operator.token   (paste its contents into the sign-in page; this script does not show it)"
+fi
 if [ "$wait_for_enter" = 1 ]; then
   echo "Open the UI in Chrome and sign in, then press Enter."
   read -r _ || true

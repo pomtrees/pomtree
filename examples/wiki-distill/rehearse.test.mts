@@ -46,7 +46,7 @@ if [[ " $* " == *" --print-env "* ]]; then
   echo "alias pomtree='node nowhere'"
   exit 0
 fi
-echo "up $* | pool=\${POMTREED_BUDGET_ROOT_MICROS-} | toplevel=\${POMTREED_BUDGET_TOP_LEVEL_MICROS-} | catalog=\${POMTREED_PI_CATALOG_DIR-} | image=\${POMTREED_AGENT_IMAGE-} | baseurl=\${POMTREED_MODEL_BASE_URL-} | orkey=\${OPENROUTER_API_KEY-} | templates=$(ls "$FX/state/templates" | tr '\\n' ,)" >>"$FX/events"
+echo "up $* | pool=\${POMTREED_BUDGET_ROOT_MICROS-} | toplevel=\${POMTREED_BUDGET_TOP_LEVEL_MICROS-} | catalog=\${POMTREED_PI_CATALOG_DIR-} | image=\${POMTREED_AGENT_IMAGE-} | baseurl=\${POMTREED_MODEL_BASE_URL-} | access=\${POMTREED_ACCESS_LOG_MODE-} | orkey=\${OPENROUTER_API_KEY-} | templates=$(ls "$FX/state/templates" | tr '\\n' ,)" >>"$FX/events"
 echo "up $$" >>"$FX/pids"
 all="$*"; key="\${all#*--model-key-file }"; key="\${key%% *}"
 echo "keymode=$(stat -c %a "$key")" >>"$FX/facts"
@@ -242,6 +242,13 @@ describe("rehearse.sh", () => {
     assert.ok(!rehearse(["--no-wait"]).stdout.includes("press Enter."));
   });
 
+  it("access logging is on for the stack (all), and an explicit mode wins", () => {
+    const r = rehearse(["--no-wait"]);
+    assert.match(r.events[idx(r.events, "up ")], /\| access=all \|/);
+    const e = rehearse(["--no-wait"], { POMTREED_ACCESS_LOG_MODE: "off" });
+    assert.match(e.events[idx(e.events, "up ")], /\| access=off \|/);
+  });
+
   it("--open is passed through to pomtree-up only when requested, and the token never appears", () => {
     const on = rehearse(["--no-wait", "--open"]);
     assert.equal(on.status, 0, all(on));
@@ -253,7 +260,7 @@ describe("rehearse.sh", () => {
     const off = rehearse(["--no-wait"]);
     assert.doesNotMatch(off.events[idx(off.events, "up ")], /--open/);
     assert.ok(!off.stdout.includes("browser tab should have opened"));
-    assert.match(on.stdout, /browser tab should have opened/);
+    assert.match(on.stdout, /browser tab should have opened already signed in/);
     // Negative control: a script with the pass-through removed no longer forwards --open, so the assertion above can fail.
     const sandbox = join(dir, "mutant-open", "a", "b");
     mkdirSync(sandbox, { recursive: true });
