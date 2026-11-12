@@ -314,8 +314,6 @@ test("probeStore: a failing write keeps the latch", async () => {
 
 const ok = (c: { api: (m: string, u: string, b?: unknown) => Promise<unknown> }) =>
   c.api("POST", "/v1/agents/self/result", { result: { summary: "ok", value: "ok" } });
-const MISMATCH_DOCKER = (sandbox: string) =>
-  `agent record (sandbox ${sandbox}) was created under backend docker; the selected backend is fake; set sandbox.backend back to docker, or remove sandbox ${sandbox} with docker's own tooling, then restart`;
 // A running agent on this host whose record holds `sandbox`, pinned to `backend` (undefined: written through the fake's agents map, no pin).
 async function holder(t: ReturnType<typeof setup>, name: string, sandbox: string, backend?: string, o: { host?: string; exited?: boolean } = {}) {
   const root = await t.daemon.root();
@@ -412,14 +410,27 @@ test("sandbox-backend: restart after the create (before the real id was recorded
   assert.equal(sb.running.get(right.id)!.exitCode, null, "the correct sandbox was kept running");
 });
 
-test("sandbox-backend: a live sandbox recorded under another backend refuses boot with the exact mismatch message", async () => {
+test("sandbox-backend: a live sandbox recorded under another backend is held and the daemon boots with one journaled finding; nothing is killed", async () => {
   const t = setup(async () => {});
-  await holder(t, "a", "sb-docker-1", "docker");
-  await assert.rejects(
-    () => t.daemon.recover(),
-    (e: unknown) => e instanceof SandboxBackendMismatchError && e.message === MISMATCH_DOCKER("sb-docker-1"),
+  const a = await holder(t, "a", "sb-docker-1", "docker");
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    await t.daemon.recover();
+  } finally {
+    console.error = errors;
+  }
+  const sb = t.fakes.hooks.raw.sandbox;
+  assert.equal(sb.started.length, 0);
+  assert.equal(sb.killCalls.length + sb.stopCalls.length, 0, "the held agent's sandbox was neither killed nor stopped");
+  const rec = await get(t, a.id);
+  assert.deepEqual([rec.state, rec.sandbox, rec.sandboxBackend], ["running", "sb-docker-1", "docker"]);
+  const root = await t.daemon.root();
+  const held = (await t.daemon.deps.journal.read({ agent: root.id })).filter(
+    (e) => e.payload.kind === "host_error" && (e.payload as { message: string }).message.includes(a.id),
   );
-  assert.equal(t.fakes.hooks.raw.sandbox.started.length, 0);
+  assert.equal(held.length, 1);
+  assert.match((held[0]!.payload as { message: string }).message, new RegExp(`select docker again \\(sandbox\\.backend\\), or run pomtree abandon ${a.id}`));
 });
 
 test("sandbox-backend: a record of another host, or a finished one, on another backend does not refuse boot; the selected backend boots (controls)", async () => {

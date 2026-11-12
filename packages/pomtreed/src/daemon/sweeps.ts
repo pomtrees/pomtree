@@ -524,6 +524,8 @@ export class Sweeps {
         await this.ctx.deps.orchestrator.cancel(a.id, this.ctx.deps.graceMs);
         break;
       case "kill_resume": {
+        // A held agent (sandbox on an unreachable backend) is never killed, resumed or revoked by the watchdog; abandon resolves it.
+        if (this.ctx.hub.reconcile.isHeld(a.id)) break;
         // Persist the restart timestamp durably so the next sweep counts
         // it within the intensity window instead of resetting retries to 0 on the resume's `resumed` entry.
         const prior = (await this.ctx.deps.watchdogs.get(a.id))?.restarts ?? [];

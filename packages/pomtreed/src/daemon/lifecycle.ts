@@ -1214,6 +1214,18 @@ export class Lifecycle {
     await this.ctx.hub.ops.mark(r0, "kill", key);
   }
 
+  // `pomtree abandon`: ends the run `cancelled` with cause `abandoned` through the one exit path (parent notification, children,
+  // journal row, watchdog, reap or custody, budget cleanup), and only then stops a live driver the way kill does. The exit goes first
+  // so the driver's own settle finds the run already exited (the first exit wins) and the abandoned cause is kept.
+  async abandon(id: AgentId, result: unknown): Promise<{ record: AgentRecord | null; changed: boolean }> {
+    const out = await this.finish(id, "cancelled", result, "abandoned");
+    const live = this.live.get(id);
+    if (live) await this.killNow(id);
+    // The abandon bumped the generation, so the driver's own settle takes the superseded path and skips this teardown: run it here.
+    if (live) await this.teardownExit(id, out.record?.generation ?? 0, live, true);
+    return out;
+  }
+
   private async killNow(id: AgentId) {
     const e = this.live.get(id);
     if (e?.deterministic) return this.stopDeterministic(id, e);
@@ -2224,6 +2236,7 @@ export class Lifecycle {
   ): Promise<"resumed" | "superseded" | "skipped" | "exhausted"> {
     const id = agent.id;
     if (agent.executor === "deterministic") return "skipped"; // no runtime to adopt or restart: the reconcile phase fails it explicitly
+    if (this.ctx.hub.reconcile.isHeld(id)) return "skipped"; // held for an unreachable backend: never force-resumed, its key never revoked
     const p = FORCE_RESUME_POLICY[cause];
     let charge = async () => {};
     if (p.charges) {
@@ -2273,6 +2286,11 @@ export class Lifecycle {
     const r = await d.registry.get(agent);
     if (!r) throw new LifecycleError(404, `no such agent: ${agent}`);
     if (r.state === "exited" || r.state === "reaped") throw new LifecycleError(409, `agent is ${r.state}, cannot resume`);
+    if (this.ctx.hub.reconcile.isHeld(agent))
+      throw new LifecycleError(
+        409,
+        `agent ${agent} is held: its sandbox is on a backend this daemon cannot reach, so it is not resumed; select that backend again (sandbox.backend), or run pomtree abandon ${agent}`,
+      );
     if (r.state !== "yielded" && !(forced && r.state === "running")) {
       throw new LifecycleError(409, `agent is ${r.state}, not yielded`);
     }
@@ -2924,9 +2942,11 @@ export class Lifecycle {
   // checked directly before its call with no await between: a forced resume replaces the entry synchronously before it stages,
   // issues or admits, so a teardown it overtakes skips the rest. False = superseded (the generation moved, or the entry was
   // replaced): the newer run owns the agent, and the caller must not finish() it.
-  private async teardownExit(id: AgentId, gen: number, e: Live): Promise<boolean> {
+  // `abandoning`: `pomtree abandon` already superseded the run (generation bump, exit), so the entry check is waived and the same
+  // teardown releases its credentials, model key and placement slot.
+  private async teardownExit(id: AgentId, gen: number, e: Live, abandoning = false): Promise<boolean> {
     const d = this.ctx.deps;
-    const owned = () => this.live.get(id) === e;
+    const owned = () => abandoning || this.live.get(id) === e;
     const cur = await d.registry.get(id).catch(() => null);
     if (cur && cur.generation !== gen) return false;
     if (!owned()) return false;

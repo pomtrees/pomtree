@@ -18,7 +18,7 @@ export function checkAgentSandboxBackend(agent: AgentId, value: unknown): Sandbo
 // The fence: while a record holds a backend it does not change. Returns the backend the record holds after the write; throws
 // SandboxBackendMismatchError when a different backend is selected against a recorded one.
 export function fenceSandboxBackend(
-  record: { sandbox: SandboxId | null; sandboxBackend: SandboxBackendId | null },
+  record: { id?: AgentId; sandbox: SandboxId | null; sandboxBackend: SandboxBackendId | null },
   selected: SandboxBackendId,
 ): SandboxBackendId {
   if (typeof selected !== "string" || !SANDBOX_BACKEND_ID_RE.test(selected)) {
@@ -27,7 +27,7 @@ export function fenceSandboxBackend(
     );
   }
   if (record.sandboxBackend !== null && record.sandboxBackend !== selected) {
-    throw new SandboxBackendMismatchError(record.sandbox, record.sandboxBackend, selected);
+    throw new SandboxBackendMismatchError(record.sandbox, record.sandboxBackend, selected, record.id);
   }
   return selected;
 }
@@ -36,7 +36,7 @@ export function fenceSandboxBackend(
 // Clearing the sandbox (null) clears the pin, so a run whose first start failed definitively under backend A can start under B,
 // and passing a backend with null is a caller bug. Setting a sandbox without a backend keeps the pin; with one, it is fenced.
 export function sandboxBackendAfter(
-  record: { sandbox: SandboxId | null; sandboxBackend: SandboxBackendId | null },
+  record: { id?: AgentId; sandbox: SandboxId | null; sandboxBackend: SandboxBackendId | null },
   sandbox: SandboxId | null,
   backend: SandboxBackendId | undefined,
 ): SandboxBackendId | null {

@@ -90,6 +90,8 @@ export const EXIT_CAUSE_WORDING: Readonly<Record<ExitCause, string>> = {
   pull_failed: "pulling its container image failed (registry or network); retry later",
   start_failed:
     "its container could not start (the run's error entry names the kind and the cause); check that Docker is healthy and has free disk, then respawn",
+  abandoned:
+    "the operator abandoned it (`pomtree abandon`); check the run's error entry for whether its sandbox was killed or left on its backend, then respawn",
 };
 
 // SandboxStartError.kind to the exit cause a failed start ends with. Closed like the wording table. `endpoint_unreachable` here

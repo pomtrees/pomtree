@@ -231,6 +231,7 @@ export class Daemon implements Driver {
         },
         reconcile: {
           isQuarantined: (a) => this.reconciler.isQuarantined(a),
+          isHeld: (id) => this.reconciler.isHeld(id),
           journalError: (a, e) => this.reconciler.journalReconcileError(a, e),
           reclaimSandbox: (r, force) => this.reconciler.reclaimSandbox(r, force),
         },
@@ -1166,6 +1167,11 @@ export class Daemon implements Driver {
     return this.lifecycle.kill(id, key);
   }
 
+  // `pomtree abandon` (abandon.ts): end a run as cancelled with cause abandoned, stopping a live driver.
+  async abandonRun(id: AgentId, result: unknown) {
+    return this.lifecycle.abandon(id, result);
+  }
+
   async doctor() {
     const counts: Partial<Record<AgentState, number>> = {};
     for (const a of await this.list()) counts[a.state] = (counts[a.state] ?? 0) + 1;
@@ -1211,6 +1217,8 @@ export class Daemon implements Driver {
       revisionMismatch: rev.mismatch,
       ...(this.deps.maxSessions && { maxSessions: this.deps.maxSessions }),
       ...(this.deps.backend && { backend: this.deps.backend }),
+      // Agents held for an unreachable sandbox backend (ids only); absent when none. `pomtree abandon <agent>` resolves each.
+      ...(this.reconciler.held().length > 0 && { heldAgents: this.reconciler.held() }),
       ...(agentEndpoint !== undefined && { agentEndpoint }),
     };
   }

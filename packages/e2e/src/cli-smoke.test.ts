@@ -38,6 +38,7 @@ interface Ids {
   resulter: string;
   canceler: string;
   killer: string;
+  abandoner: string;
   yielder: string;
   reaper: string;
   esc: string;
@@ -240,6 +241,7 @@ async function buildWorld(seeded: boolean, publish: (w: World) => void): Promise
     resulter: "",
     canceler: "",
     killer: "",
+    abandoner: "",
     yielder: "",
     reaper: "",
     esc: "",
@@ -258,8 +260,14 @@ async function buildWorld(seeded: boolean, publish: (w: World) => void): Promise
   publish(w);
   if (!seeded) return w;
 
-  const kid = async (name: string, template?: string, task = "hold") => {
-    const a = await r.daemon.spawn(root.id, { name, task, idempotencyKey: `seed-${name}`, ...(template && { template }) });
+  const kid = async (name: string, template?: string, task = "hold", budgetMicros?: number) => {
+    const a = await r.daemon.spawn(root.id, {
+      name,
+      task,
+      idempotencyKey: `seed-${name}`,
+      ...(template && { template }),
+      ...(budgetMicros !== undefined && { budgetMicros }),
+    });
     await until(async () => (await r.daemon.get(a.id))?.state === "running", `${name} running`);
     return a.id;
   };
@@ -268,6 +276,7 @@ async function buildWorld(seeded: boolean, publish: (w: World) => void): Promise
   ids.resulter = await kid("resulter");
   ids.canceler = await kid("canceler");
   ids.killer = await kid("killer");
+  ids.abandoner = await kid("abandoner", undefined, "hold", 1); // tiny budget: later spawn cases need the root's remainder
   ids.yielder = await kid("yielder");
   for (const [k, n] of [
     ["reaper", "reaper"],
@@ -476,6 +485,7 @@ const dummy: Ids = Object.fromEntries(
     "resulter",
     "canceler",
     "killer",
+    "abandoner",
     "yielder",
     "reaper",
     "esc",
@@ -1251,6 +1261,28 @@ const SEEDED: Case[] = [
     out: /cancel requested/,
   },
   { name: "kill", covers: ["kill"], scope: "operator", argv: (c) => ["kill", c.killer, "--key", "smoke-kill", "--json"], json: { accepted: "boolean" } },
+  // The seeded agent holds a sandbox on the selected backend, so the abandon kills it there, ends the run and reports it.
+  {
+    name: "abandon",
+    covers: ["abandon"],
+    scope: "operator",
+    argv: (c) => ["abandon", c.abandoner, "--reason", "smoke", "--key", "smoke-abandon"],
+    out: /abandoned; sandbox \S+ killed on \S+/,
+  },
+  {
+    name: "abandon --json (replay finds it abandoned)",
+    scope: "operator",
+    argv: (c) => ["abandon", c.abandoner, "--key", "smoke-abandon-2", "--json"],
+    json: { agent: "string", outcome: "string", message: "string" },
+  },
+  {
+    name: "abandon unknown agent",
+    scope: "operator",
+    argv: () => ["abandon", "no-such-agent", "--key", "smoke-abandon-3"],
+    exit: EXIT.notFound,
+    out: /no such agent/,
+    fail: true,
+  },
   // The seeded worker runs with no session deadline, so there is nothing to extend: a clean conflict naming why.
   {
     name: "extend",

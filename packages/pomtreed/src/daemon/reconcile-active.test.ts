@@ -76,22 +76,50 @@ test("active-set: the selected backend is reconciled even when no record names i
   assert.equal(alive(main, ghost.id), false);
 });
 
-test("active-set: a record naming a backend that is not available refuses boot with the exact action text and reclaims nothing", async () => {
+const rootErrors = async (t: T) => {
+  const root = await t.daemon.root();
+  return (await t.journal.read({ agent: root.id })).flatMap((e) => (e.payload.kind === "host_error" ? [(e.payload as { message: string }).message] : []));
+};
+const quiet = async <R>(f: () => Promise<R>): Promise<R> => {
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    return await f();
+  } finally {
+    console.error = errors;
+  }
+};
+
+test("active-set: a record naming a backend that is not available is held, not refused: the pass completes, journals the agent and reclaims the rest", async () => {
   const t = make();
   const main = t.fakes.hooks.raw.sandbox;
   const o = other();
   wire(t, { other: o });
   const lost = await holder(t, "lost", o, "gone");
   const ghost = await main.start(spec("ghost"), "ghost-start");
-  await assert.rejects(
-    () => reconcileSandboxes(t),
-    (e: unknown) =>
-      e instanceof Error &&
-      e.name === "SandboxBackendUnavailableError" &&
-      e.message ===
-        `sandbox backend gone is not available, but agent(s) ${lost.agent.id} hold sandboxes on it; select it again (sandbox.backend) or run pomtree abandon <agent> for each of them, then restart`,
+  await quiet(() => reconcileSandboxes(t));
+  assert.equal(alive(main, ghost.id), false, "the pass went on: the selected backend's orphan was reclaimed");
+  assert.equal(alive(o, lost.sandbox), true, "the held agent's sandbox was never touched");
+  const rec = await t.daemon.deps.registry.get(lost.agent.id);
+  assert.deepEqual([rec?.state, rec?.sandbox, rec?.sandboxBackend], ["running", lost.sandbox, "gone"], "its record is unchanged");
+  const msgs = (await rootErrors(t)).filter((m) => m.includes(lost.agent.id));
+  assert.equal(msgs.length, 1);
+  assert.match(
+    msgs[0]!,
+    new RegExp(`backend gone.*selected backend is fake.*held.*select gone again \\(sandbox\\.backend\\), or run pomtree abandon ${lost.agent.id}`),
   );
-  assert.equal(alive(main, ghost.id), true, "refusal comes before any reclaim");
+  assert.deepEqual((t.daemon as unknown as { reconciler: { held(): string[] } }).reconciler.held(), [lost.agent.id]);
+});
+
+test("active-set: a held agent is not held once its backend is available again (negative control)", async () => {
+  const t = make();
+  const o = other();
+  const h = await holder(t, "back", o, "other");
+  wire(t, { other: o });
+  await reconcileSandboxes(t);
+  assert.deepEqual((t.daemon as unknown as { reconciler: { held(): string[] } }).reconciler.held(), []);
+  assert.equal(alive(o, h.sandbox), true);
+  assert.deepEqual(await rootErrors(t), []);
 });
 
 test("active-set: a backend whose listing fails is reported and skipped; the others are still reclaimed and its records are left alone", async () => {
@@ -163,13 +191,14 @@ test("active-set: records of another host or finished ones do not join the activ
   assert.equal(o.listOwners.length, 0, "no other backend was consulted");
 });
 
-test("active-set: without a per-backend accessor a record on another backend keeps the single-backend mismatch refusal", async () => {
+test("active-set: without a per-backend accessor a record on another backend is held and the daemon boots", async () => {
   const t = make();
-  await holder(t, "a", other(), "other");
-  await assert.rejects(
-    () => reconcileSandboxes(t),
-    (e: unknown) => e instanceof Error && e.name === "SandboxBackendMismatchError",
-  );
+  const o = other();
+  const h = await holder(t, "a", o, "other");
+  await quiet(() => reconcileSandboxes(t));
+  assert.equal(alive(o, h.sandbox), true, "nothing was killed");
+  assert.equal(o.listOwners.length, 0, "the other backend was never consulted");
+  assert.ok((await rootErrors(t)).some((m) => m.includes(h.agent.id) && m.includes("pomtree abandon")));
 });
 
 // Safety gate for shared hosted accounts: a peer daemon's sandbox on a non-selected backend must never be reclaimed.

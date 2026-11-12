@@ -71,20 +71,23 @@ export class SandboxOutcomeUnknownError extends Error {
 // A record's live sandbox belongs to a different backend than the one now selected. The pin lifecycle is a deliberate rule
 // (state-validate.ts, sandboxBackendAfter): the backend is pinned for as long as the record holds a sandbox id, and clearing the
 // sandbox clears the pin, so a run whose start failed definitively under one backend is not stuck on it, while a live sandbox
-// keeps its backend. Resume, attach, reclaim and a second start refuse rather than look for the sandbox in the wrong place. The
-// action works without the daemon: select the recorded backend again, or remove the sandbox with that backend's own tooling.
+// keeps its backend. Resume, attach, reclaim and a second start refuse rather than look for the sandbox in the wrong place. At boot
+// the daemon does not refuse to start for it: it holds the agent (reconcile.ts) and the operator either selects the recorded backend
+// again or runs `pomtree abandon <agent>`. `agent` is the record's id when the throw site has it.
 export class SandboxBackendMismatchError extends Error {
   sandbox: SandboxId | null;
   recorded: SandboxBackendId;
   selected: SandboxBackendId;
-  constructor(sandbox: SandboxId | null, recorded: SandboxBackendId, selected: SandboxBackendId) {
+  agent?: string;
+  constructor(sandbox: SandboxId | null, recorded: SandboxBackendId, selected: SandboxBackendId, agent?: string) {
     super(
-      `agent record${sandbox === null ? "" : ` (sandbox ${sandbox})`} was created under backend ${recorded}; the selected backend is ${selected}; set sandbox.backend back to ${recorded}, or remove ${sandbox === null ? "its sandbox" : `sandbox ${sandbox}`} with ${recorded}'s own tooling, then restart`,
+      `agent${agent === undefined ? " record" : ` ${agent}`}${sandbox === null ? "" : ` (sandbox ${sandbox})`} was created under backend ${recorded}; the selected backend is ${selected}; the agent is held: select ${recorded} again (sandbox.backend), or run \`pomtree abandon ${agent ?? "<agent>"}\``,
     );
     this.name = "SandboxBackendMismatchError";
     this.sandbox = sandbox;
     this.recorded = recorded;
     this.selected = selected;
+    if (agent !== undefined) this.agent = agent;
   }
 }
 

@@ -291,7 +291,7 @@ test("fenceSandboxBackend keeps the first backend and refuses a different one wi
       e.selected === "podman" &&
       e.sandbox === "s1" &&
       e.message ===
-        "agent record (sandbox s1) was created under backend docker; the selected backend is podman; set sandbox.backend back to docker, or remove sandbox s1 with docker's own tooling, then restart",
+        "agent record (sandbox s1) was created under backend docker; the selected backend is podman; the agent is held: select docker again (sandbox.backend), or run `pomtree abandon <agent>`",
   );
   assert.throws(
     () => fenceSandboxBackend({ sandbox: null, sandboxBackend: null }, null as unknown as string),

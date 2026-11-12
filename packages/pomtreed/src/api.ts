@@ -46,6 +46,7 @@ import {
   unknownTemplateMessage,
 } from "./error-codes.ts";
 import type { ApiErrorCode } from "./error-codes.ts";
+import { abandonAgent } from "./abandon.ts";
 import { LifecycleError } from "./lifecycle.ts";
 import type { Principal } from "./auth.ts";
 import type { CaptureRequester } from "./capture/types.ts";
@@ -1096,6 +1097,18 @@ async function route(daemon: Daemon, p: Principal, req: ApiRequest): Promise<Api
     if (action === "cancel") await act({ kind: "cancel", to: agent, graceMs: num(cb.graceMs, "graceMs") }, key);
     else await daemon.kill(agent, key);
     return ok({ accepted: true }, 202);
+  }
+
+  if (action === "abandon" && m === "POST") {
+    operator();
+    await exists(agent);
+    const ab = obj(req.body ?? {});
+    const reason = ab.reason;
+    if (reason !== undefined && typeof reason !== "string") throw new ApiError(400, "reason must be a string");
+    // Required like on every mutating route. Abandon is idempotent by the record itself (an abandoned run is found and left alone), so
+    // a retried call with any key answers `already_abandoned` and kills nothing.
+    idemKey(ab);
+    return ok(await abandonAgent(daemon, agent, reason === undefined ? {} : { reason }));
   }
 
   throw new ApiError(404, "not found");

@@ -100,6 +100,7 @@ test("Signal child_exited handoff fields are additive (the bare shape still type
 
 test("EXIT_CAUSE_WORDING: every cause has a non-empty clause with no control characters; the start causes say what to do", () => {
   const all: ExitCause[] = [
+    "abandoned",
     "oom_killed",
     "host_stopped",
     "resource_exhaustion",
@@ -162,6 +163,7 @@ test("EXIT_CAUSE_WORDING: every cause is a cause clause then an imperative actio
     image_unavailable: /; fix the template or daemon image reference$/,
     pull_failed: /; retry later$/,
     start_failed: /; check that Docker is healthy and has free disk, then respawn$/,
+    abandoned: /; check the run's error entry for whether its sandbox was killed or left on its backend, then respawn$/,
   };
   for (const [cause, text] of Object.entries(EXIT_CAUSE_WORDING)) {
     assert.match(text, action, `${cause} has no action clause`);

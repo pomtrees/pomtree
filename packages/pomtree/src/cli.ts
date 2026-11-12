@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { abandonBody, abandonLeft, renderAbandon } from "./abandon.ts";
 import { mergeOutcome, MERGE_EXIT } from "./merge.ts";
 import { CaptureUsage, captureListRows, captureRequestOf, captureView, isCaptureResponse, renderCaptureRecord } from "./capture.ts";
 import { bundleArgs, bundleFailure, effectivePushKey, fetchArgs, gitTooOld, isRefList, planBundle, pullPath, pushError, runGit } from "./git.ts";
@@ -63,7 +64,7 @@ import {
 import type { Summary } from "./ux.ts";
 import { cronError, renderScheduleTable } from "./sched.ts";
 
-export const EXIT = { ok: 0, error: 1, usage: 2, notFound: 3, denied: 4, conflict: 5, unreachable: 6, timeout: 7 } as const;
+export const EXIT = { ok: 0, error: 1, usage: 2, notFound: 3, denied: 4, conflict: 5, unreachable: 6, timeout: 7, partial: 13 } as const;
 
 export interface Io {
   call: Transport;
@@ -180,6 +181,8 @@ const USAGE = `usage: pomtree [--json] <command>
   trace ID [--children] [--raw] [--short] [--out PATH]      full session trace as Markdown for pasting into a chat (operator; secrets redacted unless --raw)
   cancel ID [--grace MS] [--key K]                          ask an agent to stop
   kill ID [--key K]                                         force-stop an agent
+  abandon ID [--reason TEXT]                                end a run whose sandbox backend is gone: kill its sandbox on the backend that holds it, or
+                                                            say where it was left (operator)
   extend ID [--deadline DURATION] [--key K]                 extend an agent's session deadline (operator; default +one default session)
   resume ID [--force] [--key K]                             resume a yielded agent; --force overrides quarantine (operator). An agent may resume
                                                             an exited, unreaped child or descendant it started, to resolve a merge conflict
@@ -242,7 +245,8 @@ const USAGE = `usage: pomtree [--json] <command>
 
 exit codes: 0 ok; 1 other error (daemon 422/429/5xx: read the message); 2 usage (bad flags, or daemon 400/405/413); 3 not found;
   4 denied (401 token, 403 scope); 5 conflict (409: already done, stale, or uncommitted work; see the hint); 6 daemon unreachable;
-  7 wait timed out; pomtree merge adds 8-12 (see merge above); pomtree capture adds 15-18 (see capture request above)
+  7 wait timed out; pomtree merge adds 8-12 (see merge above); pomtree capture adds 15-18 (see capture request above);
+  13 is abandon (abandoned, but its sandbox was left on an unreachable backend and may still bill; the text says where)
 global: --no-color (or NO_COLOR) disables colour; --help shows this text`;
 
 // Agent-facing help omits the operator-only spawn flags (the daemon refuses them with 403).
@@ -301,6 +305,7 @@ const VALUE_FLAGS = new Set([
   "render",
   "max-age",
   "purpose",
+  "reason",
 ]);
 
 function parseArgs(argv: string[]) {
@@ -1049,6 +1054,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
         await api("POST", "/v1/agents/self/await-user", { idempotencyKey: idemKey() });
         print({ accepted: true }, "await-user accepted: end your turn now; you wait for the user's next message");
         return EXIT.ok;
+      }
+      case "abandon": {
+        const reply: unknown = await api("POST", `/v1/agents/${id()}/abandon`, abandonBody(flag("reason"), idemKey()));
+        print(reply, renderAbandon(reply));
+        return abandonLeft(reply) ? EXIT.partial : EXIT.ok;
       }
       case "kill":
         await api("POST", `/v1/agents/${id()}/kill`, { idempotencyKey: idemKey() });

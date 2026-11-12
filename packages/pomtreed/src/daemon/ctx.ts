@@ -73,6 +73,8 @@ export interface Hub {
   };
   reconcile: {
     isQuarantined(a: AgentRecord): Promise<boolean>;
+    // Held for a sandbox backend this daemon cannot reach (Reconcile.held): never resumed, killed or revoked by a supervisor path.
+    isHeld(id: AgentId): boolean;
     // Sweeps and the watchdog share the reconcile-error journal line and the sandbox reclaim.
     journalError(a: AgentRecord, e: unknown): Promise<void>;
     reclaimSandbox(r: AgentRecord, force?: boolean): Promise<void>;

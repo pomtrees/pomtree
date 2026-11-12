@@ -317,6 +317,7 @@ Exit causes (why it ended; the wording is rendered from the code's own table):
 | `image_unavailable` | its container image does not exist or cannot be pulled; fix the template or daemon image reference |
 | `pull_failed` | pulling its container image failed (registry or network); retry later |
 | `start_failed` | its container could not start (the run's error entry names the kind and the cause); check that Docker is healthy and has free disk, then respawn |
+| `abandoned` | the operator abandoned it (`pomtree abandon`); check the run's error entry for whether its sandbox was killed or left on its backend, then respawn |
 
 Start-failure kinds:
 

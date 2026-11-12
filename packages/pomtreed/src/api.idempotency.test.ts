@@ -92,6 +92,7 @@ const ROWS: Row[] = [
   { name: "resume (agent)", method: "POST", who: "agent", url: () => "/v1/agents/self/resume", body: () => ({}) },
   { name: "resume (operator)", method: "POST", who: "operator", url: (w) => `/v1/agents/${w.agent.id}/resume` },
   { name: "cancel", method: "POST", who: "operator", url: (w) => `/v1/agents/${w.agent.id}/cancel` },
+  { name: "abandon", method: "POST", who: "operator", url: (w) => `/v1/agents/${w.agent.id}/abandon` },
   { name: "schedule put", method: "PUT", who: "operator", url: () => "/v1/schedules/s1", body: () => ({ cron: "* * * * *", task: "t" }), ext: true },
   { name: "schedule rm", method: "DELETE", who: "operator", url: () => "/v1/schedules/s1", keyIn: "query", ext: true },
   { name: "schedule pause", method: "POST", who: "operator", url: () => "/v1/schedules/s1/pause", body: () => ({}), ext: true },

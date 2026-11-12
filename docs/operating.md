@@ -20,7 +20,7 @@ The commands, grouped. `pomtree --help` is the authoritative command, flag and e
 
 | Group | Commands |
 | --- | --- |
-| Lifecycle | `spawn` (`--template`, `--disposition hold\|reap-on-exit`, `--ttl`), `wait`, `reap`, `result`, `yield`, `resume` (operator; `--force` overrides quarantine; an agent may resume an exited, unreaped child or descendant it started, to resolve a merge conflict), `cancel`, `kill`, `drain` (operator: stop admission, leave containers adoptable), `await-user` |
+| Lifecycle | `spawn` (`--template`, `--disposition hold\|reap-on-exit`, `--ttl`), `wait`, `reap`, `result`, `yield`, `resume` (operator; `--force` overrides quarantine; an agent may resume an exited, unreaped child or descendant it started, to resolve a merge conflict), `cancel`, `kill`, `abandon` (operator: end a run whose sandbox backend is gone; kills the sandbox on the backend its record names, or reports where it was left), `drain` (operator: stop admission, leave containers adoptable), `await-user` |
 | Observe | `ps`, `tree`, `show`, `logs [-f]`, `trace`, `top`, `budget`, `spend`, `escalations ls\|answer` (operator), `decide <approval-id> approve\|deny\|pass`, `answer <escalation-id> <text>`, `pass <escalation-id>`, `models`, `whoami`, `doctor` |
 | Git (agent) | `push [--branch NAME]` (bundle this clone's branch and send it to the daemon; run it before finishing; a non-fast-forward push is refused: run `pomtree pull`, fast-forward your branch onto the ingested tip, then push again; `--force` is operator-only), `pull [--from AGENT]` (fetch the default branch and ingested agent branches into `refs/remotes/pomtreed/*` and `refs/remotes/pomtreed-agents/*`), `merge CHILD [--into BRANCH]` (see Merging below) |
 | Messaging | `inbox`, `peers`, `send`, `ask` |

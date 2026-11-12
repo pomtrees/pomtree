@@ -23,21 +23,6 @@ export const AUTO_RESTART = "auto-restart:";
 // Journal prefix of an operator reset marker: restartCount counts only AUTO_RESTART entries after the latest one.
 export const RESTART_RESET = "restart-budget-reset:";
 
-// Boot refusal: a live record names a sandbox backend this build or config cannot reach.
-export class SandboxBackendUnavailableError extends Error {
-  backend: string;
-  agents: AgentId[];
-  constructor(backend: string, holders: AgentRecord[]) {
-    const agents = holders.map((r) => r.id);
-    super(
-      `sandbox backend ${backend} is not available, but agent(s) ${agents.join(", ")} hold sandboxes on it; select it again (sandbox.backend) or run pomtree abandon <agent> for each of them, then restart`,
-    );
-    this.name = "SandboxBackendUnavailableError";
-    this.backend = backend;
-    this.agents = agents;
-  }
-}
-
 export class Reconcile {
   private readonly ctx: DaemonCtx;
   private readonly tree: Tree;
@@ -74,6 +59,9 @@ export class Reconcile {
   private readonly failedThisPass = new Set<AgentId>();
   // Strays: sandbox id -> alerted yet. Present means seen in the previous consecutive pass.
   private readonly strays = new Map<string, boolean>();
+  // Agents of this host whose live sandbox is on a backend this build or config cannot reach, from the latest reconcileSandboxes. They are
+  // held: no listing, adoption, resume or kill touches them, and `pomtree abandon <agent>` (or selecting the backend again) resolves them.
+  private readonly heldAgents = new Map<AgentId, string>();
 
   constructor(ctx: DaemonCtx, tree: Tree, escalation: Escalation, budget: Budget, live: Map<AgentId, Live>, epoch: string) {
     this.ctx = ctx;
@@ -354,7 +342,7 @@ export class Reconcile {
         // Attach, inspect, stop and the resume path go through the selected backend; a sandbox pinned to another backend must not
         // be looked up there (an empty answer reads as dead and would be force-resumed). Left as is, with one finding.
         const selectedBackend = d.sandbox.declaration.backend;
-        if (a.sandbox !== null && a.sandboxBackend !== null && a.sandboxBackend !== selectedBackend) {
+        if (this.heldAgents.has(a.id) || (a.sandbox !== null && a.sandboxBackend !== null && a.sandboxBackend !== selectedBackend)) {
           await this.ctx
             .record(
               a,
@@ -675,12 +663,14 @@ export class Reconcile {
   async reconcileSandboxes() {
     // The backend comes from the RECORD, never from current config. The active set is the selected backend plus every backend
     // named by a non-terminal record of this host that holds a sandbox (overflow, or a backend left behind by a config change);
-    // each is reconciled against its own sandbox. A record that names a backend this build cannot reach cannot be listed,
-    // adopted or stopped, so boot refuses before touching any backend. A record on another host, or a finished one, is not this
-    // daemon's to refuse. A record that holds a sandbox but names no backend cannot be matched to any backend: refused too.
+    // each is reconciled against its own sandbox. A record that names a backend this build cannot reach cannot be listed, adopted
+    // or stopped, so it is HELD: skipped by every loop here, with one journaled finding, and the daemon boots so the operator can
+    // `pomtree abandon` it. A record on another host, or a finished one, is not this daemon's. A record that holds a sandbox but
+    // names no backend cannot be matched to any backend: refused.
     const d = this.ctx.deps;
     const selected = d.sandbox.declaration.backend;
     const holders = new Map<string, AgentRecord[]>();
+    this.heldAgents.clear();
     for (const r of await d.registry.list({ excludeState: "reaped" })) {
       if (r.sandbox === null || r.host !== d.hostId || isDone(r)) continue;
       if (r.sandboxBackend === null) {
@@ -689,15 +679,13 @@ export class Reconcile {
         );
       }
       if (r.sandboxBackend === selected) continue;
-      // A build that wires no per-backend accessor reaches the selected backend only.
-      if (!d.sandboxFor) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend, selected);
       holders.set(r.sandboxBackend, [...(holders.get(r.sandboxBackend) ?? []), r]);
     }
     const targets: [string, Sandbox][] = [[selected, d.sandbox]];
     for (const [id, agents] of holders) {
       const sb = d.sandboxFor?.(id);
-      if (!sb) throw new SandboxBackendUnavailableError(id, agents);
-      targets.push([id, sb]);
+      if (sb) targets.push([id, sb]);
+      else await this.hold(id, selected, agents);
     }
     // One backend failing never skips the others: each runs, the first unexpected error is rethrown afterwards.
     const done = new Set<Sandbox>(); // the same sandbox reached under two ids is reclaimed once
@@ -712,6 +700,27 @@ export class Reconcile {
       }
     }
     if (failure) throw failure.error;
+  }
+
+  // The agents currently held for an unreachable backend (ids only), for operator surfaces.
+  held(): AgentId[] {
+    return [...this.heldAgents.keys()];
+  }
+
+  isHeld(id: AgentId): boolean {
+    return this.heldAgents.has(id);
+  }
+
+  private async hold(backend: string, selected: string, agents: AgentRecord[]) {
+    const root = await this.ctx.hub.root.root();
+    for (const a of agents) {
+      this.heldAgents.set(a.id, backend);
+      const message = `agent ${a.id} holds sandbox ${a.sandbox} on backend ${backend}, which is not available here (the selected backend is ${selected}); the agent is held (never inspected, resumed or killed) and the daemon started without it: select ${backend} again (sandbox.backend), or run pomtree abandon ${a.id}`;
+      console.error(`pomtreed: ${message}`);
+      await this.ctx
+        .record(root, { kind: "host_error", component: "sandbox", message }, `host:backend-held:${a.id}:${backend}`)
+        .catch(journalFailed(this.ctx.record, root, "sandbox"));
+    }
   }
 
   // One backend of the active set. A backend that cannot be listed is skipped, and the records it holds stay as they are
@@ -877,7 +886,7 @@ export class Reconcile {
     // The record's own backend decides where the sandbox is; one this build cannot reach is refused, never looked up elsewhere.
     const selected = d.sandbox.declaration.backend;
     const sandbox = r.sandboxBackend === null || r.sandboxBackend === selected ? d.sandbox : d.sandboxFor?.(r.sandboxBackend);
-    if (!sandbox) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend ?? selected, selected);
+    if (!sandbox) throw new SandboxBackendMismatchError(r.sandbox, r.sandboxBackend ?? selected, selected, r.id);
     await (force ? sandbox.kill(r.sandbox, sandboxOpKey("kill", r.sandbox)) : sandbox.stop(r.sandbox, d.graceMs, sandboxOpKey("stop", r.sandbox))).catch(
       () => {},
     );

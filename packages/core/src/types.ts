@@ -151,7 +151,8 @@ export type ExitCause =
   | "passive_settle" // ended turn after turn with no result, yield or activity, past the daemon's nudge cap (TODO(no-passive-settle))
   | "image_unavailable" // the sandbox could not start: the agent image does not exist or cannot be pulled (SandboxStartError image_unavailable)
   | "pull_failed" // the sandbox could not start: a transient image pull/registry failure (SandboxStartError pull_failed)
-  | "start_failed"; // the sandbox could not start for another reason (SandboxStartError unknown / egress_start_failed)
+  | "start_failed" // the sandbox could not start for another reason (SandboxStartError unknown / egress_start_failed)
+  | "abandoned"; // the operator ran `pomtree abandon`: the run ended cancelled, its sandbox released or left on its recorded backend
 
 export type AgentState = "pending" | "running" | "yielded" | "exited" | "reaped";
 export type ExitStatus = "succeeded" | "failed" | "cancelled" | "timed_out" | "over_budget";

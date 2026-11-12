@@ -1234,7 +1234,7 @@ test("registry.setSandbox pins the sandbox backend while a sandbox is held and c
     (e: unknown) =>
       e instanceof SandboxBackendMismatchError &&
       e.message ===
-        "agent record (sandbox sb1) was created under backend docker; the selected backend is podman; set sandbox.backend back to docker, or remove sandbox sb1 with docker's own tooling, then restart",
+        `agent ${a.id} (sandbox sb1) was created under backend docker; the selected backend is podman; the agent is held: select docker again (sandbox.backend), or run \`pomtree abandon ${a.id}\``,
   );
   const rec = await s.registry.get(a.id);
   assert.equal(rec?.sandbox, "sb1", "a refused write changes nothing");
