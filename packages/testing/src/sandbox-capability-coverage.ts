@@ -135,10 +135,11 @@ export function coverageCounts(table: CapabilityTable = SANDBOX_CAPABILITY_COVER
 }
 
 // Ceiling on deferred capabilities: lower it as clauses land; raising it requires a reason in the commit that raises it.
-// TODO(conformance-deferral-ceiling): most capabilities are deferred in this table (the ceiling below is the count); lower it as clauses land.
-// Also open: `probe-subset` is redundant with `probe-widening-fails`, `files-hash-mismatch` overlaps `files-partial-upload`, `list.byTag` counts as
-// covered by the owner-listing clause, and the shared fake stamps no host or generation so its listing-tag checks are optional.
-export const MAX_DEFERRED_CAPABILITIES = 22;
+// TODO(conformance-deferral-ceiling): the remaining deferrals each need an observer the shared fake lacks (a network, a provider proxy, a real runtime,
+// terminal or lease clock), so the ceiling stays at the count until a clause lands; current behavior: those capabilities pass the floor through the deferral.
+// Also open: `probe-subset` is redundant with `probe-widening-fails`, `files-hash-mismatch` overlaps `files-partial-upload`, and `list.byTag` counts as
+// covered by the owner-listing clause.
+export const MAX_DEFERRED_CAPABILITIES = 19;
 
 export function deferralCeilingFindings(table: CapabilityTable = SANDBOX_CAPABILITY_COVERAGE, max = MAX_DEFERRED_CAPABILITIES): string[] {
   const n = deferredCapabilities(table).length;
