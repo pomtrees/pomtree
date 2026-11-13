@@ -157,13 +157,14 @@ function createWindowManager(tabs, storageKey) {
       notify("export", "Export failed: " + errText(e));
     }
   };
-  // TODO(layout-narrow-import): while narrow, doImport and doReset replace and save the desktop layout, but render() shows the in-memory single-view narrowLayout, so nothing visible changes yet the notice reports success. The saved layout shows once the window is wide again. Trigger: a user imports or resets on a phone, or the narrow notice wording is revisited.
+  // While narrow, the visible layout is the single-window narrowLayout: an import or reset saves the desktop layout and shows its focused window.
   const doImport = (file) => {
     if (!file) return;
     Promise.resolve(file.text()).then((text) => {
       const r = LK.parse(text, { views: order, subjects: subjectsMap() });
       if (!r.ok) { notify("import", "Import failed. " + r.reason); return; }
       desktop = r.layout;
+      if (narrow) narrowLayout = narrowOf();
       render();
       save();
       syncHash();
@@ -173,6 +174,7 @@ function createWindowManager(tabs, storageKey) {
   };
   const doReset = () => {
     desktop = single(defaultView);
+    if (narrow) narrowLayout = narrowOf();
     render();
     save();
     syncHash();
