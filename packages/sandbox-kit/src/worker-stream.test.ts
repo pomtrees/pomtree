@@ -945,6 +945,93 @@ test("terminator: loopback, link-local, unspecified, mapped and odd-spelled IP l
   }
 });
 
+const PRIVATE_LITERALS = [
+  "10.0.0.1",
+  "10.255.255.255",
+  "172.16.0.1",
+  "172.31.255.254",
+  "192.168.1.1",
+  "100.64.0.1",
+  "100.127.255.254",
+  "192.0.0.8",
+  "198.18.0.1",
+  "224.0.0.1",
+  "255.255.255.255",
+  "fc00::1",
+  "fd12:3456::1",
+  "64:ff9b::808:808",
+  "64:ff9b:1::1",
+  "ff02::1",
+];
+
+test("terminator: private-range IP literals are denied by default, in every spelling", async () => {
+  for (const host of PRIVATE_LITERALS) {
+    assert.match(ipLiteralDenial(host) ?? "", /private|CGNAT|NAT64|multicast|reserved|broadcast/, host);
+  }
+  // Non-canonical spellings of 10.0.0.1 and 192.168.1.1 (decimal, hex, octal, short) are refused too.
+  for (const host of ["167772161", "0xa000001", "012.0.0.1", "10.1", "3232235777", "0xc0.0xa8.1.1"]) {
+    assert.match(ipLiteralDenial(host) ?? "", /non-canonical/, host);
+  }
+  for (const host of ["172.15.0.1", "172.32.0.1", "100.63.0.1", "100.128.0.1", "192.167.1.1", "11.0.0.1", "fe00::1", "64:ff9a::1"]) {
+    assert.equal(ipLiteralDenial(host), undefined, host);
+  }
+  const h = terminator(allowAll);
+  const c = await connectTo(h, "CONNECT 10.0.0.1:443 HTTP/1.1\r\n\r\n");
+  assert.match(await c.reader.until("\r\n\r\n"), /^HTTP\/1\.1 403 /);
+  await c.handled;
+  assert.deepEqual(h.dialed, []);
+  assert.match(h.audits[0]?.cause ?? "", /private[^;]*; .*allowPrivate/);
+});
+
+test("terminator: 6to4, Teredo and SIIT literals are denied by the IPv4 they embed (Teredo always)", () => {
+  for (const host of [
+    "2002:0a00:0001::1",
+    "2002:7f00:0001::",
+    "2002:c0a8:0101::5",
+    "2002:a9fe:a9fe::1",
+    "::ffff:0:10.0.0.1",
+    "::ffff:0:7f00:1",
+    "::ffff:0:a9fe:a9fe",
+    "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+    "2001::1",
+  ]) {
+    assert.ok(ipLiteralDenial(host), host);
+  }
+  for (const host of ["2002:0808:0808::1", "::ffff:0:8.8.8.8", "2001:1::1", "2001:db8::1"]) {
+    assert.equal(ipLiteralDenial(host), undefined, host);
+  }
+  // allowPrivate exempts an embedded private IPv4, never a loopback or Teredo one.
+  assert.equal(ipLiteralDenial("2002:0a00:0001::1", ["10.0.0.0/8"]), undefined);
+  assert.ok(ipLiteralDenial("2002:7f00:0001::", ["0.0.0.0/0"]));
+  assert.ok(ipLiteralDenial("2001::1", ["::/0"]));
+});
+
+test("terminator: allowPrivate opts a listed CIDR in, and only private ranges", async () => {
+  assert.equal(ipLiteralDenial("10.1.2.3", ["10.0.0.0/8"]), undefined);
+  assert.equal(ipLiteralDenial("fd00::5", ["fd00::/8"]), undefined);
+  assert.equal(ipLiteralDenial("10.1.2.3", ["192.168.0.0/16"]) === undefined, false, "an unrelated CIDR does not opt in");
+  assert.equal(ipLiteralDenial("192.168.1.1", ["10.0.0.0/8"]) === undefined, false);
+  // The opt-in never overrides loopback, link-local or unspecified, even when the CIDR covers them.
+  for (const host of ["127.0.0.1", "169.254.169.254", "0.0.0.0", "::1", "fe80::1", "::ffff:10.0.0.1"]) {
+    assert.ok(ipLiteralDenial(host, ["0.0.0.0/0", "::/0"]), host);
+  }
+  const h = terminator(allowAll, 4, { allowPrivate: ["10.0.0.0/8"] });
+  const open = await openTunnel(h, "10.0.0.7:443");
+  assert.deepEqual(h.dialed, ["10.0.0.7:443"]);
+  open.client.close();
+  open.up.close();
+  await open.handled;
+  const other = await connectTo(h, "CONNECT 192.168.0.1:443 HTTP/1.1\r\n\r\n");
+  assert.match(await other.reader.until("\r\n\r\n"), /^HTTP\/1\.1 403 /);
+  await other.handled;
+});
+
+test("terminator: a malformed allowPrivate entry is refused at construction, naming the entry and the fix", () => {
+  for (const bad of ["10.0.0.0", "10.0.0.0/33", "nope/8", "fd00::/129", "10.0.0.0/x"]) {
+    assert.throws(() => terminator(allowAll, 4, { allowPrivate: [bad] }), new RegExp(`allowPrivate.*${bad.replace(/[./]/g, "\\$&")}.*CIDR`), bad);
+  }
+});
+
 test("terminator: public IP literals and names pass the built-in deny, and denyIpLiterals:false turns it off", async () => {
   for (const host of ["93.184.216.34", "[2001:db8::1]", "example.com", "169.255.1.1", "[fec0::1]"]) {
     assert.equal(ipLiteralDenial(host.replace(/^\[|\]$/g, "")), undefined, host);
