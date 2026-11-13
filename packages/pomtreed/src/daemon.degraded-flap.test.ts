@@ -2,7 +2,7 @@
 // per-agent step latches `degraded` (hub.store.markDown); Daemon.probeStore clears it (journal write), re-arms the lost-wake
 // scan and fires one reconcile pass. Known residual: see TODO(degraded-flap).
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type { AgentRecord } from "@pomtree/core";
 import { setup, spawnSpec } from "./test-setup.ts";
 
@@ -169,9 +169,18 @@ test("with the backoff disabled (storeRecoveryBackoffMs=0) a store that fails EV
   const p0 = r.s.passes;
   const h0 = await hostHealth(r.t);
   let relatched = 0;
-  for (let i = 0; i < cycles; i++) {
-    await r.t.daemon.probeStore(); // journal write succeeds (the probe does not touch the failing registry.list): clears + runs a pass that relatches
-    if (r.peek.degraded) relatched++;
+  const log = mock.method(console, "error", () => {});
+  try {
+    for (let i = 0; i < cycles; i++) {
+      const recovered = () => log.mock.calls.filter((c) => /store write recovered/.test(String(c.arguments[0]))).length;
+      const before = recovered();
+      await r.t.daemon.probeStore(); // journal write succeeds (the probe does not touch the failing registry.list): clears + runs a pass that relatches
+      // The pass relatches before probeStore resolves, so the clear is proven by the probe's own log line, once per cycle.
+      assert.equal(recovered() - before, 1, "the probe itself cleared the latch this cycle");
+      if (r.peek.degraded) relatched++;
+    }
+  } finally {
+    log.mock.restore();
   }
   assert.equal(relatched, cycles, "relatched after every recovery: degraded flaps");
   assert.equal(r.s.passes - p0, cycles, "one extra reconcile pass per probe tick (production: every 500ms instead of reconcileMs=30s)");
