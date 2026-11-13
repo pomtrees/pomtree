@@ -423,7 +423,13 @@ async function main(): Promise<number> {
     if (running && running.exitCode === null) {
       const exited = new Promise<void>((ok) => running.once("exit", () => ok()));
       running.kill("SIGTERM");
-      await Promise.race([exited, new Promise<void>((ok) => setTimeout(ok, 5000))]);
+      const waitMs = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
+      await Promise.race([exited, waitMs(5000)]);
+      if (running.exitCode === null && running.signalCode === null) {
+        // Chrome ignored SIGTERM: kill it so it cannot keep writing into the profile directory removed below.
+        running.kill("SIGKILL");
+        await Promise.race([exited, waitMs(2000)]);
+      }
     }
     await stub.close();
     rmSync(profile, { recursive: true, force: true });
