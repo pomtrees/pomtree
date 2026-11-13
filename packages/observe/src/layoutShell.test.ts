@@ -2219,7 +2219,7 @@ test("Escape closes the window menu and returns focus to the focusable tile root
   assert.equal(s.api.state().maximized, "");
 });
 
-test("narrow: the menu offers Close and Close all only; Close closes the desktop window showing the same subject and the desktop returns on widening", () => {
+test("narrow: the menu offers Close and Close all only; Close replaces the visible window and leaves the saved desktop layout alone", () => {
   const desktop = (() => {
     const s = three();
     return s.store;
@@ -2228,44 +2228,52 @@ test("narrow: the menu offers Close and Close all only; Close closes the desktop
   assert.equal(n.tiles().length, 1);
   const leaf = n.api.state().leaves[0]!;
   assert.equal(leaf.view, "hosts");
+  const before = JSON.stringify(n.store);
   barOf(n.tiles()[0]!).fire("contextmenu", { clientX: 0, clientY: 0 });
   assert.deepEqual(ctxLabels(n), ["Close", "Close others", "Close to the left", "Close to the right", "Close all"], "the zoom items are hidden");
   assert.deepEqual(ctxDisabled(n), ["Close others", "Close to the left", "Close to the right"]);
   ctxItemsOf(n)
     .find((i) => i.textContent === "Close")!
     .click();
-  const views = JSON.stringify(stored(n.store));
-  assert.ok(!views.includes('"hosts"'), "hosts is gone from the saved desktop layout");
-  assert.ok(views.includes('"tree"') && views.includes('"terminal"'));
   assert.equal(n.tiles().length, 1, "still one window shown");
-  assert.notEqual(n.api.state().leaves[0]!.view, "hosts");
+  assert.equal(n.api.state().leaves[0]!.view, "tree", "the visible window is replaced by the default view");
+  assert.equal(JSON.stringify(n.store), before, "the saved desktop layout was not touched");
   for (const fn of n.mqListeners) fn({ matches: false });
-  assert.equal(n.tiles().length, 2, "widening shows what is left of the desktop layout");
+  assert.equal(n.tiles().length, 3, "widening shows the whole desktop layout, hosts included");
 });
 
-test("narrow: the tile Close button is enabled and closes the desktop window showing the same subject (by subject, not leaf id)", () => {
+test("narrow: the tile Close button is enabled and closes the visible window, not a desktop window with the same subject", () => {
   const n = boot({ narrow: true, store: { ...three().store }, hash: "#/hosts" });
   const t = n.tiles()[0]!;
   assert.equal(n.api.state().leaves[0]!.view, "hosts");
   assert.equal(n.btn(t, "Close tile").disabled, false);
+  const before = JSON.stringify(n.store);
   n.btn(t, "Close tile").click();
-  const views = JSON.stringify(stored(n.store));
-  assert.ok(!views.includes('"hosts"'), "hosts is gone from the saved desktop layout");
-  assert.ok(views.includes('"tree"') && views.includes('"terminal"'), "the other desktop windows are kept");
   assert.notEqual(n.api.state().leaves[0]!.view, "hosts");
+  assert.equal(JSON.stringify(n.store), before, "the desktop layout still holds hosts, terminal and tree");
 });
 
-test("narrow: Close all empties the desktop layout and the screen shows the default view; widening shows the empty state", () => {
-  const n = boot({ narrow: true, store: { ...three().store } });
+test("narrow: Close all shows the default view and keeps the saved desktop layout", () => {
+  const n = boot({ narrow: true, store: { ...three().store }, hash: "#/hosts" });
+  const before = JSON.stringify(n.store);
   assert.equal(n.api.windowCommand("window.close-all", null), true);
-  assert.equal(stored(n.store).root, null);
   assert.deepEqual(
     n.api.state().leaves.map((l) => l.view),
     ["tree"],
   );
+  assert.equal(JSON.stringify(n.store), before, "nothing was closed on the desktop");
   for (const fn of n.mqListeners) fn({ matches: false });
-  assert.equal(n.tiles().length, 0);
-  assert.equal(n.root.byClass("wm-empty").length, 1);
+  assert.equal(n.tiles().length, 3, "widening shows the intact desktop layout");
+});
+
+test("narrow: closing the default view, which is all there is to show, does nothing with a notice", () => {
+  const n = boot({ narrow: true, store: { ...three().store }, hash: "#/tree" });
+  assert.equal(n.api.state().leaves[0]!.view, "tree");
+  const before = JSON.stringify(n.store);
+  assert.equal(n.api.windowCommand("window.close", n.api.state().leaves[0]!.id), false);
+  assert.match(n.noticeTexts().join("|"), /Close does nothing here: the default view is the only window narrow screens can show/);
+  assert.equal(n.api.state().leaves[0]!.view, "tree");
+  assert.equal(JSON.stringify(n.store), before);
 });
 
 test("narrow: the other window commands do nothing with a notice, the zoom buttons are hidden, the title double-click is ignored", () => {
@@ -2288,14 +2296,13 @@ test("narrow: the other window commands do nothing with a notice, the zoom butto
   assert.equal(w.btn(w.tileOf("t1"), "Minimize").hidden, false, "negative control: wide screens show the buttons");
 });
 
-test("narrow: closing a window that is not in the saved desktop layout shows a notice and closes nothing", () => {
+test("narrow: closing a window that is not in the saved desktop layout still replaces it in memory and writes nothing", () => {
   const n = boot({ narrow: true });
   n.api.openView("hosts");
   const before = JSON.stringify(n.store);
-  assert.equal(n.api.windowCommand("window.close", n.api.state().leaves[0]!.id), false);
-  assert.match(n.noticeTexts().join("|"), /Close did nothing: this window is not in the saved desktop layout/);
+  assert.equal(n.api.windowCommand("window.close", n.api.state().leaves[0]!.id), true);
+  assert.equal(n.api.state().leaves[0]!.view, "tree");
   assert.equal(JSON.stringify(n.store), before);
-  assert.equal(n.api.state().leaves[0]!.view, "hosts");
 });
 
 test("the ui driver applies close-others, maximize, minimize and restore through the real window manager", () => {

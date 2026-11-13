@@ -540,28 +540,18 @@ function createWindowManager(tabs, storageKey) {
     const it = WMK.items(l, leafId, { narrow }).find((x) => x.command === command);
     return it ? it.label : command;
   };
-  // Narrow mode: leafId names the narrow layout's single leaf, which is not the desktop layout's leaf (both number from t1), so a close
-  // finds the desktop window by its subject. TODO(wm-narrow-close): Close acts on the saved desktop layout the operator cannot see
-  // (it closes that window there and the narrow screen then shows the desktop's new focus, or the default view when the desktop is
-  // empty); Close others, Close to the left and Close to the right are disabled and Maximize, Restore and Minimize are hidden.
+  // Narrow mode: Close acts on the visible layout, the in-memory single window, and never on the saved desktop layout the operator cannot see.
+  // The workspace is never empty here, so closing the shown window shows the default view; Close others, left and right are disabled and
+  // Maximize, Restore and Minimize are hidden.
   const narrowClose = (command, leafId) => {
     const lab = labelOf(command, narrowLayout, leafId);
-    let next;
-    if (command === "window.close-all") next = LK.closeAll(desktop);
-    else {
-      const lf = LK.leaves(narrowLayout).find((x) => x.id === leafId);
-      const at = lf ? LK.find(desktop, lf.view, lf.params, multiOf(lf.view)) : null;
-      if (!at) {
-        notify("window", lab + " did nothing: this window is not in the saved desktop layout, so there is no tile to close. Make the window wider than 640px to see the layout.");
-        return false;
-      }
-      next = LK.close(desktop, at);
+    const lf = LK.leaves(narrowLayout)[0];
+    if (!lf || lf.view === defaultView) {
+      notify("window", lab + " does nothing here: the default view is the only window narrow screens can show. Make the window wider than 640px to close windows in the saved layout.");
+      return false;
     }
-    if (next === desktop) { notify("window", lab + " does nothing here: no windows are open."); return false; }
-    desktop = next;
-    narrowLayout = narrowOf();
+    narrowLayout = single(defaultView);
     render();
-    save();
     syncHash();
     dismiss("window");
     return true;
