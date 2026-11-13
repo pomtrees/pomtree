@@ -200,3 +200,21 @@ test("pomtree ui close --all, --left and restore post the exact bodies; two scop
   assert.equal(h.calls.length, n);
   assert.match(h.err.join("\n"), /not --others and --right/);
 });
+
+test("--focused builds a focused command for close, maximize and minimize, with a close scope", () => {
+  assert.equal(ok(["close"], { focused: true }), '{"cmd":"close","focused":true}');
+  assert.equal(ok(["maximize"], { focused: true }), '{"cmd":"maximize","focused":true}');
+  assert.equal(ok(["minimize"], { focused: true }), '{"cmd":"minimize","focused":true}');
+  assert.equal(ok(["close"], { focused: true, left: true }), '{"cmd":"close","focused":true,"scope":"left"}');
+});
+
+test("usage error: --focused takes no view, no --all and only applies to close, maximize and minimize", () => {
+  assert.match(
+    bad(["close", "tree"], { focused: true }),
+    /--focused addresses the focused window and takes no view, got "tree".*for example: pomtree ui close --focused/,
+  );
+  assert.match(bad(["close"], { focused: true, all: true }), /--focused and --all cannot be combined/);
+  assert.match(bad(["open", "tree"], { focused: true }), /--focused only applies to ui close, maximize and minimize/);
+  assert.match(bad(["restore"], { focused: true }), /--focused only applies/);
+  assert.match(bad(["maximize"], { focused: true, others: true }), /--others only applies to ui close/);
+});

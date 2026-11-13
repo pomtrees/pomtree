@@ -615,6 +615,13 @@ const BLANK: Case[] = [
     out: NO_UI_TAB,
   },
   {
+    name: "ui close --focused (no tab connected)",
+    scope: "operator",
+    argv: () => ["ui", "close", "--focused", "--others"],
+    exit: EXIT.notFound,
+    out: NO_UI_TAB,
+  },
+  {
     name: "ui restore VIEW (no tab connected)",
     covers: ["ui restore"],
     scope: "operator",
@@ -720,6 +727,8 @@ const USAGE_ERRORS: Case[] = [
   ["ui", "close", "--all", "terminal"],
   ["ui", "maximize", "terminal", "--others"],
   ["ui", "restore", "terminal", "a1", "r1", "x"],
+  ["ui", "close", "--focused", "terminal"],
+  ["ui", "restore", "--focused"],
   ["spawn", "--task"],
   ["spawn", "--task", "t", "--disposition", "keep"],
   ["spawn", "--task", "t", "--disposition", "reap-on-exit", "--ttl", "1h"],
