@@ -154,6 +154,26 @@ test("K.notice sets text and class, and hides when the text is empty", () => {
   assert.equal(el.hidden, false, "text unhides it again");
 });
 
+test("K.notice makes a shown notice a Tab stop so its scrollable text is keyboard-reachable, and drops it when hidden", () => {
+  const P = load();
+  const attrs: Record<string, string> = {};
+  const el: El = {
+    textContent: "",
+    className: "",
+    hidden: false,
+    setAttribute: (k, v) => {
+      attrs[k] = v;
+    },
+    removeAttribute: (k) => {
+      delete attrs[k];
+    },
+  };
+  P.notice(el, "err", "long text");
+  assert.equal(attrs.tabindex, "0");
+  P.notice(el, "err", "");
+  assert.equal("tabindex" in attrs, false, "a hidden notice is not a stop (negative control)");
+});
+
 test("K.notice mirrors the full text into the title attribute and clears it when empty", () => {
   const P = load();
   const attrs: Record<string, string> = {};

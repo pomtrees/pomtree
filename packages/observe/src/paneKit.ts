@@ -28,7 +28,8 @@ const K = globalThis.PaneKit || (globalThis.PaneKit = (() => {
     el.textContent = text || "";
     el.className = "pane-notice " + (kind === "err" ? "err" : "meta");
     el.hidden = !text;
-    if (text) { if (el.setAttribute) el.setAttribute("title", text); } else if (el.removeAttribute) el.removeAttribute("title");
+    // The notice scrolls (max-height), so a shown one is a Tab stop and a keyboard user can read all of it.
+    if (text) { if (el.setAttribute) { el.setAttribute("title", text); el.setAttribute("tabindex", "0"); } } else if (el.removeAttribute) { el.removeAttribute("title"); el.removeAttribute("tabindex"); }
   };
   const stream = (url, handlers, badge) => {
     const es = new EventSource(url);
