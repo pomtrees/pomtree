@@ -1,8 +1,9 @@
 import type { Schema } from "../schema-check.ts";
 
-// TODO(provider-schemas-unverified): written from memory; check against the official Kubernetes reference.
-// Provenance: inferred. meta/v1 Status (the body of a failed API call and of the exec status channel), written from memory; not fetched and not verified against the official reference.
-// Source to check against: https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/status/
+// Provenance: checked against the Kubernetes API reference on 2026-11-13, not against a live cluster. meta/v1 Status (the body of a failed API call and of the exec status channel):
+// https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/status/ (apiVersion, kind, metadata, status Success|Failure, message, reason, code, details),
+// https://kubernetes.io/docs/reference/kubernetes-api/definitions/status-details-v1-meta/ (name, group, kind, uid, retryAfterSeconds, causes) and
+// https://kubernetes.io/docs/reference/kubernetes-api/definitions/status-cause-v1-meta/ (reason, message, field).
 // Lenient: this validates RESPONSES, which the provider may extend, so extra fields are accepted and only the fields the adapter depends on (kind, apiVersion, status) are required.
 export const kubernetesStatus: Schema = {
   type: "object",
