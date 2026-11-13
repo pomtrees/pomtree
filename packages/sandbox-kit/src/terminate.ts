@@ -10,13 +10,18 @@
 // sees IP literals), and DNS happens inside the injected `dial`. So a name on the allow-list can still resolve to a loopback or
 // link-local address (DNS rebinding, or an attacker-controlled record). The `dial` contract: resolve once, pin the resolved
 // address, refuse loopback, link-local (169.254.0.0/16 including the cloud metadata address), unspecified and IPv4-mapped IPv6
-// addresses, and connect to the pinned address, not to the name. `assertDialRejectsPrivate` checks a dial against that contract.
+// addresses (and, unless the adapter opted in, the private ranges below), and connect to the pinned address, not to the name. `assertDialRejectsPrivate` checks a dial against that contract.
 //
-// TODO(kit-terminator-private-ranges): the built-in deny does not cover RFC1918 private ranges or NAT64; current behavior: such literals pass it, so a
-// hosted adapter must refuse them through its allow-list.
 // The built-in deny (`denyIpLiterals`, default on) refuses IP-literal targets in loopback, link-local, unspecified and IPv4-mapped
-// or IPv4-compatible IPv6 ranges, and every non-canonical IPv4 spelling (decimal `2130706433`, hex `0x7f.1`, octal `0177.0.0.1`,
-// short `127.1`), whatever the allow-list says. The allow-list may still permit named hosts and ordinary public IP literals.
+// or IPv4-compatible IPv6 ranges, in private-use ranges (RFC 1918 10/8, 172.16/12 and 192.168/16; CGNAT 100.64/10; IETF protocol
+// assignments 192.0.0.0/24; benchmarking 198.18/15; multicast 224/4 and ff00::/8; reserved 240/4 with broadcast; IPv6 ULA fc00::/7;
+// NAT64 64:ff9b::/96 and 64:ff9b:1::/48), and every non-canonical IPv4 spelling (decimal `2130706433`, hex `0x7f.1`, octal
+// `0177.0.0.1`, short `127.1`), whatever the allow-list says. A non-canonical spelling is refused even when its address is
+// allowed, so a private target can only be reached by its canonical spelling. The allow-list may still permit named hosts and
+// ordinary public IP literals. An adapter that must reach private targets opts in with `allowPrivate`, a list of CIDRs: a literal
+// inside one is exempt from the private-use ranges only, never from loopback, link-local, unspecified or IPv4-mapped refusal.
+// IPv6 forms that embed an IPv4 address: 6to4 (2002::/16) and SIIT (::ffff:0:0/96) are refused when the embedded address is in a
+// refused range; Teredo (2001:0::/32) is always refused.
 //
 // Time bounds, all through the injected `sleep`: a header-read deadline (a client that never completes the CONNECT line loses its
 // slot), a dial timeout, an idle deadline on an established tunnel (no bytes either way; this also ends a half-open tunnel where
@@ -74,6 +79,10 @@ export interface TerminatorOptions {
   maxTunnelBytes?: number;
   // Default true; see the header.
   denyIpLiterals?: boolean;
+  // CIDRs (IPv4 or IPv6, e.g. "10.0.0.0/8", "fd00::/8") whose private-use addresses the built-in deny lets through. Default none:
+  // private targets are refused. Never overrides the loopback, link-local, unspecified and IPv4-mapped refusals. A malformed entry
+  // throws at construction.
+  allowPrivate?: readonly string[];
 }
 
 const CRLF2 = Buffer.from("\r\n\r\n");
@@ -155,8 +164,68 @@ function ipv6Bytes(host: string): number[] | null {
   return out.length === 16 ? out : null;
 }
 
+interface Cidr {
+  bytes: number[];
+  bits: number;
+}
+
+// Parse "addr/bits" for an IPv4 (canonical) or IPv6 address; throws naming the entry and the fix.
+function parseCidr(entry: string): Cidr {
+  const fail = () =>
+    new Error(`allowPrivate entry ${JSON.stringify(entry)} is not a CIDR; write an IPv4 or IPv6 address and prefix length such as "10.0.0.0/8" or "fd00::/8"`);
+  const m = /^([^/]+)\/(\d{1,3})$/.exec(entry);
+  if (!m) throw fail();
+  const addr = m[1] as string;
+  const bits = Number(m[2]);
+  let bytes: number[] | null = null;
+  if (addr.includes(":")) bytes = ipv6Bytes(addr);
+  else if (canonicalIpv4(addr)) bytes = addr.split(".").map(Number);
+  if (!bytes || bits > bytes.length * 8) throw fail();
+  return { bytes, bits };
+}
+
+function inCidr(b: readonly number[], c: Cidr): boolean {
+  if (b.length !== c.bytes.length) return false;
+  for (let i = 0; i < c.bits; i++) {
+    const mask = 0x80 >> (i % 8);
+    if (((b[i >> 3] as number) & mask) !== ((c.bytes[i >> 3] as number) & mask)) return false;
+  }
+  return true;
+}
+
+const PRIVATE_V4: ReadonlyArray<readonly [string, string]> = [
+  ["10.0.0.0/8", "a private (RFC 1918) address"],
+  ["172.16.0.0/12", "a private (RFC 1918) address"],
+  ["192.168.0.0/16", "a private (RFC 1918) address"],
+  ["100.64.0.0/10", "a private carrier-grade NAT (CGNAT) address"],
+  ["192.0.0.0/24", "a private IETF protocol-assignment address"],
+  ["198.18.0.0/15", "a private benchmarking address"],
+  ["224.0.0.0/4", "a multicast address"],
+  ["240.0.0.0/4", "a reserved or broadcast address"],
+];
+const PRIVATE_V6: ReadonlyArray<readonly [string, string]> = [
+  ["fc00::/7", "a private IPv6 unique-local (ULA) address"],
+  ["64:ff9b::/96", "a private NAT64 address"],
+  ["64:ff9b:1::/48", "a private NAT64 address"],
+  ["ff00::/8", "a multicast address"],
+];
+const PRIVATE_CIDRS = {
+  4: PRIVATE_V4.map(([c, why]) => ({ cidr: parseCidr(c), why })),
+  6: PRIVATE_V6.map(([c, why]) => ({ cidr: parseCidr(c), why })),
+};
+
+function privateDenial(host: string, b: readonly number[], allowPrivate: readonly string[] | undefined): string | undefined {
+  const hit = PRIVATE_CIDRS[b.length === 4 ? 4 : 6].find((r) => inCidr(b, r.cidr));
+  if (!hit) return undefined;
+  if (allowPrivate?.some((e) => inCidr(b, parseCidr(e)))) return undefined;
+  return `${host} is ${hit.why}; to reach private targets list its CIDR in the adapter's allowPrivate option`;
+}
+
 // The reason an IP-literal host is refused by the built-in deny, or undefined when it is not such a literal or is acceptable.
-export function ipLiteralDenial(host: string): string | undefined {
+// `allowPrivate` lists CIDRs exempt from the private-use ranges only.
+// TODO(kit-terminator-site-local): IPv6 site-local fec0::/10 (deprecated, RFC 3879) is not in the default private deny; current behavior: such
+// literals pass. See issue #710.
+export function ipLiteralDenial(host: string, allowPrivate?: readonly string[]): string | undefined {
   if (host.includes(":")) {
     const b = ipv6Bytes(host);
     if (!b) return `${host} is a malformed IPv6 literal`;
@@ -164,7 +233,16 @@ export function ipLiteralDenial(host: string): string | undefined {
     if (zeros(12)) return `${host} is the IPv6 unspecified, loopback or IPv4-compatible range`;
     if (zeros(10) && b[10] === 0xff && b[11] === 0xff) return `${host} is an IPv4-mapped IPv6 address`;
     if (b[0] === 0xfe && ((b[1] as number) & 0xc0) === 0x80) return `${host} is an IPv6 link-local address`;
-    return undefined;
+    // Teredo (2001:0::/32) is refused outright; 6to4 (2002::/16) and SIIT (::ffff:0:0/96) are refused when the IPv4 they embed is.
+    if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0 && b[3] === 0) return `${host} is a Teredo IPv6 address, which tunnels to an embedded IPv4`;
+    const embedded =
+      b[0] === 0x20 && b[1] === 0x02 ? b.slice(2, 6) : zeros(8) && b[8] === 0xff && b[9] === 0xff && b[10] === 0 && b[11] === 0 ? b.slice(12, 16) : undefined;
+    if (embedded) {
+      const inner = ipLiteralDenial(embedded.join("."), allowPrivate);
+      if (inner) return `${host} embeds an IPv4 address (6to4 or SIIT): ${inner}`;
+      return undefined;
+    }
+    return privateDenial(host, b, allowPrivate);
   }
   const n = parseLooseIpv4(host);
   if (n === null) return undefined;
@@ -173,7 +251,7 @@ export function ipLiteralDenial(host: string): string | undefined {
   if (first === 127) return `${host} is a loopback address`;
   if (first === 0) return `${host} is an unspecified address`;
   if (first === 169 && Math.floor(n / 2 ** 16) % 256 === 254) return `${host} is a link-local address (includes the cloud metadata address)`;
-  return undefined;
+  return privateDenial(host, host.split(".").map(Number), allowPrivate);
 }
 
 // Conformance check for a `dial` implementation: it must reject targets that are, or resolve to, loopback, link-local or
@@ -207,6 +285,7 @@ export class ConnectTerminator {
     if (!Number.isInteger(opts.maxConnections) || opts.maxConnections < 1) {
       throw new Error(`maxConnections must be a positive integer, got ${opts.maxConnections}; pass the shared bridge cap`);
     }
+    for (const entry of opts.allowPrivate ?? []) parseCidr(entry);
     this.#opts = opts;
     this.#maxHeader = opts.maxHeaderBytes ?? DEFAULT_MAX_HEADER_BYTES;
   }
@@ -345,7 +424,7 @@ export class ConnectTerminator {
     const host = (m[1] ?? m[2] ?? "").toLowerCase().replace(/\.$/, "");
     const target = { host, port };
     if (this.#opts.denyIpLiterals !== false) {
-      const denial = ipLiteralDenial(host);
+      const denial = ipLiteralDenial(host, this.#opts.allowPrivate);
       if (denial) {
         await this.#refuse(
           client,
