@@ -19,17 +19,19 @@ const alive = (pid: number) => {
   }
 };
 
-// The wrapper needs util-linux `setsid` (absent on macOS); it runs inside the Linux agent container.
+// The wrapper needs util-linux `setsid` and GNU `timeout` (both absent on stock macOS); it runs inside the Linux agent container.
 const wrapperSkip: string | false = (() => {
-  try {
-    execFileSync("setsid", ["--version"], { stdio: "ignore" });
-    return false;
-  } catch {
-    return "wrapper needs util-linux setsid (not on PATH; Linux container only)";
+  for (const tool of ["setsid", "timeout"]) {
+    try {
+      execFileSync(tool, ["--version"], { stdio: "ignore" });
+    } catch {
+      return `wrapper needs util-linux setsid and GNU timeout (${tool} not on PATH; Linux container only)`;
+    }
   }
+  return false;
 })();
 
-// TODO(jobs-helper-linux-only): this helper is exercised only on Linux CI; current behavior: not run on macOS developer machines.
+// TODO(jobs-helper-linux-only): the wrapper tests skip without setsid or timeout (stock macOS); current behavior: that skip is unverified on a real Mac and the wrapper itself is unproven there.
 function launch(cmdOf: string | ((dir: string) => string), t = 30) {
   const dir = mkdtempSync(join(tmpdir(), "job-"));
   const cmd = typeof cmdOf === "string" ? cmdOf : cmdOf(dir);
