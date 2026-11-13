@@ -65,7 +65,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return e;
     };
     const controlsEl = el("div", "tile-controls");
-    // TODO(pane-controls-keyboard): role=toolbar has no arrow-key navigation (every control is tabbable), and the scrollable .pane-notice is not keyboard-focusable.
+    // TODO(pane-controls-keyboard): the scrollable .pane-notice (paneKit.ts) is not keyboard-focusable; the toolbar's own arrow-key navigation is built (roving tabindex, ctlStop).
     controlsEl.setAttribute("role", "toolbar");
     controlsEl.setAttribute("aria-label", title + " controls");
     const menusEl = el("div", "tile-menus");
@@ -85,6 +85,8 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
     let typed = "";
     let typedAt = 0;
     let ctlRecs = []; // one {ctl, el, shown} per declared control, built once
+    let ctlHad = null; // the control that has focus, or lost it to a disabled or hidden state (see syncCtlStops)
+    let ctlStop = null; // roving-tabindex stop in the toolbar: the record the one Tab stop sits on
     let elKey = new Map(); // element -> {id, kind: "button" | "row", row}
     const seen = new WeakSet(); // events the chrome handled, so the document click handler ignores them
 
@@ -267,6 +269,40 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return acts.length && rest.length ? acts.concat([{ kind: "separator" }], rest) : acts.concat(rest);
     };
 
+    // Rendered, not just unhidden: the narrow-tile container query hides the buttons with display: none, and an invisible control must never hold the one Tab stop.
+    const rendered = (e) => typeof e.getClientRects !== "function" || e.getClientRects().length > 0;
+    const ctlEligible = () => ctlRecs.filter((r) => !r.el.hidden && !r.el.disabled && rendered(r.el));
+    const syncCtlStops = () => {
+      const ok = ctlEligible();
+      const was = ctlHad;
+      if (!ok.includes(ctlStop)) ctlStop = ok.length ? ok[0] : null;
+      for (const r of ctlRecs) r.el.setAttribute("tabindex", r === ctlStop ? "0" : "-1");
+      // Focus was on a control that is now disabled or hidden: hand it to the new stop instead of letting it fall to the body.
+      const a = doc.activeElement;
+      if (was && ctlStop && !ok.includes(was) && (a === was.el || !a || a === doc.body)) { ctlHad = ctlStop; focusEl(ctlStop.el); }
+    };
+    // WAI-ARIA toolbar: Left and Right move between the controls (wrapping), Home and End jump to the ends. A search keeps its own
+    // keys for the text: Left at the very start and Right at the very end of an unselected caret leave it, Home and End stay in it.
+    const onCtlKey = (rec, ev) => {
+      if (ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+      const isBtn = rec.ctl.kind === "button";
+      if (!isBtn) {
+        const a = rec.el.selectionStart;
+        const b = rec.el.selectionEnd;
+        if (typeof a !== "number" || a !== b) return;
+        if (!((ev.key === "ArrowLeft" && a === 0) || (ev.key === "ArrowRight" && a === String(rec.el.value).length))) return;
+      }
+      const ok = ctlEligible();
+      const i = ok.indexOf(rec);
+      let n = null;
+      if (ev.key === "ArrowRight") n = ok[(i + 1) % ok.length];
+      else if (ev.key === "ArrowLeft") n = ok[(i - 1 + ok.length) % ok.length];
+      else if (isBtn && ev.key === "Home") n = ok[0];
+      else if (isBtn && ev.key === "End") n = ok[ok.length - 1];
+      else return;
+      prevent(ev);
+      if (n && n !== rec) focusEl(n.el);
+    };
     const buildControls = () => {
       ctlRecs = model.controls().map((c) => {
         const rec = { ctl: c, el: null, shown: c.kind === "search" ? c.value : "", sent: null };
@@ -303,6 +339,10 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
           });
           rec.el = input;
         }
+        rec.el.addEventListener("focus", () => { ctlStop = rec; ctlHad = rec; syncCtlStops(); });
+        // Focus that left for anywhere else is forgotten; one lost because the control became disabled or hidden is kept for the hand-off.
+        rec.el.addEventListener("blur", () => { if (!rec.el.disabled && rendered(rec.el)) ctlHad = null; });
+        rec.el.addEventListener("keydown", (ev) => onCtlKey(rec, ev));
         return rec;
       });
       controlsEl.replaceChildren(...ctlRecs.map((r) => r.el));
@@ -323,6 +363,7 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
         }
       });
       controlsEl.hidden = !any;
+      syncCtlStops();
     };
 
     const renderMenus = () => {
@@ -386,6 +427,20 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
     overflowEl.addEventListener("click", (ev) => { seen.add(ev); });
     doc.addEventListener("click", onDocClick);
 
+    // The tile width decides which controls are rendered (container query), so the Tab stop is re-synced when the toolbar resizes.
+    const win = doc.defaultView;
+    const RO = deps && deps.ResizeObserver ? deps.ResizeObserver : win && typeof win.ResizeObserver === "function" ? win.ResizeObserver : null;
+    let ro = null;
+    let tileEl = null;
+    // The container-query box is the tile, which is not an ancestor yet when the chrome is built, so it is found on the first callback.
+    const watchTile = () => {
+      const t = tileEl === null && typeof controlsEl.closest === "function" ? controlsEl.closest(".tile") : null;
+      if (t && ro) { tileEl = t; ro.observe(t); }
+    };
+    ro = RO ? new RO(() => { if (destroyed) return; watchTile(); syncCtlStops(); }) : null;
+    if (ro) ro.observe(controlsEl);
+    const onWinResize = () => { if (!destroyed) syncCtlStops(); };
+    if (win && typeof win.addEventListener === "function") win.addEventListener("resize", onWinResize);
     buildControls();
     patchControls();
     renderMenus();
@@ -402,12 +457,16 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       destroyed = true;
       unsubscribe();
       doc.removeEventListener("click", onDocClick);
+      if (ro) ro.disconnect();
+      if (win && typeof win.removeEventListener === "function") win.removeEventListener("resize", onWinResize);
       openId = null;
       wide = [];
       ovRec = null;
       elKey = new Map();
       for (const r of ctlRecs) if (r.stop) r.stop();
       ctlRecs = [];
+      ctlStop = null;
+      ctlHad = null;
       controlsEl.replaceChildren();
       controlsEl.hidden = true;
       menusEl.replaceChildren();
