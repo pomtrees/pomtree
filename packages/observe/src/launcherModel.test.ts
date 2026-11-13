@@ -452,6 +452,26 @@ test("isOpenShortcut", () => {
   assert.equal(K.isOpenShortcut({}), false);
 });
 
+test("isOpenShortcut matches the physical key, whatever character the layout or OS produces", () => {
+  const mod = { altKey: true, shiftKey: true };
+  // macOS Alt+Shift+P types a symbol, Dvorak puts "l" on the P position, and some layouts or IMEs report no usable key at all.
+  for (const key of ["P", "p", "\u220F", "l", "Dead", "Process", "Unidentified", undefined])
+    assert.equal(K.isOpenShortcut({ ...mod, code: "KeyP", key } as never), true, String(key));
+  // The same typed character on a different physical key (an AZERTY or Dvorak "p") must not open it.
+  for (const code of ["KeyO", "KeyL", "Semicolon", "Digit0", "", undefined])
+    assert.equal(K.isOpenShortcut({ ...mod, code, key: "p" } as never), false, String(code));
+});
+
+test("isOpenShortcut ignores AltGr (Ctrl+Alt on Windows and Linux), a bare Alt+P and Shift+P, and non-boolean modifiers", () => {
+  const base = { code: "KeyP" };
+  assert.equal(K.isOpenShortcut({ ...base, altKey: true, shiftKey: true, ctrlKey: true }), false, "AltGr+Shift+P types a character");
+  assert.equal(K.isOpenShortcut({ ...base, altKey: true, shiftKey: true, metaKey: true }), false);
+  assert.equal(K.isOpenShortcut({ ...base, altKey: true }), false);
+  assert.equal(K.isOpenShortcut({ ...base, shiftKey: true }), false);
+  assert.equal(K.isOpenShortcut({ ...base, altKey: "yes", shiftKey: 1 } as never), false, "only real booleans count");
+  assert.equal(K.isOpenShortcut({ ...base, altKey: true, shiftKey: true, ctrlKey: false, metaKey: false }), true);
+});
+
 const three = deepFreeze([item("a"), item("b"), item("c")]);
 const openSt = (sel = 0, query = "q") => deepFreeze({ open: true, query, sel });
 
