@@ -1,0 +1,20 @@
+{
+  "engine": "podman",
+  "class": "imageUnavailable",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): `podman pull --tls-verify=false` against a local stand-in registry that answers /v2/ with 200 and every manifest request with 403 (DENIED) or 401 (UNAUTHORIZED); registry address scrubbed",
+  "verb": "pull",
+  "exitCode": 125,
+  "cases": [
+    {
+      "stderr": "Error: unable to copy from source docker://<registry>/priv/x:1: initializing source docker://<registry>/priv/x:1: reading manifest 1 in <registry>/priv/x: denied"
+    },
+    {
+      "stderr": "Error: unable to copy from source docker://<registry>/priv/x:1: initializing source docker://<registry>/priv/x:1: reading manifest 1 in <registry>/priv/x: unauthorized"
+    }
+  ],
+  "negative": {
+    "stderr": "Error: unable to copy from source docker://<registry>/x:1: initializing source docker://<registry>/x:1: pinging container registry <registry>: Get \"https://<registry>/v2/\": dial tcp: lookup <registry>: no such host",
+    "note": "an unreachable registry is a transient pull failure, not a refusal"
+  }
+}

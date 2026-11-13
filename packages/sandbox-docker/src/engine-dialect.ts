@@ -55,7 +55,11 @@ const PODMAN: Record<TableClass, RegExp> = {
   noSuchVolume: /no such volume|no volume with name \S+ found/i,
   noSuchNetwork: /network not found|unable to find network with name or id|no such network/i,
   networkExists: /network already exists|network name \S+ already used/i,
-  imageUnavailable: new RegExp(`${DOCKER_IMAGE_UNAVAILABLE.source}|image not known|requested access to the resource is denied`, "i"),
+  // A refused pull of a private image reads `reading manifest <tag> in <registry>/<repo>: denied` (or `: unauthorized`) on Podman 5.7.0.
+  imageUnavailable: new RegExp(
+    `${DOCKER_IMAGE_UNAVAILABLE.source}|image not known|requested access to the resource is denied|reading manifest \\S+ in \\S+: (?:denied|unauthorized)`,
+    "i",
+  ),
   pullFailed: PULL_FAILED,
 };
 

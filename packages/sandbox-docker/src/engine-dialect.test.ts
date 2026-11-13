@@ -82,6 +82,19 @@ test("dialects differ: a missing network is worded per engine, and a line from t
   assert.equal(isEngineError(PODMAN_PROFILE, "noSuchNetwork", dockerNet), false);
 });
 
+test("podman imageUnavailable: a refused private pull ('denied' or 'unauthorized') is permanent, and an unreachable registry still is not", () => {
+  const f = read<{ provenance: string; cases: { stderr: string }[]; negative: { stderr: string } }>("podman", "image-denied.json");
+  assert.equal(f.provenance, "captured");
+  assert.equal(f.cases.length, 2);
+  for (const c of f.cases) {
+    assert.equal(classifyEngineError(PODMAN_PROFILE, wrapped({ engine: "podman", verb: "pull" } as ErrorFixture, c.stderr)), "imageUnavailable", c.stderr);
+    assert.equal(isEngineError(DOCKER_PROFILE, "imageUnavailable", c.stderr), false, "the Docker table is unchanged");
+  }
+  assert.equal(classifyEngineError(PODMAN_PROFILE, wrapped({ engine: "podman", verb: "pull" } as ErrorFixture, f.negative.stderr)), "pullFailed");
+  assert.equal(isEngineError(PODMAN_PROFILE, "imageUnavailable", "reading manifest 1 in r/x: manifest unknown"), true);
+  assert.equal(isEngineError(PODMAN_PROFILE, "imageUnavailable", "reading manifest 1 in r/x: i/o timeout"), false);
+});
+
 test("both engines word a duplicate container name with 'is already in use' (P9, verified on Docker 28.4.0 and Podman 6.2.0)", () => {
   for (const engine of ["docker", "podman"] as const) {
     const f = read<ErrorFixture>(engine, "name-in-use.json");
