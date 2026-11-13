@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { issueToken, issueUiCookie, verifyToken, verifyUiCookie } from "./auth.ts";
+import { issueToken, issueUiCookie, tokenProblem, verifyToken, verifyUiCookie } from "./auth.ts";
 
 const SECRET = "s";
 
@@ -52,4 +52,42 @@ test("verifyUiCookie matches the cookie name exactly, not as a substring", () =>
   assert.equal(verifyUiCookie(SECRET, `evil_${cookie}`), false);
   assert.equal(verifyUiCookie(SECRET, `x=1; not${cookie}`), false);
   assert.equal(verifyUiCookie(SECRET, `x=pomtreed_ui=1; ${cookie}`), true);
+});
+
+test("ui cookie expiry follows the injected clock: valid through its expiry instant, rejected one ms later", () => {
+  let t = 1_000_000;
+  const now = () => t;
+  const cookie = issueUiCookie(SECRET, 60_000, now);
+  assert.equal(cookie.split("=")[1]?.split(".")[0], "1060000"); // issued against the injected clock, not the wall clock
+  assert.equal(verifyUiCookie(SECRET, cookie, now), true);
+  t = 1_060_000;
+  assert.equal(verifyUiCookie(SECRET, cookie, now), true); // the expiry instant itself is still valid
+  t = 1_060_001;
+  assert.equal(verifyUiCookie(SECRET, cookie, now), false);
+  // Negative control: the same cookie against the wall clock (long past 1970) is expired, so the injected clock is what decided above.
+  assert.equal(verifyUiCookie(SECRET, cookie), false);
+});
+
+test("agent token expiry and its 401 problem follow the injected clock", () => {
+  const tok = issueToken(SECRET, { scope: "agent", agent: "a", generation: 1, expiry: 5_000 });
+  assert.deepEqual(
+    verifyToken(SECRET, tok, () => 4_999),
+    { scope: "agent", agent: "a", generation: 1, expiry: 5_000 },
+  );
+  assert.equal(
+    verifyToken(SECRET, tok, () => 5_000),
+    null,
+  );
+  assert.equal(
+    tokenProblem(SECRET, tok, () => 4_999),
+    "invalid",
+  ); // not expired yet
+  assert.equal(
+    tokenProblem(SECRET, tok, () => 5_000),
+    "expired",
+  );
+  assert.equal(
+    tokenProblem("other-secret", tok, () => 5_000),
+    "invalid",
+  ); // a token this daemon did not issue is never "expired"
 });
