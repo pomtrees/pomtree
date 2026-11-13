@@ -3,10 +3,12 @@
 // process-wide. Raw `node:https` and `node:tls` stay inside this package.
 
 import type { Duplex } from "node:stream";
+import { DEFAULT_FETCH_USER_AGENT } from "@pomtree/core";
 import { redact, redactUrl } from "./redact.ts";
 
-// Default when no `workflow.fetch.userAgent` value is injected.
-export const DEFAULT_USER_AGENT = "pomtree";
+// Default when no `workflow.fetch.userAgent` value is injected: the configuration's own default, so the kit holds no identity string
+// of its own. The composition root passes the resolved `workflow.fetch.userAgent`.
+export const DEFAULT_USER_AGENT = DEFAULT_FETCH_USER_AGENT;
 
 export interface TlsOptions {
   ca?: string;
@@ -47,10 +49,6 @@ export interface KitResponse {
 export type Transport = (url: string, init: RequestInit) => Promise<KitResponse>;
 export type RequestFn = (url: string, init: RequestInit) => Promise<KitResponse>;
 
-// TODO(kit-fetch-identity): one helper so any adapter's fetching uses `workflow.fetch.userAgent`; current behavior: createRequest takes the agent
-// string as a parameter and falls back to DEFAULT_USER_AGENT, so each adapter must pass the configured value itself.
-// TODO(kit-request-assignability): createRequest is not compile-checked against core's SandboxRequestFn types (the kit does not depend on core);
-// the first task importing both adds the assignability check.
 // What `createRequest` returns: the request function plus a WebSocket opener bound to the same User-Agent, so an adapter
 // cannot forget the stamp. `wss` per-call TLS is not supported by the global WebSocket (it has no ca/cert/key options); an
 // adapter that needs client certificates uses the hand-rolled client WebSocket over `request` with `upgrade` instead.
