@@ -159,7 +159,8 @@ const mountBrowserInstance = (root, params, hostApi) => {
   let gen = 0;
   let epoch = 0; // bumped on no-browser, reconnect and unmount: an older in-flight decode is stale and must not draw or touch the gate
   let ws = null, openedAt = 0, shown = false;
-  let attempt = 0, retryTimer = null, tickTimer = null;
+  let attempt = 0, retryTimer = null, tickTimer = null, presenceTimer = null;
+  const PRESENCE_MS = 30000;
   let closedReason = "";
   let bmp = null;
   const gate = BrowserKit.frameGate();
@@ -252,11 +253,33 @@ const mountBrowserInstance = (root, params, hostApi) => {
     if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
     if (tickTimer !== null) { clearInterval(tickTimer); tickTimer = null; }
   };
-  // TODO(browser-agent-gone): the agent is only looked up after the socket closes (the daemon's close reasons ended/local/error
-  // do not say "agent removed"), so a removed agent is detected on the next close, not while a stream stays open; there is no poll.
+  // The daemon's close reasons (ended/local/error) do not say "agent removed", so while a stream stays open a slow lookup
+  // (PRESENCE_MS) notices a removed agent; after a close the lookup in afterClose does.
   // Agent record -> { state } | { missing } | null (lookup failed; treated as unknown, so it retries).
   const lookup = (id) => K.getJson(base + "/" + encodeURIComponent(id)).then((a) => ({ state: a && a.state }))
     .catch((err) => (err && err.status === 404) ? { missing: true } : null);
+
+  // The agent was removed: keep the last frame under a danger overlay and stop (no retry timer is armed).
+  const markGone = () => {
+    gone = true;
+    ov.set("dead", "This agent is no longer available");
+    setState(BrowserKit.stopLabel({ conn: "no agent", label: "agent not found" }), "s-exited");
+    setInfo("", false);
+  };
+  const stopPresence = () => { if (presenceTimer !== null) { clearInterval(presenceTimer); presenceTimer = null; } };
+  const watchPresence = (sock) => {
+    stopPresence();
+    const g = gen;
+    presenceTimer = setInterval(() => {
+      lookup(agentId).then((agent) => {
+        if (!agent || !agent.missing || g !== gen || !active || ws !== sock) return; // a failed lookup is unknown: keep watching
+        stopPresence();
+        ws = null;
+        try { sock.close(); } catch (e) {}
+        markGone();
+      });
+    }, PRESENCE_MS);
+  };
 
   const afterClose = () => {
     if (!active) return;
@@ -266,11 +289,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
     lookup(agentId).then((agent) => {
       if (g !== gen || !active || ws) return;
       if (agent && agent.missing) {
-        // The agent was removed: keep the last frame under a danger overlay and stop (no retry timer is armed).
-        gone = true;
-        ov.set("dead", "This agent is no longer available");
-        setState(BrowserKit.stopLabel({ conn: "no agent", label: "agent not found" }), "s-exited");
-        setInfo("", false);
+        markGone();
         return;
       }
       const d = TermKit.decide({ attempt, agent, frozen: shown, rand: Math.random() });
@@ -312,6 +331,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
       if (ws !== sock) return;
       openedAt = Date.now();
       shown = true;
+      watchPresence(sock);
     };
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
@@ -332,7 +352,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
       if (ev.data) onFrame(ev.data);
     };
     sock.onerror = () => {};
-    sock.onclose = () => { if (ws !== sock) return; ws = null; afterClose(); };
+    sock.onclose = () => { if (ws !== sock) return; ws = null; stopPresence(); afterClose(); };
   };
 
   const unmount = () => {
@@ -341,6 +361,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
     gen++;
     epoch++;
     clearRetry();
+    stopPresence();
     gate.reset();
     closeBitmap();
     ov.destroy();
