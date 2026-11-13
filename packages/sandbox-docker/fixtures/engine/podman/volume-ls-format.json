@@ -1,0 +1,16 @@
+{
+  "engine": "podman",
+  "provenance": "captured",
+  "source": "captured on rootless Podman 5.7.0 (runc, netavark, pasta): volume ls --filter label=... --format over a volume labelled pomtree.sandbox=sb-probe, store_id=st-probe, daemon_epoch=7. Docker's {{.Label \"k\"}} template is refused (exit 125, VolumeListReport has no Label method); {{index .Labels \"k\"}} works. The same .Label template works under ps -a. With a filter that matches nothing the .Label template exits 0 with empty output, because Go templates run per row",
+  "keys": ["pomtree.sandbox", "store_id", "daemon_epoch"],
+  "accepted": {
+    "format": "{{index .Labels \"pomtree.sandbox\"}}\t{{index .Labels \"store_id\"}}\t{{index .Labels \"daemon_epoch\"}}",
+    "exitCode": 0,
+    "stdout": "sb-probe\tst-probe\t7"
+  },
+  "rejected": {
+    "format": "{{.Label \"pomtree.sandbox\"}}\t{{.Label \"store_id\"}}\t{{.Label \"daemon_epoch\"}}",
+    "exitCode": 125,
+    "stderr": "Error: template: ls:1:13: executing \"ls\" at <.Label>: can't evaluate field Label in type *types.VolumeListReport"
+  }
+}

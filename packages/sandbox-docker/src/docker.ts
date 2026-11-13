@@ -46,7 +46,7 @@ import { LOOPBACK_BRIDGE_MAIN, LOOPBACK_PORTS, NODE_BIN } from "./container-cont
 import { openExecStream } from "./exec-stream.ts";
 import { buildAttachRequest, buildResizeRequest, createTerminalSession, engineCall, engineSocketPath, realEngineApi, type EngineApi } from "./terminal.ts";
 import { cliSocketEnv, DOCKER_PROFILE, type EngineProfile } from "./engine-profile.ts";
-import { findLegacyContainers, isEngineError, legacyContainerRefusal, normalizeImageId } from "./engine-dialect.ts";
+import { findLegacyContainers, isEngineError, legacyContainerRefusal, normalizeImageId, volumeLabelFormat } from "./engine-dialect.ts";
 import { collectResultWork } from "./result-work.ts";
 import {
   defaultDenyEgress,
@@ -1104,10 +1104,11 @@ export class DockerSandbox implements Sandbox {
     const owner = egressOwner(passed);
     const live = new Set((await this.scan()).map((s) => s.id));
     const ids = new Set<SandboxId>();
-    const fmt = `{{.Label "${ID_LABEL}"}}\t{{.Label "${OWNER_STORE_LABEL}"}}\t{{.Label "${OWNER_EPOCH_LABEL}"}}`;
+    const keys = [ID_LABEL, OWNER_STORE_LABEL, OWNER_EPOCH_LABEL];
+    const fmt = keys.map((k) => `{{.Label "${k}"}}`).join("\t");
     for (const args of [
       ["ps", "-a", "--filter", `label=${EGRESS_LABEL}=1`, "--format", fmt],
-      ["volume", "ls", "--filter", `label=${EGRESS_LABEL}=1`, "--format", fmt],
+      ["volume", "ls", "--filter", `label=${EGRESS_LABEL}=1`, "--format", volumeLabelFormat(this.profile, keys)],
     ]) {
       const out = await this.exec(args);
       for (const line of out.split("\n")) {

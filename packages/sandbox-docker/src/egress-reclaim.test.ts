@@ -7,6 +7,7 @@ import type { SandboxOwner } from "@pomtree/core";
 import type { Exec } from "./docker.ts";
 import { egressProxyName, egressSocketVolumeName } from "./egress.ts";
 import { NetSandbox } from "./test-network.ts";
+import { PODMAN_PROFILE } from "./engine-profile.ts";
 import { stubMounts, wsMount } from "./test-mounts.ts";
 
 const egressSpec = { host: "host-test", generation: 0, agent: "ag", image: "i", env: {}, mounts: [wsMount("/w")], egress: { allow: [{ host: "pypi.org" }] } };
@@ -365,4 +366,40 @@ test("negative: a worker removal refused for any other reason (device busy) stil
   engine.refuse(["rm", "-f", worker(h.id)], `driver "overlay2" failed to remove root filesystem: device or resource busy`);
   await assert.rejects(b.kill(h.id, `test-kill:${h.id}`), /device or resource busy/);
   await assert.rejects(b.stop(h.id, 1000, `test-stop:${h.id}`), /device or resource busy/);
+});
+
+// Podman's `volume ls` rows have no .Label method (captured on Podman 5.7.0, fixtures/engine/podman/volume-ls-format.json): the
+// template fails when a volume matches and only the .Labels map renders. `ps -a` accepts .Label on both engines.
+function podmanVolumeLs(engine: ReturnType<typeof fakeEngine>): Exec {
+  return async (args, env) => {
+    if (args[0] !== "volume" || args[1] !== "ls") return engine.exec(args, env);
+    const fmt = args[args.indexOf("--format") + 1]!;
+    const filters = args.flatMap((a, i) => (a === "--filter" ? [args[i + 1]!.slice(6)] : []));
+    const rows = [...engine.volumes.values()].filter((l) => filters.every((f) => l[f.split("=")[0]!] === f.split("=").slice(1).join("=")));
+    if (rows.length && fmt.includes("{{.Label"))
+      throw new Error(
+        'podman volume failed: Error: template: ls:1:13: executing "ls" at <.Label>: can\'t evaluate field Label in type *types.VolumeListReport',
+      );
+    return rows.map((l) => fmt.replace(/\{\{index \.Labels "([^"]+)"\}\}/g, (_, k: string) => l[k] ?? "")).join("\n");
+  };
+}
+
+test("egress reclaim: on Podman the volume listing uses the .Labels template and still reclaims our orphan", async () => {
+  const engine = fakeEngine();
+  strand(engine, "sb-orphan", ownerLabels("s-A", "50"));
+  strand(engine, "sb-foreign", ownerLabels("s-B", "50"));
+  const podman = new NetSandbox({ mounts: stubMounts(), exec: podmanVolumeLs(engine), profile: PODMAN_PROFILE });
+  assert.deepEqual(await podman.reclaim(own("s-A", "100")), ["sb-orphan"]);
+});
+
+test("egress reclaim: on Docker the volume listing keeps the .Label template", async () => {
+  const engine = fakeEngine();
+  strand(engine, "sb-orphan", ownerLabels("s-A", "50"));
+  const seen: string[] = [];
+  const exec: Exec = async (args, env) => {
+    if (args[0] === "volume" && args[1] === "ls") seen.push(args[args.indexOf("--format") + 1]!);
+    return engine.exec(args, env);
+  };
+  assert.deepEqual(await new NetSandbox({ mounts: stubMounts(), exec }).reclaim(own("s-A", "100")), ["sb-orphan"]);
+  assert.deepEqual(seen, ['{{.Label "pomtree.sandbox"}}\t{{.Label "store_id"}}\t{{.Label "daemon_epoch"}}']);
 });
