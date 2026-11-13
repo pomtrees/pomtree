@@ -5,132 +5,16 @@ import { createContext, runInContext } from "node:vm";
 import { MENU_KIT_JS, type MenuKitApi, type ViewDeclaration, type WindowModel } from "./menuModel.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { BROWSER_DECLARATION, INBOX_DECLARATION, TERMINAL_DECLARATION } from "./viewMenus.ts";
+import { FakeDocument, type Node_, type NodeList } from "./launcherFakeDom.ts";
 import { type Chrome, type ChromeKitApi, WINDOW_CHROME_JS } from "./windowChrome.ts";
 
-// TODO(ui-fake-dom-duplication): layoutShell.test.ts and this file each define a fake DOM (Node_ and helpers) that duplicates Node_ and FakeDocument in launcherFakeDom.ts; the three differ in parentNode, style, rect and the document back-reference. All work. Trigger: the next change to any of the fakes, or another shell test needing one.
 const kit = runInContext(
   `(() => { ${MENU_KIT_JS}; ${MENU_NAV_JS}; ${WINDOW_CHROME_JS}; return { MenuKit, ChromeKit }; })()`,
   createContext({ globalThis: {}, JSON, Object, Array, Set, Map, String, Error, WeakSet, Number, Date, console }),
 ) as { MenuKit: MenuKitApi; ChromeKit: ChromeKitApi };
 
-// ---- A small fake DOM: elements, attributes, bubbling events, focus, document listeners. ----
-interface Ev {
-  type: string;
-  key?: string;
-  altKey?: boolean;
-  detail?: number;
-  target?: FakeEl;
-  defaultPrevented?: boolean;
-  preventDefault?: () => void;
-}
-type Listener = (ev: Ev) => void;
-type Els = [FakeEl, FakeEl, FakeEl, FakeEl, ...FakeEl[]];
-class FakeEl {
-  tagName: string;
-  className = "";
-  hidden = false;
-  disabled = false;
-  value = "";
-  parentNode: FakeEl | null = null;
-  children: Els = [] as unknown as Els;
-  text = "";
-  attrs = new Map<string, string>();
-  listeners = new Map<string, Listener[]>();
-  doc: FakeDoc | null;
-  constructor(tag: string, doc: FakeDoc | null) {
-    this.tagName = tag;
-    this.doc = doc;
-  }
-  // Short descriptor so a failing assertion never inspects the parent/doc/listener graph (it once exhausted memory).
-  [inspect.custom](): string {
-    return `<FakeEl ${this.tagName} id=${this.attrs.get("id") ?? ""} class="${this.className}" children=${this.children.length}>`.slice(0, 119);
-  }
-  get textContent(): string {
-    return this.children.length ? this.children.map((c) => c.textContent).join("") : this.text;
-  }
-  set textContent(v: string) {
-    for (const c of this.children) c.parentNode = null;
-    this.children = [] as unknown as Els;
-    this.text = String(v);
-  }
-  appendChild(c: FakeEl) {
-    c.remove();
-    c.parentNode = this;
-    this.children.push(c);
-    return c;
-  }
-  replaceChildren(...cs: FakeEl[]) {
-    this.textContent = "";
-    for (const c of cs) this.appendChild(c);
-  }
-  remove() {
-    if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((c) => c !== this) as Els;
-    this.parentNode = null;
-  }
-  setAttribute(k: string, v: string) {
-    this.attrs.set(k, String(v));
-  }
-  getAttribute(k: string) {
-    return this.attrs.get(k) ?? null;
-  }
-  addEventListener(t: string, l: Listener) {
-    this.listeners.set(t, [...(this.listeners.get(t) ?? []), l]);
-  }
-  removeEventListener(t: string, l: Listener) {
-    this.listeners.set(
-      t,
-      (this.listeners.get(t) ?? []).filter((x) => x !== l),
-    );
-  }
-  listenerCount(t: string) {
-    return (this.listeners.get(t) ?? []).length;
-  }
-  focus() {
-    if (this.doc) this.doc.activeElement = this;
-    this.fire({ type: "focus" }, false);
-  }
-  private fire(ev: Ev, bubble: boolean) {
-    ev.target ??= this;
-    for (let n: FakeEl | null = this; n; n = bubble ? n.parentNode : null) for (const l of [...(n.listeners.get(ev.type) ?? [])]) l(ev);
-  }
-  // The path is fixed at dispatch time, like a browser, so a handler that re-renders does not cut the event short.
-  dispatch(ev: Ev, bubble = true): Ev {
-    ev.defaultPrevented = false;
-    ev.preventDefault = () => {
-      ev.defaultPrevented = true;
-    };
-    ev.target = this;
-    const path: FakeEl[] = [];
-    for (let n: FakeEl | null = this; n; n = bubble ? n.parentNode : null) path.push(n);
-    for (const n of path) for (const l of [...(n.listeners.get(ev.type) ?? [])]) l(ev);
-    return ev;
-  }
-  all(): FakeEl[] {
-    return [this, ...this.children.flatMap((c) => c.all())];
-  }
-  byClass(cls: string): Els {
-    return this.all().filter((e) => e.className.split(" ").includes(cls)) as Els;
-  }
-  get role() {
-    return this.getAttribute("role");
-  }
-}
-class FakeDoc extends FakeEl {
-  activeElement: FakeEl | null = null;
-  body: FakeEl;
-  constructor() {
-    super("#document", null);
-    this.doc = this;
-    this.body = this.createElement("body");
-    this.appendChild(this.body);
-  }
-  createElement(tag: string) {
-    return new FakeEl(tag, this);
-  }
-}
-
-test("FakeEl inspects as a short descriptor, not its parent/document/listener graph", () => {
-  const doc = new FakeDoc();
+test("Node_ inspects as a short descriptor, not its parent/document/listener graph", () => {
+  const doc = new FakeDocument();
   const parent = doc.createElement("div");
   doc.body.appendChild(parent);
   const el = doc.createElement("button");
@@ -156,24 +40,24 @@ function setup(
   model.onCommand((c, a) => {
     calls.push([c, a]);
   });
-  const doc = new FakeDoc();
+  const doc = new FakeDocument();
   const chrome = kit.ChromeKit.createChrome(model, { document: doc as unknown as Document, ...opts }) as unknown as Chrome;
-  const controls = chrome.controls as unknown as FakeEl;
-  const menus = chrome.menus as unknown as FakeEl;
-  const overflow = chrome.overflow as unknown as FakeEl;
-  const footer = chrome.footer as unknown as FakeEl;
+  const controls = chrome.controls as unknown as Node_;
+  const menus = chrome.menus as unknown as Node_;
+  const overflow = chrome.overflow as unknown as Node_;
+  const footer = chrome.footer as unknown as Node_;
   doc.body.appendChild(controls);
   doc.body.appendChild(menus);
   doc.body.appendChild(overflow);
   doc.body.appendChild(footer);
   const outside = doc.createElement("div");
   doc.body.appendChild(outside);
-  const btn = (title: string) => menus.byClass("tile-btn").find((b) => b.textContent === title) as FakeEl;
-  const panelOf = (b: FakeEl) => b.parentNode?.children[1] as FakeEl;
-  const items = (panel: FakeEl) => panel.children.filter((c) => (c.role ?? "").startsWith("menuitem")) as Els;
-  const labelOf = (it: FakeEl) => it.children[0].textContent;
-  const key = (el: FakeEl, k: string) => el.dispatch({ type: "keydown", key: k });
-  const click = (el: FakeEl) => el.dispatch({ type: "click", detail: 1 });
+  const btn = (title: string) => menus.byClass("tile-btn").find((b) => b.textContent === title) as Node_;
+  const panelOf = (b: Node_) => b.parentNode?.children[1] as Node_;
+  const items = (panel: Node_) => panel.children.filter((c) => (c.role ?? "").startsWith("menuitem")) as NodeList;
+  const labelOf = (it: Node_) => it.children[0].textContent;
+  const key = (el: Node_, k: string) => el.emit({ type: "keydown", key: k });
+  const click = (el: Node_) => el.emit({ type: "click", detail: 1 });
   const ovBtn = () => overflow.byClass("tile-btn")[0];
   return { model, calls, doc, chrome, controls, menus, overflow, footer, outside, btn, panelOf, items, labelOf, key, click, ovBtn };
 }
@@ -182,7 +66,7 @@ const openMenu = (s: ReturnType<typeof setup>, title: string) => {
   return s.panelOf(s.btn(title));
 };
 // Identity check that never prints its operands: assert.equal on a failure inspects both sides with custom inspection off, and a
-// FakeEl links to its document, parent and listeners, so printing one exhausted memory (the cause of the earlier killed run).
+// Node_ links to its document, parent and listeners, so printing one exhausted memory (the cause of the earlier killed run).
 const same = (a: unknown, b: unknown, msg?: string) => assert.ok(a === b, msg ?? "expected the same element");
 const withReconnect = (): ViewDeclaration => TERMINAL_DECLARATION;
 
@@ -298,7 +182,7 @@ test("a disabled item is visible, aria-disabled and not activatable", () => {
   const s = setup(TERMINAL_DECLARATION);
   s.model.setState("terminal.font-larger", { enabled: false });
   const panel = openMenu(s, "View");
-  const larger = s.items(panel).find((i) => s.labelOf(i) === "Larger") as FakeEl;
+  const larger = s.items(panel).find((i) => s.labelOf(i) === "Larger") as Node_;
   assert.equal(larger.getAttribute("aria-disabled"), "true");
   const n = s.calls.length;
   s.click(larger);
@@ -308,7 +192,7 @@ test("a disabled item is visible, aria-disabled and not activatable", () => {
   // keyboard skips it: Smaller -> (Larger disabled) -> Reset size
   const items = s.items(s.panelOf(s.btn("View")));
   s.key(items[0], "ArrowDown");
-  assert.equal(s.labelOf(s.doc.activeElement as FakeEl), "Reset size");
+  assert.equal(s.labelOf(s.doc.activeElement as Node_), "Reset size");
 });
 
 test("keyboard in the bar: Down opens and focuses first, Up opens and focuses last, Right/Left/Home/End move", () => {
@@ -342,30 +226,30 @@ test("keyboard in a menu: arrows wrap, Home/End, typeahead, Left/Right open the 
   const s = setup(TERMINAL_DECLARATION, { now: () => t });
   const panel = openMenu(s, "Trace");
   const items = () => s.items(s.panelOf(s.btn("Trace")));
-  const active = () => s.labelOf(s.doc.activeElement as FakeEl);
+  const active = () => s.labelOf(s.doc.activeElement as Node_);
   assert.equal(active(), "Copy trace");
   s.key(items()[0], "ArrowUp");
   assert.equal(active(), "Download .md", "wraps to the last item");
-  s.key(s.doc.activeElement as FakeEl, "ArrowDown");
+  s.key(s.doc.activeElement as Node_, "ArrowDown");
   assert.equal(active(), "Copy trace");
-  s.key(s.doc.activeElement as FakeEl, "End");
+  s.key(s.doc.activeElement as Node_, "End");
   assert.equal(active(), "Download .md");
-  s.key(s.doc.activeElement as FakeEl, "Home");
+  s.key(s.doc.activeElement as Node_, "Home");
   assert.equal(active(), "Copy trace");
-  s.key(s.doc.activeElement as FakeEl, "i");
+  s.key(s.doc.activeElement as Node_, "i");
   assert.equal(active(), "Include children (condensed)");
   t = 5000;
-  s.key(s.doc.activeElement as FakeEl, "i");
+  s.key(s.doc.activeElement as Node_, "i");
   assert.match(active(), /^Include raw/, "after the buffer times out the letter cycles to the next match");
   t = 9000;
-  s.key(s.doc.activeElement as FakeEl, "d");
+  s.key(s.doc.activeElement as Node_, "d");
   assert.equal(active(), "Download .md");
   assert.equal(panel.byClass("menu-sep").length > 0, true);
-  s.key(s.doc.activeElement as FakeEl, "ArrowRight");
+  s.key(s.doc.activeElement as Node_, "ArrowRight");
   assert.equal(s.panelOf(s.btn("Trace")).hidden, true);
   assert.equal(s.panelOf(s.btn("Help")).hidden, false, "Right opens the next menu");
   same(s.doc.activeElement, s.items(s.panelOf(s.btn("Help")))[0]);
-  s.key(s.doc.activeElement as FakeEl, "ArrowLeft");
+  s.key(s.doc.activeElement as Node_, "ArrowLeft");
   assert.equal(s.panelOf(s.btn("Trace")).hidden, false);
   assert.equal(s.panelOf(s.btn("Help")).hidden, true);
 });
@@ -373,12 +257,12 @@ test("keyboard in a menu: arrows wrap, Home/End, typeahead, Left/Right open the 
 test("Escape closes and returns focus to the invoking button; Tab closes without cancelling the key", () => {
   const s = setup(TERMINAL_DECLARATION);
   openMenu(s, "Trace");
-  const e = s.key(s.doc.activeElement as FakeEl, "Escape");
+  const e = s.key(s.doc.activeElement as Node_, "Escape");
   assert.equal(e.defaultPrevented, true);
   assert.equal(s.panelOf(s.btn("Trace")).hidden, true);
   same(s.doc.activeElement, s.btn("Trace"));
   openMenu(s, "Trace");
-  const tab = s.key(s.doc.activeElement as FakeEl, "Tab");
+  const tab = s.key(s.doc.activeElement as Node_, "Tab");
   assert.equal(tab.defaultPrevented, false, "the browser still moves focus on");
   assert.equal(s.panelOf(s.btn("Trace")).hidden, true);
   same(s.doc.activeElement, s.btn("Trace"));
@@ -409,10 +293,10 @@ test("a toggle click keeps the menu open even though the clicked row is re-rende
 
 test("hovering another menu button while one is open switches menus; not when none is open", () => {
   const s = setup(TERMINAL_DECLARATION);
-  s.btn("Trace").dispatch({ type: "mouseenter" }, false);
+  s.btn("Trace").emit({ type: "mouseenter" }, false);
   assert.equal(s.panelOf(s.btn("Trace")).hidden, true);
   s.click(s.btn("View"));
-  s.btn("Trace").dispatch({ type: "mouseenter" }, false);
+  s.btn("Trace").emit({ type: "mouseenter" }, false);
   assert.equal(s.panelOf(s.btn("View")).hidden, true);
   assert.equal(s.panelOf(s.btn("Trace")).hidden, false);
 });
@@ -420,12 +304,12 @@ test("hovering another menu button while one is open switches menus; not when no
 test("open menu and focus survive a re-render while the command still exists", () => {
   const s = setup(TERMINAL_DECLARATION);
   openMenu(s, "Trace");
-  s.key(s.doc.activeElement as FakeEl, "ArrowDown");
-  const before = s.labelOf(s.doc.activeElement as FakeEl);
+  s.key(s.doc.activeElement as Node_, "ArrowDown");
+  const before = s.labelOf(s.doc.activeElement as Node_);
   s.model.setStatus("state", { text: "busy" });
   s.model.setState("terminal.trace-short", { enabled: true });
   assert.equal(s.panelOf(s.btn("Trace")).hidden, false);
-  assert.equal(s.labelOf(s.doc.activeElement as FakeEl), before);
+  assert.equal(s.labelOf(s.doc.activeElement as Node_), before);
   s.model.setState("terminal.reconnect", { visible: true });
   assert.equal(s.panelOf(s.btn("Trace")).hidden, false, "adding a menu does not close the open one");
 });
@@ -448,7 +332,7 @@ test("overflow button opens its panel with the same keys; Left/Right do nothing 
   const panel = s.panelOf(s.ovBtn());
   assert.equal(panel.hidden, false);
   assert.equal(s.ovBtn().getAttribute("aria-expanded"), "true");
-  const first = s.doc.activeElement as FakeEl;
+  const first = s.doc.activeElement as Node_;
   assert.equal(first.role, "menuitem");
   s.key(first, "ArrowRight");
   assert.equal(panel.hidden, false);
@@ -476,7 +360,7 @@ test("status footer: hidden while no slot has text, shown with text and tone, hi
   const b = setup(BROWSER_DECLARATION);
   assert.equal(b.footer.hidden, false, "declared text shows at once");
   b.model.setStatus("url", { text: "https://example.test/" });
-  const url = b.footer.byClass("stat").find((e) => e.textContent === "https://example.test/") as FakeEl;
+  const url = b.footer.byClass("stat").find((e) => e.textContent === "https://example.test/") as Node_;
   assert.ok(url.className.includes("mono"));
   assert.equal(url.getAttribute("data-tone"), null, "no tone, no dot");
 });
@@ -527,7 +411,7 @@ test("a handler that throws leaves the menu usable and tells the operator", () =
   const panel = openMenu(s, "View");
   s.click(s.items(panel)[0]);
   assert.equal(s.footer.hidden, false);
-  const alert = s.footer.byClass("stat").find((e) => e.role === "alert") as FakeEl;
+  const alert = s.footer.byClass("stat").find((e) => e.role === "alert") as Node_;
   assert.match(alert.textContent, /kaboom/);
   assert.equal(s.items(s.panelOf(s.btn("View")))[0].getAttribute("aria-checked"), "true", "toggle state restored");
   assert.equal(s.panelOf(s.btn("View")).hidden, false);
@@ -542,7 +426,7 @@ test("a handler that throws leaves the menu usable and tells the operator", () =
 });
 
 test("unusual input fails loudly with cause and action", () => {
-  const doc = new FakeDoc() as unknown as Document;
+  const doc = new FakeDocument() as unknown as Document;
   assert.throws(() => kit.ChromeKit.createChrome({} as never, { document: doc }), /must be a MenuKit window model.*pass the model/);
   assert.throws(() => kit.ChromeKit.createChrome(null as never, { document: doc }), /must be a MenuKit window model/);
   const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(BROWSER_DECLARATION));
@@ -590,7 +474,7 @@ const ctlSetup = (opts: Parameters<typeof setup>[1] = {}) => {
   const input = s.controls.byClass("tile-search")[0];
   const type = (v: string) => {
     input.value = v;
-    input.dispatch({ type: "input" });
+    input.emit({ type: "input" });
   };
   return { ...s, timer, input, type };
 };
@@ -708,10 +592,10 @@ test("controls: without a timer facility an input event dispatches immediately",
   model.onCommand((c, a) => {
     calls.push([c, a]);
   });
-  const chrome = kit.ChromeKit.createChrome(model, { document: new FakeDoc() as unknown as Document }) as unknown as Chrome;
-  const input = (chrome.controls as unknown as FakeEl).byClass("tile-search")[0];
+  const chrome = kit.ChromeKit.createChrome(model, { document: new FakeDocument() as unknown as Document }) as unknown as Chrome;
+  const input = (chrome.controls as unknown as Node_).byClass("tile-search")[0];
   input.value = "x";
-  input.dispatch({ type: "input" });
+  input.emit({ type: "input" });
   assert.deepEqual(calls, [["audit.filter", "x"]]);
 });
 
@@ -730,7 +614,7 @@ test("controls: a search event after Enter with the same value does not dispatch
   const s = ctlSetup();
   s.type("abc");
   s.key(s.input, "Enter");
-  s.input.dispatch({ type: "search" });
+  s.input.emit({ type: "search" });
   assert.deepEqual(s.calls, [["audit.filter", "abc"]]);
   s.timer.tick();
   assert.equal(s.calls.length, 1, "the debounce was cancelled too");
@@ -748,7 +632,7 @@ test("controls: Escape clears and dispatches the empty string once even if a sea
   s.type("zzz");
   s.key(s.input, "Enter");
   s.key(s.input, "Escape");
-  s.input.dispatch({ type: "search" });
+  s.input.emit({ type: "search" });
   assert.deepEqual(s.calls, [
     ["audit.filter", "zzz"],
     ["audit.filter", ""],
@@ -833,7 +717,7 @@ test("controls: Left, Right wrap; Home and End jump to the ends; modified keys a
   clearBtn.focus();
   s.key(clearBtn, "Home");
   assert.equal(s.doc.activeElement, newBtn);
-  const alt = newBtn.dispatch({ type: "keydown", key: "ArrowRight", altKey: true });
+  const alt = newBtn.emit({ type: "keydown", key: "ArrowRight", altKey: true });
   assert.equal(alt.defaultPrevented, false, "Alt+Right is the browser's");
   assert.equal(s.doc.activeElement, newBtn);
 });
@@ -851,7 +735,7 @@ test("controls: a disabled or hidden control is skipped, and the stop moves off 
 
 // A stand-in for layout: the fake DOM has no getClientRects, so a test says which controls the narrow-tile CSS has hidden.
 function stubRendered(s: ReturnType<typeof ctlSetup>) {
-  const gone = new Set<FakeEl>();
+  const gone = new Set<Node_>();
   for (const e of s.controls.byClass("tile-ctl").concat(s.controls.byClass("tile-search")))
     (e as unknown as { getClientRects: () => unknown[] }).getClientRects = () => (gone.has(e) ? [] : [{}]);
   return gone;
@@ -953,7 +837,7 @@ test("controls: focus lost to a click elsewhere is forgotten, so a later resize 
   const [newBtn] = s.controls.byClass("tile-ctl");
   newBtn.focus();
   s.doc.activeElement = null; // a click on a non-focusable area
-  newBtn.dispatch({ type: "blur" }, false);
+  newBtn.emit({ type: "blur" }, false);
   gone.add(newBtn);
   ro.fire();
   assert.equal(s.doc.activeElement, null, "focus stays where the user put it");
@@ -975,7 +859,7 @@ test("controls: createChrome rejects a model without controls(), naming the fix"
   const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(BROWSER_DECLARATION)) as unknown as Record<string, unknown>;
   delete model.controls;
   assert.throws(
-    () => kit.ChromeKit.createChrome(model as never, { document: new FakeDoc() as unknown as Document }),
+    () => kit.ChromeKit.createChrome(model as never, { document: new FakeDocument() as unknown as Document }),
     /must be a MenuKit window model.*pass the model/,
   );
 });

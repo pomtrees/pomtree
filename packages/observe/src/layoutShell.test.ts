@@ -9,109 +9,11 @@ import { LAYOUT_SHELL_JS } from "./layoutShell.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { WINDOW_CHROME_JS } from "./windowChrome.ts";
 import { CHROME_CSS } from "./chromeCss.ts";
+import { Node_ } from "./launcherFakeDom.ts";
 import { UI_DRIVER_JS } from "./uiDriver.ts";
 
-// A small fake DOM: just what the window manager touches. innerHTML/outerHTML/insertAdjacentHTML throw so any use
-// of them on agent data fails a test.
-type L = (ev: any) => void;
-class Node_ {
-  tagName: string;
-  className = "";
-  hidden = false;
-  disabled = false;
-  value = "";
-  href = "";
-  download = "";
-  type = "";
-  children: Node_[] = [];
-  parent: Node_ | null = null;
-  style: Record<string, string> = {};
-  attrs = new Map<string, string>();
-  listeners = new Map<string, { fn: L; capture: boolean }[]>();
-  private text = "";
-  files: unknown[] | null = null;
-  focused = 0;
-  clicks = 0;
-  captured: number[] = [];
-  rect = { left: 0, top: 0, width: 1000, height: 600 };
-  constructor(tag: string) {
-    this.tagName = tag;
-  }
-  // Short descriptor so a failing assertion never inspects the parent/listener graph (it once exhausted memory).
-  [inspect.custom](): string {
-    return `<Node_ ${this.tagName} id=${this.attrs.get("id") ?? ""} class="${this.className}" children=${this.children.length}>`.slice(0, 119);
-  }
-  // Like a real node: parentNode is what the window manager checks (the fake used to expose only parent).
-  get parentNode(): Node_ | null {
-    return this.parent;
-  }
-  get textContent(): string {
-    return this.text + this.children.map((c) => c.textContent).join("");
-  }
-  set textContent(v: string) {
-    this.text = String(v);
-    this.children = [];
-  }
-  set innerHTML(_v: string) {
-    throw new Error("innerHTML is forbidden");
-  }
-  appendChild(c: Node_) {
-    c.remove();
-    c.parent = this;
-    this.children.push(c);
-  }
-  remove() {
-    if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
-    this.parent = null;
-  }
-  replaceChildren() {
-    for (const c of [...this.children]) c.remove();
-  }
-  setAttribute(k: string, v: string) {
-    this.attrs.set(k, v);
-  }
-  getAttribute(k: string) {
-    return this.attrs.get(k) ?? null;
-  }
-  addEventListener(t: string, fn: L, capture?: boolean) {
-    const l = this.listeners.get(t) ?? [];
-    l.push({ fn, capture: !!capture });
-    this.listeners.set(t, l);
-  }
-  fire(t: string, ev: Record<string, unknown> = {}) {
-    for (const { fn } of this.listeners.get(t) ?? []) fn({ preventDefault() {}, ...ev });
-  }
-  click() {
-    this.clicks++;
-    this.fire("click");
-  }
-  focus() {
-    this.focused++;
-  }
-  setPointerCapture(id: number) {
-    this.captured.push(id);
-  }
-  releasePointerCapture() {}
-  getBoundingClientRect() {
-    return this.rect;
-  }
-  get classList() {
-    return {
-      toggle: (name: string, force: boolean) => {
-        const set = new Set(this.className.split(" ").filter(Boolean));
-        if (force) set.add(name);
-        else set.delete(name);
-        this.className = [...set].join(" ");
-      },
-    };
-  }
-  all(): Node_[] {
-    return [this, ...this.children.flatMap((c) => c.all())];
-  }
-  byClass(c: string): Node_[] {
-    return this.all().filter((n) => n.className.split(" ").includes(c));
-  }
-}
+// Listeners of the document, window and media query in the sandbox take plain event-like objects.
+type Listener = (ev: Record<string, unknown>) => void;
 
 interface Opts {
   hash?: string;
@@ -184,12 +86,12 @@ function boot(o: Opts = {}) {
   }[] = [];
   const store = o.store ?? {};
   const writes: string[] = [];
-  const docListeners = new Map<string, { fn: L; capture: boolean }[]>();
-  const winListeners = new Map<string, L[]>();
+  const docListeners = new Map<string, { fn: Listener; capture: boolean }[]>();
+  const winListeners = new Map<string, Listener[]>();
   const rafs: (() => void)[] = [];
-  const mqListeners: L[] = [];
+  const mqListeners: Listener[] = [];
   const eventSources: { handlers: Map<string, (ev: { data?: string }) => void> }[] = [];
-  const mq = { matches: !!o.narrow, addEventListener: (_t: string, fn: L) => mqListeners.push(fn) };
+  const mq = { matches: !!o.narrow, addEventListener: (_t: string, fn: Listener) => mqListeners.push(fn) };
   // hash assignments (location.hash = ...) each add a history entry; replaceState swaps the current one in place.
   const assigns: string[] = [];
   const hist = { length: 1 };
@@ -219,7 +121,7 @@ function boot(o: Opts = {}) {
       mount(root: Node_, params: { agent?: string }, host: { setTitle(t: string): void }) {
         const rec = { root, view: "terminal", params, unmounted: false, fits: 0, host };
         mounts.push(rec);
-        host.setTitle(params.agent ? "Terminal · " + params.agent : "Terminal");
+        host.setTitle(params.agent ? `Terminal · ${params.agent}` : "Terminal");
         return { unmount: () => (rec.unmounted = true), fit: () => rec.fits++ };
       },
     });
@@ -231,7 +133,7 @@ function boot(o: Opts = {}) {
       mount(root: Node_, params: { agent?: string; report?: string }, host: { setTitle(t: string): void }) {
         const rec = { root, view: "report", params, unmounted: false, fits: 0, host };
         mounts.push(rec);
-        host.setTitle("Report · " + params.report);
+        host.setTitle(`Report · ${params.report}`);
         return { unmount: () => (rec.unmounted = true), fit: () => rec.fits++ };
       },
     });
@@ -264,13 +166,13 @@ function boot(o: Opts = {}) {
       getElementById: (i: string) => byId.get(i) ?? null,
       createElement: (t: string) => new Node_(t),
       querySelectorAll: (sel: string) => (sel === "section[data-tab]" ? sections : []),
-      addEventListener: (t: string, fn: L, capture?: boolean) => {
+      addEventListener: (t: string, fn: Listener, capture?: boolean) => {
         const l = docListeners.get(t) ?? [];
         l.push({ fn, capture: !!capture });
         docListeners.set(t, l);
       },
     },
-    addEventListener: (t: string, fn: L) => winListeners.set(t, [...(winListeners.get(t) ?? []), fn]),
+    addEventListener: (t: string, fn: Listener) => winListeners.set(t, [...(winListeners.get(t) ?? []), fn]),
     matchMedia: () => mq,
     requestAnimationFrame: (fn: () => void) => rafs.push(fn),
     EventSource: class {
@@ -526,7 +428,7 @@ test("an empty workspace tolerates every window action and the launcher api reop
   s.api.closeFocused();
   s.api.openView("terminal", "a1");
   assert.deepEqual(
-    s.api.state().leaves.map((l) => l.view + ":" + l.params.agent),
+    s.api.state().leaves.map((l) => `${l.view}:${l.params.agent}`),
     ["terminal:a1"],
   );
 });
@@ -545,7 +447,7 @@ test("a stored empty layout is restored as empty, not rejected, and an explicit 
   );
   const c = boot({ store: { "pomtree.layout": empty }, hash: "#/terminal/a1" });
   assert.deepEqual(
-    c.api.state().leaves.map((l) => l.view + ":" + l.params.agent),
+    c.api.state().leaves.map((l) => `${l.view}:${l.params.agent}`),
     ["terminal:a1"],
   );
 });
@@ -1012,9 +914,9 @@ test("the window manager never uses innerHTML, and agent text only reaches the D
   assert.ok(!LAYOUT_SHELL_JS.includes("outerHTML"));
   assert.ok(!LAYOUT_SHELL_JS.includes("insertAdjacentHTML"));
   const evil = '<img src=x onerror="alert(1)">';
-  const s = boot({ hash: "#/terminal/" + encodeURIComponent(evil) });
+  const s = boot({ hash: `#/terminal/${encodeURIComponent(evil)}` });
   assert.equal(s.mounts[0]!.params.agent, evil);
-  assert.equal(s.tiles()[0]!.byClass("tile-title")[0]!.textContent, "Terminal · " + evil);
+  assert.equal(s.tiles()[0]!.byClass("tile-title")[0]!.textContent, `Terminal · ${evil}`);
   const bad = boot({ hash: "#/x" });
   assert.ok(bad.tiles().length === 1);
 });
@@ -1400,7 +1302,7 @@ const lf = (id: string, view: string, params: object = {}) => ({ kind: "leaf", i
 test("a report hash opens a report window with agent and report; ids with slash, percent and unicode round-trip without clobbering the hash", () => {
   const agent = "a/1";
   const report = "r%x/y\u00e9 z";
-  const hash = "#/report/" + encodeURIComponent(agent) + "/" + encodeURIComponent(report);
+  const hash = `#/report/${encodeURIComponent(agent)}/${encodeURIComponent(report)}`;
   const s = boot({ hash });
   assert.equal(s.mounts.length, 1);
   assert.equal(s.mounts[0]!.view, "report");
@@ -1428,9 +1330,9 @@ test("a malformed or incomplete item hash is ignored at start-up and on hashchan
     "#/report//r1",
     "#/terminal/%E0%A4%A",
     "#/report/a1/%E0%A4%A",
-    "#/terminal/" + "a".repeat(257),
-    "#/report/a1/" + "r".repeat(257),
-    "#/report/" + "a".repeat(257) + "/r1",
+    `#/terminal/${"a".repeat(257)}`,
+    `#/report/a1/${"r".repeat(257)}`,
+    `#/report/${"a".repeat(257)}/r1`,
   ];
   for (const h of bad) {
     const start = boot({ hash: h });
@@ -1787,7 +1689,7 @@ test("api.arrange grid keeps four tiles and a narrow screen shows a notice and c
   for (const a of ["a1", "a2", "a3"]) s.api.openView("terminal", a);
   const n = s.api.state().leaves.length;
   assert.ok(n >= 3);
-  while (s.api.state().leaves.length < 4) s.api.openView("report", "a1", "r" + s.api.state().leaves.length);
+  while (s.api.state().leaves.length < 4) s.api.openView("report", "a1", `r${s.api.state().leaves.length}`);
   assert.equal(s.api.arrange("grid"), true);
   assert.equal(s.api.state().leaves.length, 4);
   assert.equal(s.tiles().length, 4);
@@ -1853,7 +1755,7 @@ const geomOf = (t: Node_) => [t.style.left, t.style.top, t.style.width, t.style.
 const geomById = (s: ReturnType<typeof boot>) =>
   s
     .tiles()
-    .map((t) => t.getAttribute("data-tile") + "=" + geomOf(t))
+    .map((t) => `${t.getAttribute("data-tile")}=${geomOf(t)}`)
     .sort();
 const idOf = (s: ReturnType<typeof boot>, view: string, agent?: string) => s.api.state().leaves.find((l) => l.view === view && l.params.agent === agent)!.id;
 const splitters = (s: ReturnType<typeof boot>) => s.root.byClass("splitter");
@@ -2028,7 +1930,7 @@ test("a hash link to a new item while maximized restores first; one to a shown w
 
 test("showView refused at the tile limit while maximized leaves the zoom as it was", () => {
   const s = boot();
-  for (let i = 1; i < 16; i++) s.api.openView("terminal", "a" + i);
+  for (let i = 1; i < 16; i++) s.api.openView("terminal", `a${i}`);
   assert.equal(s.api.state().leaves.length, 16);
   const id = idOf(s, "terminal", "a3");
   s.api.windowCommand("window.maximize", id);
