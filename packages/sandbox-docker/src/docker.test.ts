@@ -264,6 +264,7 @@ test("browser worker: page script is denied and audited at a relay authority tha
       info.SecurityOpt.some((o: string) => o.startsWith("seccomp=")),
       "browser worker runs under the custom profile",
     );
+    // TODO(podman-capdrop-audit): Podman 5.7.0 reports `--cap-drop ALL` as the explicit list of the default capabilities it dropped, so this assertion fails under Podman; current behavior: it holds on Docker only.
     assert.deepEqual(info.CapDrop, ["ALL"]);
     const disk = new DiskEgressAudit({ root: join(f.root, "audit") });
     const rows = await disk.read(h.id, 0);
@@ -330,6 +331,7 @@ test("Chromium starts under the custom seccomp profile and renders a local page 
     assert.equal(code, "0", logs.stderr);
     assert.match(logs.stdout, /<main id="s">SECCOMP-RENDERED<\/main>/, "renderer executed the page's script");
     assert.doesNotMatch(logs.stderr, /No usable sandbox/);
+    // TODO(podman-sandbox-suite-gaps): under Podman the seccomp= entry of HostConfig.SecurityOpt holds the profile path, not the profile JSON, so the JSON.parse below throws; current behavior: this test passes on Docker only.
     const info = JSON.parse((await docker(["inspect", `pomtree-${id}`], 10000)).stdout)[0].HostConfig;
     const profile = info.SecurityOpt.find((o: string) => o.startsWith("seccomp="));
     assert.ok(profile, "browser spec runs under a custom seccomp profile");

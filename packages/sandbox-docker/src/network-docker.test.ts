@@ -69,6 +69,7 @@ test("two sidecars on the shared ICC-off network: policy-path and direct outboun
     // Concurrent starts race the lazy network creation (one creates, the other sees "already exists" and validates).
     const handles = await Promise.all([start(1), start(2)]);
     for (const h of handles) ids.push(h.id);
+    // TODO(podman-sandbox-suite-gaps): under Podman this inspect fails with "network not found" for the network the sidecars were started on (cause not diagnosed); current behavior: this test passes on Docker only.
     const opts = JSON.parse(docker(["network", "inspect", "--format", "{{json .Options}}", network])) as Record<string, string>;
     assert.equal(opts[ICC_OPTION], "false");
     for (const h of handles) {
