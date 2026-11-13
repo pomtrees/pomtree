@@ -17,6 +17,7 @@ const kit = runInContext(
 interface Ev {
   type: string;
   key?: string;
+  altKey?: boolean;
   detail?: number;
   target?: FakeEl;
   defaultPrevented?: boolean;
@@ -143,7 +144,12 @@ test("FakeEl inspects as a short descriptor, not its parent/document/listener gr
 
 function setup(
   decl: ViewDeclaration,
-  opts: { now?: () => number; setTimeout?: (fn: () => void, ms: number) => unknown; clearTimeout?: (h: unknown) => void } = {},
+  opts: {
+    now?: () => number;
+    setTimeout?: (fn: () => void, ms: number) => unknown;
+    clearTimeout?: (h: unknown) => void;
+    ResizeObserver?: new (cb: () => void) => { observe(el: unknown): void; disconnect(): void };
+  } = {},
 ) {
   const model = kit.MenuKit.createWindowModel(kit.MenuKit.declareView(decl)) as WindowModel;
   const calls: Array<[string, unknown]> = [];
@@ -776,24 +782,193 @@ test("controls: the overflow button exists when only controls are declared, and 
   assert.equal(searchOnly.overflow.hidden, true, "a search alone has no menu equivalent");
 });
 
-test("controls: plain Tab order, not the menubar's roving tabindex", () => {
+test("controls: the toolbar is one Tab stop; the others are reached with arrow keys (roving tabindex)", () => {
   const s = ctlSetup();
-  for (const e of s.controls.byClass("tile-ctl").concat(s.controls.byClass("tile-search")))
-    assert.equal(e.getAttribute("tabindex"), null, "no tabindex: default Tab stop");
+  const ctls = s.controls.byClass("tile-ctl");
+  const [newBtn, clearBtn] = ctls;
+  assert.equal(newBtn.getAttribute("tabindex"), "0", "the first visible control is the stop");
+  assert.equal(s.input.getAttribute("tabindex"), "-1");
   assert.deepEqual(
     s.menus.byClass("tile-btn").map((b) => b.getAttribute("tabindex")),
     ["0"],
     "the menubar keeps its single roving stop",
   );
-  // Tab order = document order of focusable elements: controls come before the menubar and overflow in the bar.
+  // Tab order = document order of focusable elements: one toolbar stop, then the menubar and overflow in the bar.
   const order = s.doc
     .all()
     .filter((e) => e.tagName === "button" || e.tagName === "input")
     .filter((e) => e.getAttribute("tabindex") !== "-1" && !e.hidden)
     .map((e) => e.className);
-  assert.deepEqual(order, ["tile-ctl primary", "tile-search", "tile-btn", "tile-btn"]);
-  s.key(s.controls.byClass("tile-ctl")[0], "ArrowRight");
-  assert.equal(s.calls.length, 0, "arrow keys on a control do not drive the menubar");
+  assert.deepEqual(order, ["tile-ctl primary", "tile-btn", "tile-btn"]);
+  newBtn.focus();
+  const right = s.key(newBtn, "ArrowRight");
+  assert.equal(right.defaultPrevented, true);
+  assert.equal(s.doc.activeElement, s.input, "Right skips the hidden Clear button");
+  assert.equal(s.input.getAttribute("tabindex"), "0");
+  assert.equal(newBtn.getAttribute("tabindex"), "-1");
+  assert.equal(clearBtn.getAttribute("tabindex"), "-1");
+  assert.equal(s.calls.length, 0, "arrow keys on a control do not drive the menubar or run commands");
+});
+
+test("controls: Left, Right wrap; Home and End jump to the ends; modified keys are left alone", () => {
+  const s = ctlSetup();
+  s.model.setState("audit.clear", { visible: true });
+  const [newBtn, clearBtn] = s.controls.byClass("tile-ctl");
+  newBtn.focus();
+  s.key(newBtn, "ArrowRight");
+  assert.equal(s.doc.activeElement, clearBtn);
+  s.key(clearBtn, "ArrowRight");
+  assert.equal(s.doc.activeElement, s.input);
+  const inSearch = s.key(s.input, "ArrowRight");
+  assert.equal(inSearch.defaultPrevented, false, "arrow keys in the search keep moving its caret");
+  assert.equal(s.doc.activeElement, s.input);
+  clearBtn.focus();
+  s.key(clearBtn, "ArrowLeft");
+  assert.equal(s.doc.activeElement, newBtn);
+  s.key(newBtn, "ArrowLeft");
+  assert.equal(s.doc.activeElement, s.input, "Left from the first control wraps to the last");
+  newBtn.focus();
+  s.key(newBtn, "End");
+  assert.equal(s.doc.activeElement, s.input);
+  clearBtn.focus();
+  s.key(clearBtn, "Home");
+  assert.equal(s.doc.activeElement, newBtn);
+  const alt = newBtn.dispatch({ type: "keydown", key: "ArrowRight", altKey: true });
+  assert.equal(alt.defaultPrevented, false, "Alt+Right is the browser's");
+  assert.equal(s.doc.activeElement, newBtn);
+});
+
+test("controls: a disabled or hidden control is skipped, and the stop moves off a control that goes away", () => {
+  const s = ctlSetup();
+  const [newBtn] = s.controls.byClass("tile-ctl");
+  assert.equal(newBtn.getAttribute("tabindex"), "0");
+  s.model.setState("audit.new", { enabled: false });
+  assert.equal(newBtn.getAttribute("tabindex"), "-1", "a disabled control is no longer the stop");
+  assert.equal(s.input.getAttribute("tabindex"), "0", "the next eligible control takes the stop");
+  s.model.setState("audit.new", { enabled: true });
+  assert.equal(s.input.getAttribute("tabindex"), "0", "a stop stays where the user left it");
+});
+
+// A stand-in for layout: the fake DOM has no getClientRects, so a test says which controls the narrow-tile CSS has hidden.
+function stubRendered(s: ReturnType<typeof ctlSetup>) {
+  const gone = new Set<FakeEl>();
+  for (const e of s.controls.byClass("tile-ctl").concat(s.controls.byClass("tile-search")))
+    (e as unknown as { getClientRects: () => unknown[] }).getClientRects = () => (gone.has(e) ? [] : [{}]);
+  return gone;
+}
+function fakeResizeObserver() {
+  const cbs: Array<() => void> = [];
+  const observed: unknown[] = [];
+  const Ctor = class {
+    constructor(cb: () => void) {
+      cbs.push(cb);
+    }
+    observe(el: unknown) {
+      observed.push(el);
+    }
+    disconnect() {
+      cbs.length = 0;
+    }
+  };
+  return {
+    Ctor,
+    observed,
+    fire: () => {
+      for (const c of cbs) c();
+    },
+  };
+}
+
+test("controls: a button the narrow-tile CSS hides is not the tab stop; the search takes it after a resize (no keyboard trap)", () => {
+  const ro = fakeResizeObserver();
+  const s = ctlSetup({ ResizeObserver: ro.Ctor });
+  const gone = stubRendered(s);
+  const [newBtn] = s.controls.byClass("tile-ctl");
+  gone.add(newBtn); // container query: .tile-ctl { display: none }
+  ro.fire();
+  assert.equal(newBtn.getAttribute("tabindex"), "-1", "an invisible button cannot hold the only Tab stop");
+  assert.equal(s.input.getAttribute("tabindex"), "0", "the visible search is reachable");
+  gone.delete(newBtn);
+  ro.fire();
+  assert.equal(s.input.getAttribute("tabindex"), "0", "a stop stays where it is once the button is shown again");
+  assert.equal(newBtn.getAttribute("tabindex"), "-1");
+});
+
+test("controls: focus moves to the new stop when the focused control is disabled or hidden, not to the body", () => {
+  const ro = fakeResizeObserver();
+  const s = ctlSetup({ ResizeObserver: ro.Ctor });
+  const gone = stubRendered(s);
+  const [newBtn] = s.controls.byClass("tile-ctl");
+  newBtn.focus();
+  s.model.setState("audit.new", { enabled: false });
+  assert.equal(s.doc.activeElement, s.input, "a disabled focused control hands focus on");
+  s.doc.activeElement = null;
+  s.model.setState("audit.new", { enabled: true });
+  newBtn.focus();
+  gone.add(newBtn);
+  ro.fire();
+  assert.equal(s.doc.activeElement, s.input, "a focused control that is hidden hands focus on");
+  s.outside.focus();
+  gone.delete(newBtn);
+  ro.fire();
+  assert.equal(s.doc.activeElement, s.outside, "focus elsewhere is never stolen (negative control)");
+});
+
+test("controls: Left at the start of the search and Right at its end leave it for the buttons; elsewhere the text keeps its keys", () => {
+  const s = ctlSetup();
+  const [newBtn] = s.controls.byClass("tile-ctl");
+  const caret = (start: number, end: number, value = "ab") => {
+    s.input.value = value;
+    Object.assign(s.input, { selectionStart: start, selectionEnd: end });
+  };
+  s.input.focus();
+  caret(0, 0);
+  const left = s.key(s.input, "ArrowLeft");
+  assert.equal(left.defaultPrevented, true);
+  assert.equal(s.doc.activeElement, newBtn, "Left from the first caret position goes to the previous control");
+  s.input.focus();
+  caret(2, 2);
+  s.key(s.input, "ArrowRight");
+  assert.equal(s.doc.activeElement, newBtn, "Right from the end wraps to the first control");
+  for (const [k, a, b] of [
+    ["ArrowLeft", 1, 1],
+    ["ArrowRight", 1, 1],
+    ["ArrowLeft", 0, 2],
+    ["ArrowRight", 0, 2],
+    ["Home", 0, 0],
+    ["End", 2, 2],
+  ] as const) {
+    s.input.focus();
+    caret(a, b);
+    const ev = s.key(s.input, k);
+    assert.equal(ev.defaultPrevented, false, `${k} at ${a}-${b} stays in the text`);
+    assert.equal(s.doc.activeElement, s.input);
+  }
+});
+
+test("controls: focus lost to a click elsewhere is forgotten, so a later resize never pulls it back; one lost to a disabled button is kept", () => {
+  const ro = fakeResizeObserver();
+  const s = ctlSetup({ ResizeObserver: ro.Ctor });
+  const gone = stubRendered(s);
+  const [newBtn] = s.controls.byClass("tile-ctl");
+  newBtn.focus();
+  s.doc.activeElement = null; // a click on a non-focusable area
+  newBtn.dispatch({ type: "blur" }, false);
+  gone.add(newBtn);
+  ro.fire();
+  assert.equal(s.doc.activeElement, null, "focus stays where the user put it");
+  assert.equal(s.input.getAttribute("tabindex"), "0");
+});
+
+test("controls: the resize observer also watches the tile (the container-query box) once the chrome is inside it", () => {
+  const ro = fakeResizeObserver();
+  const s = ctlSetup({ ResizeObserver: ro.Ctor });
+  const tile = s.doc.createElement("div");
+  (s.controls as unknown as { closest: (sel: string) => unknown }).closest = (sel) => (sel === ".tile" ? tile : null);
+  assert.deepEqual(ro.observed, [s.controls], "before it is attached only the toolbar");
+  ro.fire();
+  ro.fire();
+  assert.deepEqual(ro.observed, [s.controls, tile], "the tile is observed once");
 });
 
 test("controls: createChrome rejects a model without controls(), naming the fix", () => {
