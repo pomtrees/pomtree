@@ -29,7 +29,9 @@ const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/;
 
 export function parseTraceparent(tp: string | undefined): { traceId: string; spanId: string } | null {
   const m = tp ? TRACEPARENT.exec(tp) : null;
-  return m ? { traceId: m[1]!, spanId: m[2]! } : null;
+  const traceId = m?.[1];
+  const spanId = m?.[2];
+  return traceId && spanId ? { traceId, spanId } : null;
 }
 
 // The context an agent's own span has. Pass it as JournalEntry.traceparent on the child's entries
@@ -164,7 +166,8 @@ export class SpanTracker {
     const emitTool = (callId: string) => {
       if (a.returnedTools.has(callId)) return;
       a.returnedTools.add(callId);
-      done.push(toolView(a, a.tools.get(callId)!));
+      const tool = a.tools.get(callId);
+      if (tool) done.push(toolView(a, tool));
     };
     const attrs = a.attrs;
     const bump = (k: string, by: number) => {
@@ -285,7 +288,8 @@ export class SpanTracker {
       for (const callId of a.heldTools) {
         if (!a.returnedTools.has(callId)) {
           a.returnedTools.add(callId);
-          out.push(toolView(a, a.tools.get(callId)!));
+          const tool = a.tools.get(callId);
+          if (tool) out.push(toolView(a, tool));
         }
       }
       a.heldTools.clear();

@@ -145,11 +145,11 @@ test("giant and pathological input is bounded and fast", () => {
   const huge = "a".repeat(5_000_000);
   const blocks = C.parse(huge);
   assert.ok((blocks as unknown as { truncated?: boolean }).truncated);
-  C.parse("**".repeat(2500) + "\n" + "[".repeat(4000) + "\n" + "*".repeat(100000));
+  C.parse(`${"**".repeat(2500)}\n${"[".repeat(4000)}\n${"*".repeat(100000)}`);
   C.parse("- x\n".repeat(50000));
   C.parse("*[a](https://x.com) ".repeat(300));
   assert.ok(Date.now() - t0 < 5000, "parse time");
-  const deep = "*".repeat(2) + "a".repeat(10) + "**";
+  const deep = `${"*".repeat(2) + "a".repeat(10)}**`;
   assert.doesNotThrow(() => C.render(doc, "*".repeat(10000) + deep));
 });
 

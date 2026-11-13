@@ -348,10 +348,10 @@ test("emitted CSS has no // comment lines and the inbox highlight rule parses as
   ]);
   const sheets: [string, string][] = [["PANE_CSS", PANE_CSS]];
   for (const m of mods) for (const [k, v] of Object.entries(m)) if (/(CSS|Css)$/.test(k) && typeof v === "string") sheets.push([k, v]);
-  assert.ok(sheets.length >= 9, "found the CSS constants: " + sheets.map((s) => s[0]).join());
+  assert.ok(sheets.length >= 9, `found the CSS constants: ${sheets.map((s) => s[0]).join()}`);
   for (const [name, css] of sheets) {
     const bad = css.split("\n").filter((l) => l.trim().startsWith("//"));
-    assert.deepEqual(bad, [], name + " has // lines, which CSS treats as part of the next selector");
+    assert.deepEqual(bad, [], `${name} has // lines, which CSS treats as part of the next selector`);
   }
   // Same rule split as paneSkeleton.test.ts parseRules: strip /* */ comments, then prelude { body }.
   const rules = [...PANE_CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
@@ -504,7 +504,7 @@ test("staleOverlay: with content, busy appears only after the grace delay and a 
 });
 
 test("overlay CSS: semi-transparent, never takes the pointer, spinner honours prefers-reduced-motion, and the helper uses no innerHTML", () => {
-  const rule = (sel: string) => new RegExp("\\n" + sel.replace(/[.[\]]/g, "\\$&") + " \\{([^}]*)\\}").exec(PANE_CSS)?.[1] ?? "";
+  const rule = (sel: string) => new RegExp(`\\n${sel.replace(/[.[\]]/g, "\\$&")} \\{([^}]*)\\}`).exec(PANE_CSS)?.[1] ?? "";
   assert.match(rule(".stale-overlay"), /pointer-events: none/);
   assert.match(rule(".stale-overlay"), /color-mix\(in srgb, var\(--surface\) 72%, transparent\)/);
   assert.match(rule(".stale-overlay"), /position: absolute/);

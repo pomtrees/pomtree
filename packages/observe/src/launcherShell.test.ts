@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { LAUNCHER_LOGIC_JS } from "./launcherModel.ts";
-import { LAYOUT_LOGIC_JS } from "./layout.ts";
-import { WINDOW_MENU_JS } from "./windowMenu.ts";
+import { LAYOUT_LOGIC_JS, type Layout, type LayoutKitApi } from "./layout.ts";
+import { WINDOW_MENU_JS, type WindowMenuKitApi } from "./windowMenu.ts";
 import { MENU_NAV_JS } from "./menuNav.ts";
 import { CONTEXT_MENU_JS } from "./contextMenu.ts";
 import { LAUNCHER_CSS, LAUNCHER_PATHS, LAUNCHER_POLL_MS, LAUNCHER_SHELL_JS } from "./launcherShell.ts";
@@ -66,11 +66,11 @@ function boot(o: Opts = {}) {
     for (const f of [...changeFns]) f();
   };
   // Real layout support: created in the sandbox below, so declared here and assigned after the kits are loaded.
-  let LK: any = null;
-  let WMK: any = null;
-  let lay: any = null;
+  let LK = null as unknown as LayoutKitApi;
+  let WMK = null as unknown as WindowMenuKitApi;
+  let lay = null as unknown as Layout;
   const sync = () => {
-    wm.leaves = plainOf(LK.leaves(lay).map((l: any) => ({ id: l.id, view: l.view, params: l.params, hidden: l.hidden === true })));
+    wm.leaves = plainOf(LK.leaves(lay).map((l) => ({ id: l.id, view: l.view, params: l.params, hidden: l.hidden === true })));
     wm.focus = lay.focus;
     wm.maximized = LK.maximized(lay);
   };
@@ -140,17 +140,17 @@ function boot(o: Opts = {}) {
   runInContext(CONTEXT_MENU_JS, ctx);
   runInContext(LAUNCHER_LOGIC_JS, ctx);
   runInContext(LAUNCHER_SHELL_JS, ctx);
-  LK = runInContext("LayoutKit", ctx);
-  WMK = runInContext("WindowMenuKit", ctx);
+  LK = runInContext("LayoutKit", ctx) as LayoutKitApi;
+  WMK = runInContext("WindowMenuKit", ctx) as WindowMenuKitApi;
   if (o.layout) {
     const params = (w: { agent?: string }) => (w.agent ? { agent: w.agent } : {});
-    lay = LK.single(o.layout[0]!.view, params(o.layout[0]!));
+    lay = LK.single(o.layout[0]!.view, params(o.layout[0]!))!;
     for (const w of o.layout.slice(1)) lay = LK.split(lay, lay.focus, "row", w.view, params(w));
-    const first = LK.leaves(lay)[0].id;
+    const first = LK.leaves(lay)[0]!.id;
     o.layout.forEach((w, i) => {
-      if (w.min) lay = LK.minimize(lay, LK.leaves(lay)[i].id);
+      if (w.min) lay = LK.minimize(lay, LK.leaves(lay)[i]!.id);
     });
-    if (!o.layout.every((w) => w.min)) lay = LK.focus(lay, LK.leaves(lay).find((l: any) => !l.hidden)?.id ?? first);
+    if (!o.layout.every((w) => w.min)) lay = LK.focus(lay, LK.leaves(lay).find((l) => !l.hidden)?.id ?? first);
     sync();
   }
   const mount = () => runInContext("createLauncherBar(wm, cfg)", ctx);
