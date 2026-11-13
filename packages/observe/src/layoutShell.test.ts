@@ -761,6 +761,32 @@ test("Export, Import and Reset: import errors are shown; a valid import replaces
   assert.equal(s.tiles().length, 1);
 });
 
+test("narrow: Import and Reset show the result on the visible single window as well as saving the desktop layout", async () => {
+  const n = boot({ narrow: true, store: { ...three().store } });
+  const flush = () => new Promise((r) => setImmediate(r));
+  const single = JSON.stringify({ version: 1, next: 2, focus: "t1", root: { kind: "leaf", id: "t1", view: "hosts", params: {} } });
+  n.api.importFile({ text: async () => single });
+  await flush();
+  assert.deepEqual(
+    n.api.state().leaves.map((l) => l.view),
+    ["hosts"],
+    "the imported layout's focused window is on screen",
+  );
+  assert.equal(stored(n.store).root.view, "hosts", "the desktop layout is saved");
+  n.api.resetLayout();
+  assert.deepEqual(
+    n.api.state().leaves.map((l) => l.view),
+    ["tree"],
+    "reset shows the default view",
+  );
+  assert.equal(stored(n.store).root.view, "tree");
+  assert.equal(n.api.state().narrow, true);
+  const w = boot({ store: { ...three().store } });
+  w.api.resetLayout();
+  assert.equal(w.api.state().narrow, false, "negative control: a wide screen is unaffected");
+  assert.equal(w.tiles().length, 1);
+});
+
 test("api.exportLayout downloads the stored layout as pomtree-layout.json", () => {
   const s = boot();
   s.api.exportLayout();
