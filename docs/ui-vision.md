@@ -90,7 +90,7 @@ The terminal-focus fix is a heuristic: only focus that follows a key or pointer 
 
 The browser view (`packages/observe/src/browserView.ts`) is served by the daemon route `GET /v1/agents/:id/browser` (`packages/pomtreed/src/browser-route.ts`). A per-agent hub (`browser-hub.ts`) shares one stream among viewers, and a relay (`cdp-relay.ts`) sends only the allowlisted methods. The daemon reaches Chromium through the sandbox `loopback` facet (`SandboxFacets.loopback` in `packages/core/src/ports.ts`), using a bridge script in the agent image (`packages/agent-image/src/loopback-bridge.ts`), so no port is published. A backend that provides no `loopback` facet refuses the browser view with a message naming the cause and the action. The Docker-gated test `packages/e2e/src/docker-browser-stream.test.ts` (skipped by `pnpm check:lite`) asserts that a real worker delivers a JPEG frame and a "live" status and that the container publishes no port and has no network.
 
-Limits of the item windows: the browser view only notices a removed agent on its next socket close, tracked by `TODO(browser-agent-gone)` in `browserView.ts`; the standalone reports page has no window manager and no in-page preview, so its names download the raw bytes, tracked by `TODO(reports-page-viewer)` in `web.ts`.
+Limits of the item windows: the standalone reports page has no window manager and no in-page preview, so its names download the raw bytes, tracked by `TODO(reports-page-viewer)` in `web.ts`.
 
 Not built either: windows that appear and rearrange with agents; a public view-type API; layout synchronization across browsers; floating windows; and per-window read-only.
 

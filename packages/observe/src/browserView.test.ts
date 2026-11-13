@@ -754,6 +754,35 @@ test("an agent that no longer exists keeps the last frame under a danger overlay
   assert.notEqual(overlay(here).kind, "dead");
 });
 
+test("a removed agent is noticed while the stream stays open: a periodic lookup shows the danger overlay and closes the socket", async () => {
+  const gone = setup({ responses: { "/v1/agents/agent-1": { status: 404, body: {} } } });
+  const ws = gone.sockets[0]!;
+  await frameShown(gone, ws);
+  const watch = gone.intervals.filter((i) => !i.cleared);
+  assert.equal(watch.length, 1, "one presence watch runs while the socket is open");
+  watch[0]!.fn();
+  await gone.flush();
+  assert.equal(overlay(gone).kind, "dead");
+  assert.equal(overlay(gone).label, "This agent is no longer available");
+  assert.equal(ws.closed, true, "the socket is closed, not left open");
+  assert.equal(
+    gone.intervals.every((i) => i.cleared),
+    true,
+    "the watch stops",
+  );
+  assert.equal(gone.timeouts.filter((x) => x.ms !== 800 && !x.cleared).length, 0, "no retry is armed");
+  assert.equal(gone.sockets.length, 1);
+  // negative control: a present agent changes nothing, and neither does a failed lookup
+  for (const responses of [{ "/v1/agents/agent-1": { body: { state: "running" } } }, { "/v1/agents/agent-1": { status: 500, body: {} } }]) {
+    const here = setup({ responses });
+    await frameShown(here, here.sockets[0]!);
+    here.intervals.filter((i) => !i.cleared)[0]!.fn();
+    await here.flush();
+    assert.notEqual(overlay(here).kind, "dead");
+    assert.equal(here.sockets[0]!.closed, false);
+  }
+});
+
 // ---- stale overlay -----------------------------------------------------------------------------------------------
 
 const overlay = (t: ReturnType<typeof setup>) => {
