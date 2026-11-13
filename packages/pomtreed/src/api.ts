@@ -218,8 +218,8 @@ export async function handle(daemon: Daemon, req: ApiRequest): Promise<ApiRespon
 async function handleRoute(daemon: Daemon, req: ApiRequest): Promise<ApiResponse> {
   try {
     const principal = req.token
-      ? verifyToken(daemon.deps.secret, req.token)
-      : req.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.cookie)
+      ? verifyToken(daemon.deps.secret, req.token, () => daemon.now())
+      : req.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.cookie, () => daemon.now())
         ? ({ scope: "operator" } as const)
         : null;
     // Extension routes dispatch first (so direct callers — tests, e2e — see them exactly as the HTTP
@@ -232,7 +232,7 @@ async function handleRoute(daemon: Daemon, req: ApiRequest): Promise<ApiResponse
       if (principal) return { status: 403, body: { error: "forbidden" } };
       return {
         status: 401,
-        body: unauthorizedBody(req.token ? tokenProblem(daemon.deps.secret, req.token) : "missing", req.token?.startsWith("ag.") === true),
+        body: unauthorizedBody(req.token ? tokenProblem(daemon.deps.secret, req.token, () => daemon.now()) : "missing", req.token?.startsWith("ag.") === true),
       };
     }
     if (ext.kind === "match") {
@@ -253,7 +253,7 @@ async function handleRoute(daemon: Daemon, req: ApiRequest): Promise<ApiResponse
       }
     }
     if (!principal) {
-      const problem = req.token ? tokenProblem(daemon.deps.secret, req.token) : "missing";
+      const problem = req.token ? tokenProblem(daemon.deps.secret, req.token, () => daemon.now()) : "missing";
       return { status: 401, body: unauthorizedBody(problem, req.token?.startsWith("ag.") === true) };
     }
     return await route(daemon, principal, req);

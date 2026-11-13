@@ -73,8 +73,9 @@ export async function authorizeUpgrade(
   const auth = req.headers.authorization;
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
   ctx.hadCredential = token !== undefined || req.headers.cookie !== undefined;
-  let principal = token ? verifyToken(daemon.deps.secret, token) : null;
-  if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie)) principal = { scope: "operator" };
+  let principal = token ? verifyToken(daemon.deps.secret, token, () => daemon.now()) : null;
+  if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie, () => daemon.now()))
+    principal = { scope: "operator" };
   ctx.principal = principal;
   if (!principal) return deny(401, "missing or invalid token");
   if (principal.scope !== "operator") return deny(403, "operator scope required");

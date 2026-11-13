@@ -348,11 +348,11 @@ async function handleRequest(
   // operator browser's inline fetches authenticate without a Bearer header.
   const auth = req.headers.authorization;
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
-  let principal = token ? verifyToken(daemon.deps.secret, token) : null;
+  let principal = token ? verifyToken(daemon.deps.secret, token, () => daemon.now()) : null;
   let viaCookie = false;
   const rc = ctxs.get(res);
   if (rc) rc.hadCredential = token !== undefined || req.headers.cookie !== undefined;
-  if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie)) {
+  if (!principal && req.headers.cookie !== undefined && verifyUiCookie(daemon.deps.secret, req.headers.cookie, () => daemon.now())) {
     principal = { scope: "operator" };
     viaCookie = true;
   }
@@ -408,12 +408,12 @@ async function handleRequest(
       >;
       if (typeof b.token === "string" && b.token) loginToken = b.token;
     }
-    const loginPrincipal = loginToken ? verifyToken(daemon.deps.secret, loginToken) : null;
+    const loginPrincipal = loginToken ? verifyToken(daemon.deps.secret, loginToken, () => daemon.now()) : null;
     if (loginPrincipal?.scope !== "operator") {
       return send(loginPrincipal ? 403 : 401, { error: loginPrincipal ? "operator scope required" : "missing or invalid token" });
     }
     const secure = (req.socket as { encrypted?: boolean }).encrypted === true || req.headers["x-forwarded-proto"] === "https";
-    const cookie = issueUiCookie(daemon.deps.secret, UI_COOKIE_TTL_MS);
+    const cookie = issueUiCookie(daemon.deps.secret, UI_COOKIE_TTL_MS, () => daemon.now());
     return send(200, { ok: true }, undefined, { "set-cookie": `${cookie}; HttpOnly; SameSite=Strict; Path=/${secure ? "; Secure" : ""}` });
   }
 

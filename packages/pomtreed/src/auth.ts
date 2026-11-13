@@ -8,9 +8,9 @@ export type Principal =
   | { scope: "ext"; name: string };
 
 // The clock expiry is judged by, in epoch ms. Every function that reads time takes one as its last parameter so tests control it; callers with
-// a daemon pass its clock (`daemon.now()`), and the default is the wall clock.
+// a daemon pass its clock (`daemon.now()`), and the default is the wall clock, for callers without a daemon clock.
 export type Now = () => number;
-const wallClock: Now = () => Number(new Date());
+const wallClock: Now = () => Date.now();
 
 const mac = (secret: string, subject: string) => createHmac("sha256", secret).update(subject).digest("hex");
 
