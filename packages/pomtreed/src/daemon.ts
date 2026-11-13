@@ -1316,9 +1316,8 @@ export class Daemon implements Driver {
       // previous recovery passes keep re-latching the store (then back off so a failing phase cannot drive a pass per probe).
       if (this.now() < this.nextRecoveryAt) return;
       this.reconciler.rearmLostWakeScan();
-      // TODO(store-probe-await): the recovery reconcile is fire-and-forget, so probeStore resolves before the pass ends and tests settle with a
-      // 15 ms sleep; current behavior: the pass runs unawaited and its failure is only logged. Await it (or return the promise) once the callers allow.
-      this.reconcile()
+      // Awaited so probeStore resolves once the pass has ended; a failed pass is only logged.
+      await this.reconcile()
         .then(() => this.noteRecoveryPass())
         .catch((e) => console.error("post-recovery reconcile failed:", e));
     } catch (e) {
