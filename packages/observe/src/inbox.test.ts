@@ -129,6 +129,8 @@ function run(
     approvals?: unknown[];
     escalations?: unknown[];
     agents?: unknown[];
+    offline?: boolean;
+    agentsStatus?: number;
   } = {},
   paths: Parameters<typeof renderInboxPane>[0] = {},
 ) {
@@ -181,12 +183,15 @@ function run(
           },
         },
     EventSource,
+    navigator: { onLine: opts.offline !== true },
     fetch: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
       fetches.push({ url, init });
       if (init?.method === "POST") {
         const r = opts.reply ?? { status: 200, body: { ok: true } };
         return Promise.resolve({ ok: r.status < 400, status: r.status, json: async () => r.body });
       }
+      if (opts.agentsStatus && url === (paths.agentsPath ?? "/v1/agents"))
+        return Promise.resolve({ ok: false, status: opts.agentsStatus, json: async () => ({}) });
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -743,6 +748,31 @@ test("inbox stream: a CONNECTING error keeps the reconnecting message and does n
   assert.equal(f.sources[0]!.closed, false);
   assert.equal(f.timeouts.length, 0);
   assert.equal(f.sources.length, 1);
+});
+
+test("inbox stream: a CONNECTING error while the browser is offline says the network is down, and onopen clears it", () => {
+  const f = run({ offline: true });
+  f.sources[0]!.readyState = 0;
+  f.sources[0]!.onerror!();
+  assert.equal(f.status().textContent, "Stream offline \u2014 reconnecting when the network returns");
+  assert.equal(f.status().className, "pane-notice err");
+  assert.equal(f.sources.length, 1, "the browser retries itself; no reopen");
+  f.sources[0]!.onopen!();
+  assert.equal(f.status().textContent, "");
+});
+
+test("inbox stream: a CLOSED source after a 401 says the sign-in expired; any other status keeps the generic cause list", async () => {
+  const expired = run({ agentsStatus: 401 });
+  expired.sources[0]!.readyState = 2;
+  expired.sources[0]!.onerror!();
+  assert.equal(STREAM_CLOSED.test(expired.status().textContent), true, "the generic message shows at once");
+  await flush();
+  assert.equal(expired.status().textContent, "Inbox stream closed: not signed in \u2014 reload the page to sign in");
+  const other = run({ agentsStatus: 503 });
+  other.sources[0]!.readyState = 2;
+  other.sources[0]!.onerror!();
+  await flush();
+  assert.equal(STREAM_CLOSED.test(other.status().textContent), true);
 });
 
 test("inbox stream: onopen clears either message and resets the backoff", () => {
