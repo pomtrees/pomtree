@@ -1,4 +1,5 @@
 import type { Sandbox, SandboxEgress, SandboxSpec } from "@pomtree/core";
+import type { EngineProfile } from "@pomtree/sandbox-docker";
 import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
 
 // Reachability of the scoped model proxy from a worker's network, checked before any spend. The live scripts bind the proxy on the
@@ -9,9 +10,12 @@ const WILDCARDS = new Set(["0.0.0.0", "::", ""]);
 
 // Why a worker with `egress` cannot reach `baseUrl` when the proxy listens on `bind` on `platform`, or undefined when the route is
 // consistent. Workers are network-none: the only route is the egress sidecar, which dials host.docker.internal (Docker Desktop:
-// host loopback; Linux: the docker bridge gateway, so loopback is unreachable) and only for an exact relay grant.
+// host loopback; Linux: the docker bridge gateway, so loopback is unreachable) and only for an exact relay grant. Rootless Podman has no
+// bridge gateway: its sidecar maps the host loopback through pasta (planAgentListen binds loopback there), so with `engine` podman a
+// loopback bind is the consistent one on Linux too.
 export function modelRouteProblem(o: {
   platform: string;
+  engine?: Pick<EngineProfile, "id">;
   bind: { host: string; port: number };
   baseUrl: string;
   egress: SandboxEgress | undefined;
@@ -24,7 +28,8 @@ export function modelRouteProblem(o: {
   if (!o.egress?.relay?.some((t) => t.host === url.hostname && (t.port ?? 443) === port))
     return `egress policy grants no relay to ${url.hostname}:${port} (policy none resolves to no relay)`;
   const loopback = o.bind.host === "127.0.0.1" || o.bind.host === "::1";
-  if (loopback && o.platform === "linux") return `proxy bound on loopback ${o.bind.host}: a Linux container's host-gateway is the bridge gateway, not loopback`;
+  if (loopback && o.platform === "linux" && o.engine?.id !== "podman")
+    return `proxy bound on loopback ${o.bind.host}: a Linux container's host-gateway is the bridge gateway, not loopback`;
   return undefined;
 }
 
@@ -34,6 +39,7 @@ export type ModelRouteProbe = (baseUrl: string) => Promise<number>;
 
 export async function assertModelProxyReachable(o: {
   platform: string;
+  engine?: Pick<EngineProfile, "id">;
   bind: { host: string; port: number };
   baseUrl: string;
   egress: SandboxEgress | undefined;

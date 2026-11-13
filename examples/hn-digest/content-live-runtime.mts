@@ -926,7 +926,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
             rmSync(work, { recursive: true, force: true });
           }
         };
-        await assertModelProxyReachable({ platform: process.platform, bind: live.bind, baseUrl, egress, probe: probe ?? dockerProbe });
+        await assertModelProxyReachable({ platform: process.platform, engine: engine.profile, bind: live.bind, baseUrl, egress, probe: probe ?? dockerProbe });
       },
       async assertBrowserImage(probe) {
         const run: BrowserImageProbe =
