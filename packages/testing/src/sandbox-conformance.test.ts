@@ -445,7 +445,7 @@ test("registration: a closed gate fails the floor unless the descriptor accepts 
 
 test("registration: the floor prints the covered and deferred counts", () => {
   const r = runRegistered("plain");
-  assert.match(r.out, /floor: 5 capabilities covered, 22 deferred/);
+  assert.match(r.out, /floor: 8 capabilities covered, 19 deferred/);
 });
 
 test("registration: a capability the probe withholds is not required to have run, so a legitimate narrowed adapter passes the floor", () => {

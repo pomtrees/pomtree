@@ -604,7 +604,7 @@ export const BREAK_MODES = {
   },
   "unsupported-capability-throws": {
     name: "unsupported-noop",
-    fails: /the undeclared facet snapshots is present and must throw SandboxCapabilityError, not no-op/,
+    fails: /the undeclared facet pause is present and must throw SandboxCapabilityError, not no-op/,
     // Collateral `declaration`: a facet present while its capability is undeclared also fails the facet-presence check.
     collateral: ["declaration"],
     // Every undeclared snapshot, pause, lease and image facet is present and does nothing instead of throwing.
@@ -793,6 +793,127 @@ export const BREAK_MODES = {
             return files.put(id, path, once(data), error === undefined ? declared : sha256(data), key);
           },
           get: (id, path, maxBytes) => files.get(id, path, maxBytes),
+        },
+      });
+    },
+  },
+  "snapshot-start-from": {
+    name: "start-returns-source",
+    collateral: ["snapshot-fork", "snapshot-memory"],
+    fails: /must create a new sandbox, not return the source/,
+    // A start from a snapshot attaches the sandbox the snapshot was taken from instead of creating one.
+    wrap: (inner) => {
+      const snaps = facetOf(inner, "snapshots", "start-returns-source");
+      const sources = new Map<string, string>();
+      return decorate(inner, {
+        snapshots: {
+          create: async (id, opts, key) => {
+            const ref = await snaps.create(id, opts, key);
+            sources.set(ref.id, id);
+            return ref;
+          },
+          start: async (from, spec) => inner.attach(sources.get(from.id) ?? from.id, spec.agent),
+          remove: (ref, key) => snaps.remove(ref, key),
+        },
+      });
+    },
+    also: [
+      {
+        name: "create-not-idempotent",
+        collateral: [],
+        fails: /a repeated create key must return the same snapshot/,
+        // The second create under one key takes a second snapshot.
+        wrap: (inner) => {
+          const snaps = facetOf(inner, "snapshots", "create-not-idempotent");
+          const seen = new Set<string>();
+          let n = 0;
+          return decorate(inner, {
+            snapshots: {
+              create: async (id, opts, key) => {
+                const repeat = seen.has(key);
+                seen.add(key);
+                return snaps.create(id, opts, repeat ? `${key}#again-${++n}` : key);
+              },
+              start: (from, spec, key) => snaps.start(from, spec, key),
+              remove: (ref, key) => snaps.remove(ref, key),
+            },
+          });
+        },
+      },
+      {
+        name: "removed-snapshot-still-starts",
+        collateral: [],
+        fails: /a removed snapshot must not start a sandbox/,
+        // remove is accepted but does nothing, so the removed snapshot can still be started from.
+        wrap: (inner) => {
+          const snaps = facetOf(inner, "snapshots", "removed-snapshot-still-starts");
+          return decorate(inner, {
+            snapshots: {
+              create: (id, opts, key) => snaps.create(id, opts, key),
+              start: (from, spec, key) => snaps.start(from, spec, key),
+              remove: async () => {},
+            },
+          });
+        },
+      },
+      {
+        name: "repeated-remove-throws",
+        collateral: [],
+        fails: /snapshot already removed/,
+        // A second remove of the same snapshot throws instead of succeeding.
+        wrap: (inner) => {
+          const snaps = facetOf(inner, "snapshots", "repeated-remove-throws");
+          const removed = new Set<string>();
+          return decorate(inner, {
+            snapshots: {
+              create: (id, opts, key) => snaps.create(id, opts, key),
+              start: (from, spec, key) => snaps.start(from, spec, key),
+              remove: async (ref, key) => {
+                if (removed.has(ref.id)) throw new Error(`snapshot already removed: ${ref.id}`);
+                removed.add(ref.id);
+                return snaps.remove(ref, key);
+              },
+            },
+          });
+        },
+      },
+    ],
+  },
+  "snapshot-fork": {
+    name: "fork-returns-same-sandbox",
+    collateral: ["snapshot-start-from"], // its start from a removed snapshot under a fresh key also returns the first fork
+    fails: /a fork must start a distinct sandbox per key/,
+    // A second start from one snapshot under another key returns the first fork.
+    wrap: (inner) => {
+      const snaps = facetOf(inner, "snapshots", "fork-returns-same-sandbox");
+      const first = new Map<string, SandboxHandle>();
+      return decorate(inner, {
+        snapshots: {
+          create: (id, opts, key) => snaps.create(id, opts, key),
+          start: async (from, spec, key) => {
+            const prior = first.get(from.id);
+            if (prior !== undefined) return prior;
+            const h = await snaps.start(from, spec, key);
+            first.set(from.id, h);
+            return h;
+          },
+          remove: (ref, key) => snaps.remove(ref, key),
+        },
+      });
+    },
+  },
+  "snapshot-memory": {
+    name: "memory-flag-dropped",
+    collateral: [],
+    fails: /a memory snapshot \(memory: true\) must report memory: true/,
+    // create ignores memory: true and takes a disk snapshot.
+    wrap: (inner) => {
+      const snaps = facetOf(inner, "snapshots", "memory-flag-dropped");
+      return decorate(inner, {
+        snapshots: {
+          create: (id, _opts, key) => snaps.create(id, { memory: false }, key),
+          start: (from, spec, key) => snaps.start(from, spec, key),
+          remove: (ref, key) => snaps.remove(ref, key),
         },
       });
     },

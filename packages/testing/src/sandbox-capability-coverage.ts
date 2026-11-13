@@ -39,11 +39,9 @@ export const SANDBOX_CAPABILITY_COVERAGE = {
   "image.digestAttest": {
     deferred: "would need a clause that checks the attested digest equals the digest the sandbox ran; resolve-digest checks stability only, not attestation",
   },
-  // TODO(conformance-snapshot): no snapshot clause exists yet (create, start-from, fork); current behavior: a backend declaring these
-  // passes the floor through this deferral and its snapshot facet is not exercised by any clause.
-  "snapshot.disk": { deferred: "no snapshot clause yet, tracked as conformance-snapshot" },
-  "snapshot.memory": { deferred: "no snapshot clause yet, tracked as conformance-snapshot" },
-  fork: { deferred: "no snapshot clause yet, tracked as conformance-snapshot" },
+  "snapshot.disk": { clauses: ["snapshot-start-from"] },
+  "snapshot.memory": { clauses: ["snapshot-memory"] },
+  fork: { clauses: ["snapshot-fork"] },
   pause: { deferred: "would need a clause that pauses a running sandbox and resumes it with its state; not written yet" },
   // list-by-owner checks the filtering result (own, unlabelled, other store, newer epoch); whether the provider filtered server side is
   // not observable through the port, so the clause is the whole observable contract of the capability.

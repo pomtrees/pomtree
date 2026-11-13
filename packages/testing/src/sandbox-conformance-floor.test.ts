@@ -28,11 +28,11 @@ test("the coverage table has a row for every core capability, covered by real cl
   }
 });
 
-test("deferral: snapshot is seeded as deferred, a reasoned deferral passes the floor and a blank one does not", () => {
-  for (const c of ["snapshot.disk", "snapshot.memory", "fork"] as const) {
-    assert.ok("deferred" in SANDBOX_CAPABILITY_COVERAGE[c], `${c} is deferred until a snapshot clause exists`);
-  }
-  assert.deepEqual(coverageTableFindings({ ...table, "snapshot.disk": { deferred: "no clause yet, tracked as conformance-snapshot" } }), []);
+test("snapshot capabilities are covered by their snapshot clauses, and a reasoned deferral passes the floor while a blank one does not", () => {
+  assert.deepEqual(SANDBOX_CAPABILITY_COVERAGE["snapshot.disk"], { clauses: ["snapshot-start-from"] });
+  assert.deepEqual(SANDBOX_CAPABILITY_COVERAGE["snapshot.memory"], { clauses: ["snapshot-memory"] });
+  assert.deepEqual(SANDBOX_CAPABILITY_COVERAGE.fork, { clauses: ["snapshot-fork"] });
+  assert.deepEqual(coverageTableFindings({ ...table, "snapshot.disk": { deferred: "no clause yet, tracked as a later change" } }), []);
   assert.notDeepEqual(coverageTableFindings({ ...table, "snapshot.disk": { deferred: "" } }), []);
 });
 
