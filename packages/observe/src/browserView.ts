@@ -145,7 +145,13 @@ const mountBrowserInstance = (root, params, hostApi) => {
   canvas.style.height = "100%";
   canvas.style.minHeight = "12rem";
   canvas.style.display = "block";
-  for (const n of [aboutEl, canvas]) wrap.appendChild(n);
+  // The canvas sits in its own holder, and the holder scrolls in actual-size mode: the pane (which carries the status
+  // overlay) never scrolls, so the overlay stays over the visible area instead of scrolling away with the content.
+  const holder = el("div");
+  holder.style.flex = "1 1 auto";
+  holder.style.minHeight = "0";
+  holder.appendChild(canvas);
+  for (const n of [aboutEl, holder]) wrap.appendChild(n);
   root.appendChild(wrap);
 
   let active = true;
@@ -159,7 +165,6 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const gate = BrowserKit.frameGate();
   // Stale-content overlay over the canvas (K.staleOverlay): the last frame stays under it (one decoded frame is
   // held, so memory is bounded), busy while (re)connecting, dead or idle once it stops. The footer keeps the state text.
-  // TODO(stale-overlay-scroll): in actual-size mode the pane scrolls and the overlay is positioned in the scrolled content, so it can scroll out of view; fit mode (default) is unaffected.
   const ov = K.staleOverlay(wrap, () => bmp !== null);
   const g2d = () => { try { return canvas.getContext("2d"); } catch (e) { return null; } };
 
@@ -201,7 +206,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
   const applyMode = (next) => {
     mode = next;
     const actual = next === "actual";
-    wrap.style.overflow = actual ? "auto" : "";
+    holder.style.overflow = actual ? "auto" : "";
     canvas.style.width = actual && bmp ? bmp.width + "px" : "100%";
     canvas.style.height = actual && bmp ? bmp.height + "px" : "100%";
     hostApi.setMenuState("browser.fit", { checked: !actual });
