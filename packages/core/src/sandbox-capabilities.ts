@@ -337,8 +337,8 @@ export function checkProbe(d: SandboxDeclaration, r: ProbeResult): void {
 // provides no facet (an adapter bug the conformance case also catches). `need` reads only the static declaration: when a probe
 // has withheld a capability, a call site must also consult the boot admission result (admitBackend), because `need` alone
 // still returns the facet.
-// TODO(sandbox-admission-probe): boot admission runs with no probe result (pomtreed's sandbox-backends.ts passes null), so withheld
-// capabilities are not seen.
+// TODO(sandbox-admission-probe): only the Podman egress probe (pomtreed's probeLocalBackend) feeds admitBackend; every other backend is
+// admitted with a null probe result, so a capability a future probe withholds is not seen until that backend ships its probe.
 export function need<C extends FacetCapability>(s: Sandbox, capability: C): NonNullable<Sandbox[(typeof FACET_OF)[C]]> {
   const backend = s.declaration.backend;
   if (s.declaration.capabilities[capability] !== true) {
