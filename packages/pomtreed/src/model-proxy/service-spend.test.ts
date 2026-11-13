@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { FakeRatesSource } from "@pomtree/testing";
 import { encodeGatewayCredential } from "../gateway.ts";
+import { settlementSink } from "../model-settlement.ts";
 import { callFacts, capOutputTokens, createPrice, createRequestEstimate, createSettleEstimate } from "./price.ts";
 import { RequestBudget } from "./request-budget.ts";
 import { ClientClosed, createModelProxyServer, MODEL_BUDGET_EXHAUSTED, ModelProxy, proxyMetaOf } from "./service.ts";
@@ -630,4 +631,75 @@ test("proxy-abort: forward with an aborted signal names the client in its messag
     error:
       "model call cancelled (aborted): the agent's client closed the connection before provider.example/v1/chat/completions answered; nothing was generated, so the reservation was released",
   });
+});
+
+// Policy: a fetch that rejects or aborts before response headers is charged nothing, but a provider may still have billed it. The
+// daemon journals its own record (never the upstream's `upstreamMessage`) naming the cause and the released reservation.
+test("pre-header failure: charged zero, reservation released, and a daemon-authored journal record names the cause and the released amount", async () => {
+  const connectRefused = (): Promise<Response> => Promise.reject(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }));
+  const timedOut = (_u: unknown, init?: RequestInit): Promise<Response> =>
+    new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(init.signal?.reason)));
+  for (const [fetch, errorClass, extra] of [
+    [connectRefused, "connect", {}],
+    [timedOut, "timeout", { upstreamTimeoutMs: 30 }],
+  ] as const) {
+    const journal: Array<{ payload: Record<string, unknown> }> = [];
+    let settled: Promise<void> = Promise.resolve();
+    const sink = settlementSink({
+      debits: { recordCall: () => true },
+      registry: { get: async (id) => ({ id, generation: 1, host: "h" }) as never },
+      journal: {
+        append: async (entry) => {
+          journal.push(entry as never);
+          return {} as never;
+        },
+      },
+      log: () => {},
+    });
+    const events0: ProxySettlement[] = [];
+    const { proxy, budget } = make(fetch, {
+      ...extra,
+      onSettlement: (e) => {
+        events0.push(e);
+        settled = settled.then(() => sink(e));
+      },
+    });
+    const r = await chat(proxy, `pre-${errorClass}`);
+    await settled;
+    assert.equal(r.status, 502, errorClass);
+    assert.equal(events0.length, 1, errorClass);
+    const e = events0[0] as ProxySettlement;
+    assert.deepEqual([e.kind, e.micros, e.errorClass], ["failed", 0, errorClass]);
+    assert.equal(e.upstreamStatus, undefined, "no headers ever arrived");
+    assert.equal(e.upstreamMessage, undefined, "daemon text is never put in the upstream's error-text field");
+    assert.ok((e.releasedMicros ?? 0) > 0, "the released reservation is carried");
+    assert.equal(remaining(budget), 1000, "nothing was charged");
+    const note = journal.map((j) => j.payload).find((p) => p.kind === "error");
+    assert.ok(note, `the journal holds a daemon-authored record, got ${JSON.stringify(journal.map((j) => j.payload.kind))}`);
+    const msg = String(note.message);
+    assert.match(msg, new RegExp(`before response headers \\(${errorClass}\\)`), "names the cause");
+    assert.ok(msg.includes(`${e.releasedMicros} micro-USD`), "names the released amount");
+    assert.match(msg, /may still have billed/, "states the policy cost");
+    assert.match(msg, /retry/, "names the action");
+  }
+});
+
+test("pre-header failure NEG: a stream cut after the headers is billed and carries no released-reservation message", async () => {
+  const { proxy, events } = make(
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(chunk("billed"));
+          },
+        }),
+        { headers: sseHeaders },
+      ),
+    { upstreamTimeoutMs: 40 },
+  );
+  await chat(proxy, "post-headers");
+  assert.equal(events.length, 1);
+  assert.ok((events[0] as ProxySettlement).micros > 0);
+  assert.equal((events[0] as ProxySettlement).upstreamMessage, undefined);
+  assert.equal((events[0] as ProxySettlement).releasedMicros, undefined, "a billed call releases nothing");
 });
