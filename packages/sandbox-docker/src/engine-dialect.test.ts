@@ -9,6 +9,7 @@ import {
   legacyContainerRefusal,
   networkInspectView,
   normalizeImageId,
+  volumeLabelFormat,
   type EngineErrorClass,
 } from "./engine-dialect.ts";
 import { DOCKER_PROFILE, engineProfile, PODMAN_PROFILE, type EngineId } from "./engine-profile.ts";
@@ -224,4 +225,30 @@ test("daemonUnreachable under Docker keeps its original single-pattern class: a 
 test("podman mountRace: a bind source path containing spaces still classifies; a different operation does not", () => {
   assert.equal(isEngineError(PODMAN_PROFILE, "mountRace", "Error: statfs /my work dir/ws: no such file or directory"), true);
   assert.equal(isEngineError(PODMAN_PROFILE, "mountRace", "Error: lstat /my work dir/ws: no such file or directory"), false);
+});
+
+interface VolumeFormatFixture {
+  provenance: string;
+  keys: string[];
+  accepted: { format: string; exitCode: number; stdout: string };
+  rejected: { format: string; exitCode: number; stderr: string };
+}
+
+test("volume ls format: Podman gets the template its engine accepted, which is not the one its engine refused", () => {
+  const f = read<VolumeFormatFixture>("podman", "volume-ls-format.json");
+  assert.equal(f.provenance, "captured");
+  assert.equal(f.accepted.exitCode, 0);
+  assert.equal(f.rejected.exitCode, 125);
+  assert.match(f.rejected.stderr, /can't evaluate field Label in type \*types\.VolumeListReport/);
+  assert.equal(volumeLabelFormat(PODMAN_PROFILE, f.keys), f.accepted.format);
+  assert.notEqual(volumeLabelFormat(PODMAN_PROFILE, f.keys), f.rejected.format);
+});
+
+test("volume ls format: Docker keeps the .Label template byte for byte (a negative control for the Podman branch)", () => {
+  const f = read<VolumeFormatFixture>("podman", "volume-ls-format.json");
+  assert.equal(volumeLabelFormat(DOCKER_PROFILE, f.keys), f.rejected.format);
+  assert.equal(
+    volumeLabelFormat(DOCKER_PROFILE, ["pomtree.sandbox", "store_id", "daemon_epoch"]),
+    '{{.Label "pomtree.sandbox"}}\t{{.Label "store_id"}}\t{{.Label "daemon_epoch"}}',
+  );
 });

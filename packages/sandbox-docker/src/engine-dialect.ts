@@ -101,6 +101,13 @@ export function normalizeImageId(profile: EngineProfile, raw: string): string | 
   return profile.id === "podman" && /^[0-9a-f]{64}$/.test(id) ? `sha256:${id}` : undefined;
 }
 
+// The `--format` template that prints the given labels of each row of `volume ls`, tab-separated. Docker's rows have a `.Label`
+// method. Podman's volume list rows (VolumeListReport) have only the `.Labels` map, so `.Label` fails there with "can't evaluate
+// field Label" (captured on Podman 5.7.0, fixtures/engine/podman/volume-ls-format.json). `ps -a` rows have `.Label` on both engines.
+export function volumeLabelFormat(profile: EngineProfile, keys: readonly string[]): string {
+  return keys.map((k) => (profile.id === "podman" ? `{{index .Labels "${k}"}}` : `{{.Label "${k}"}}`)).join("\t");
+}
+
 export interface NetworkInspectView {
   driver: unknown;
   internal: unknown;
