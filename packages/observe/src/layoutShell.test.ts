@@ -924,7 +924,7 @@ test("layoutCss: panes fill their tile with no outer padding (the tile border is
   assert.doesNotMatch(fill[1]! + section[1]!, /color|background/, "colours stay with the theme tokens");
 });
 
-test("layoutCss: a browser pane fills its tile and its canvas takes the remaining height, with no colour", () => {
+test("layoutCss: a browser pane fills its tile and its canvas holder takes the remaining height, with no colour", () => {
   const pane = /\.tile-body \.wm-mount \.pane\.pane-fill \{([^}]*)\}/.exec(LAYOUT_CSS);
   assert.ok(pane, "a .tile-body .wm-mount .pane.pane-fill rule");
   assert.match(pane[1]!, /display: flex/);
@@ -933,8 +933,11 @@ test("layoutCss: a browser pane fills its tile and its canvas takes the remainin
   assert.match(pane[1]!, /min-height: 0/);
   const canvas = /\.tile-body \.pane\.browser canvas \{([^}]*)\}/.exec(LAYOUT_CSS);
   assert.ok(canvas, "a .tile-body .pane.browser canvas rule");
-  assert.match(canvas[1]!, /flex: 1 1 auto/);
-  assert.match(canvas[1]!, /min-height: 0/);
+  const holder = /\.tile-body \.pane\.browser \.browser-holder \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(holder, "the canvas holder is the pane's flex child");
+  assert.match(holder[1]!, /flex: 1 1 auto/);
+  assert.match(holder[1]!, /min-height: 0/);
+  assert.doesNotMatch(canvas[1]!, /flex:/, "the canvas itself is not a flex child");
   assert.match(canvas[1]!, /width: 100%/);
   assert.match(canvas[1]!, /height: 100%/);
   assert.match(canvas[1]!, /object-fit: contain/, "the frame keeps its aspect ratio instead of stretching");

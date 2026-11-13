@@ -25,7 +25,8 @@ main.wm { flex: 1 1 auto; min-height: 0; width: auto; margin: 0; padding: 0; pos
 .tile-note { padding: 1rem; color: var(--muted, inherit); }
 .wm-mount { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; }
 .tile-body .wm-mount .pane.pane-fill { box-sizing: border-box; padding: 0; display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.tile-body .pane.browser canvas { flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.tile-body .pane.browser .browser-holder { flex: 1 1 auto; min-height: 0; }
+.tile-body .pane.browser canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
 .tile-body .termwrap { flex: 1 1 auto; min-height: 0; }
 .tile-body .termhost { height: 100%; min-height: 0; }
 .tile-body .pane-fill .termhost { padding: 0; border-width: 0; border-radius: 0; }
