@@ -100,6 +100,11 @@ test("publish-pin: a stale remote-tracking ref cannot smuggle unreviewed commits
   await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [] } });
   await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [env.baseCommit] } });
   await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "x", reviewed: { exclude: ["main"] } }), /full commit ids/);
+  for (const bad of [undefined, "a".repeat(40), [1]])
+    await assert.rejects(
+      env.ws.publish("a1", { commit: c, remote: "origin", target: "x", reviewed: { exclude: bad as unknown as string[] } }),
+      /exclude list of full commit ids/,
+    );
 });
 
 test("publish-pin: never forced; a non-fast-forward target is rejected and keeps its tip", { skip }, async () => {

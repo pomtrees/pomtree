@@ -997,7 +997,8 @@ export class GitWorkspace implements Workspace {
     this.checkAgent(agent);
     if (!HEX40.test(push.commit)) throw new Error("publish needs a full commit id");
     if (!validBranchName(push.target)) throw new Error(`invalid publish target ${JSON.stringify(push.target)}`);
-    if (push.reviewed && !push.reviewed.exclude.every((e) => HEX40.test(e))) throw new Error("publish review boundary must be full commit ids");
+    if (push.reviewed && !(Array.isArray(push.reviewed.exclude) && push.reviewed.exclude.every((e) => typeof e === "string" && HEX40.test(e))))
+      throw new Error("publish review boundary must be an exclude list of full commit ids; pass the publish pin's reviewed boundary unchanged");
     const url = await this.remoteUrl(push.remote);
     const holders = await this.mg(["for-each-ref", "--contains", push.commit, "--format=%(refname)", agentHeadsPrefix(agent)]).catch(() => "");
     // Also the mirror's default branch: the top-level agent publishes the main the merge engine advanced.

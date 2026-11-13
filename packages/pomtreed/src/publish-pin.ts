@@ -174,9 +174,7 @@ async function call(c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<stri
   } catch (e) {
     if (e instanceof GitRunError && e.code === "EABORT" && c.deadline.aborted) throw overDeadline();
     if (e instanceof GitRunError && e.code === "EOVERFLOW" && budgeted < maxBytes)
-      throw new PublishPinError(
-        `git output of this resolution exceeds its ${c.maxBytes}-byte budget; publish a smaller range (fetch the remote first, or push fewer commits at a time)`,
-      );
+      throw new PublishPinError(`git output of this resolution exceeds its ${c.maxBytes}-byte budget; publish a smaller range (push fewer commits at a time)`);
     throw e;
   }
   c.bytesLeft -= Buffer.byteLength(out);
