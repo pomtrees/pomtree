@@ -335,10 +335,8 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
       startTimeoutMs: 30_000,
     });
     try {
-      // TODO(podman-model-preflight): model-preflight.ts decides from the platform only, so on Linux it refuses a loopback-bound proxy even under
-      // rootless Podman, where the egress sidecar maps host loopback (planAgentListen binds loopback there). Current behavior: a Podman run of this
-      // harness and of content-live-runtime.mts's assertModelRoute fails at this check with "proxy bound on loopback"; it needs an engine option in model-preflight.ts.
       await assertModelProxyReachable({
+        engine: engine.profile,
         platform: process.platform,
         bind: live.bind,
         baseUrl: key.baseUrl,

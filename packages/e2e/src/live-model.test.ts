@@ -129,6 +129,16 @@ test("modelRouteProblem: bind address, handed address and egress grant must be m
   assert.match(modelRouteProblem({ ...ok, bind: { host: "0.0.0.0", port: 9000 } }) ?? "", /exposed/);
 });
 
+test("modelRouteProblem: rootless Podman on Linux accepts a loopback bind (its sidecar maps host loopback); Docker on Linux still refuses it", () => {
+  const linuxLoopback = { platform: "linux", bind: { host: "127.0.0.1", port: 9000 }, baseUrl: base(9000), egress: relayTo(9000) };
+  assert.equal(modelRouteProblem({ ...linuxLoopback, engine: { id: "podman" } }), undefined);
+  assert.match(modelRouteProblem({ ...linuxLoopback, engine: { id: "docker" } }) ?? "", /loopback/);
+  assert.match(modelRouteProblem(linuxLoopback) ?? "", /loopback/, "no engine means Docker");
+  // Podman relaxes only the loopback rule: a wildcard bind and a missing relay grant are still refused.
+  assert.match(modelRouteProblem({ ...linuxLoopback, engine: { id: "podman" }, bind: { host: "0.0.0.0", port: 9000 } }) ?? "", /exposed/);
+  assert.match(modelRouteProblem({ ...linuxLoopback, engine: { id: "podman" }, egress: { allow: [] } }) ?? "", /grants no relay/);
+});
+
 test("assertModelProxyReachable names the address on a failed probe and skips the probe when the relation is already broken", async () => {
   const good = { platform: "darwin", bind: { host: "127.0.0.1", port: 9000 }, baseUrl: base(9000), egress: relayTo(9000) };
   await assertModelProxyReachable({ ...good, probe: async () => 401 });
