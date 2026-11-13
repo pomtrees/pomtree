@@ -424,6 +424,8 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
       after = page[page.length - 1]!.sequence;
       if (page.length < 256) break;
     }
+    // TODO(podman-capdrop-audit): Podman 5.7.0 reports `--cap-drop ALL` as the explicit list of the default capabilities it dropped (CAP_CHOWN ... CAP_SYS_CHROOT),
+    // while browser-live-audit.ts accepts only ["ALL"] as CapDrop. Current behavior: under Podman the "capabilities dropped" audit check fails although the container dropped them all.
     let hostConfig: { NetworkMode?: string; CapDrop?: string[] | null } = {};
     try {
       hostConfig = JSON.parse(engineCli(["inspect", `pomtree-${h.id}`]))[0].HostConfig;
