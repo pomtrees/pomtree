@@ -7,7 +7,7 @@ import { renderInboxPane } from "./inbox.ts";
 import { PANE_CSS } from "./paneKit.ts";
 import { LAYOUT_CSS } from "./layoutCss.ts";
 
-// TODO(pane-skeleton-drift-scope): the checks see only server-rendered markup with scripts stripped, so a toolbar built by pane JS or a button row inside .pane-body (class other than filters) passes unnoticed.
+// TODO(pane-skeleton-drift-scope): the script checks read the pane scripts as text (strings and createElement calls); they never run them, so a toolbar assembled at runtime from computed class names or tags still passes unnoticed.
 // Conformance (drift) test for the pane skeleton in docs/ui-vision.md "Pane consistency rules (decided)".
 // Pure string checkers first; the tests below run them on every pane and on a deliberately wrong sample.
 
@@ -77,6 +77,10 @@ export function checkPaneMarkup(html: string): string[] {
     for (let j = i; j >= 0; j = els[j]!.parent) if (els[j]!.classes.includes(cls)) return true;
     return false;
   };
+  const withinTag = (i: number, tag: string): boolean => {
+    for (let j = i; j >= 0; j = els[j]!.parent) if (els[j]!.tag === tag) return true;
+    return false;
+  };
   els.forEach((e, i) => {
     const isControl = e.tag === "button" || e.tag === "select" || (e.tag === "input" && /\stype=("search"|search)/.test(e.attrs));
     if (isControl && !within(i, "pane-body") && !within(i, "pane-notice"))
@@ -86,7 +90,32 @@ export function checkPaneMarkup(html: string): string[] {
     const after = kids.slice(bi + 1).filter((k) => !k.e.classes.includes("pane-notice"));
     if (after.length) out.push(`controls-in-chrome: <${after.map((k) => k.e.tag).join(",")}> follows .pane-body (no toolbar after the body)`);
   }
+  // A row of two or more controls that sits directly in the body, not in a form or a card: a toolbar by another name.
+  const ROWLESS = new Set(["form", "li", "td", "th", "label", "fieldset", "details", "summary", "table", "tr"]);
+  els.forEach((e, i) => {
+    if (ROWLESS.has(e.tag) || !within(i, "pane-body")) return;
+    const direct = els.filter(
+      (c) => c.parent === i && (c.tag === "button" || c.tag === "select" || (c.tag === "input" && /\stype=("search"|search)/.test(c.attrs))),
+    );
+    if (direct.length >= 2 && !e.classes.includes("pane-form") && !withinTag(i, "form") && !withinTag(i, "li"))
+      out.push(
+        `toolbar-in-body: <${e.tag}${e.classes.length ? `.${e.classes.join(".")}` : ""}> holds ${direct.length} controls in a row inside .pane-body (controls belong to the window chrome)`,
+      );
+  });
   if (!bodies.some((b) => KINDS.some((k) => b.classes.includes(k)))) out.push(`body-kind: .pane-body has none of ${KINDS.join(", ")}`);
+  out.push(...checkPaneScript(html));
+  return out;
+}
+
+// The script text of the pane, read as source (never run): forbidden elements and toolbar classes the markup check cannot see.
+export function checkPaneScript(html: string): string[] {
+  const out: string[] = [];
+  const js = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]!).join("\n");
+  for (const m of js.matchAll(/createElement\(\s*["'](h[1-6]|style)["']\s*\)/g)) out.push(`script-forbidden: script creates <${m[1]}>`);
+  for (const m of js.matchAll(/(?:class=\\?["']|className\s*=\s*["'])([^"'\\]*)/g)) {
+    for (const c of m[1]!.split(/\s+/))
+      if (c === "filters" || c === "toolbar") out.push(`script-forbidden: script builds a .${c} row (controls belong to the window chrome)`);
+  }
   return out;
 }
 
@@ -203,6 +232,8 @@ const INVARIANTS: [string, string][] = [
   ["no-forbidden", "no heading, .filters, <pre>, <style>, inline spacing/size style"],
   ["controls-in-chrome", "no button/search/select outside .pane-body and .pane-notice, nothing after the body"],
   ["body-kind", ".pane-body is tablewrap, card-list or pane-form"],
+  ["toolbar-in-body", "no row of two or more controls directly in .pane-body outside a form or card"],
+  ["script-forbidden", "pane script builds no heading, <style> or .filters/.toolbar row"],
 ];
 
 for (const [pane, render] of PANES) {
@@ -214,7 +245,7 @@ for (const [pane, render] of PANES) {
 }
 
 const GOOD = `<div class="x pane"><div class="pane-notice" role="status"></div><div class="tablewrap pane-body"><table></table></div></div><script>var a = "<h3>";</script>`;
-const BAD = `<div class="x" style="max-width: 40rem"><h3>T</h3><div class="filters"></div><pre id="p"></pre><style>a{}</style><div class="pane-body"></div><div class="pane-body"></div></div>`;
+const BAD = `<div class="x" style="max-width: 40rem"><h3>T</h3><div class="filters"></div><pre id="p"></pre><style>a{}</style><div class="pane-body"><div class="bar"><button>a</button><select></select></div></div><div class="pane-body"></div><script>const h = document.createElement("h3"); d.className = "filters toolbar";</script></div>`;
 
 test("negative control: checker accepts a conforming sample (scripts ignored)", () => {
   assert.deepEqual(checkPaneMarkup(GOOD), []);
@@ -230,6 +261,32 @@ test("negative control: root-class/body-first on a pane with a toolbar row first
   const html = `<div class="tree pane"><div><a class="btn">New</a></div><div class="tablewrap pane-body"></div></div>`;
   assert.ok(violationsOf(html, "body-first").length > 0);
   assert.deepEqual(violationsOf(html, "root-class"), []);
+});
+
+test("negative control: a control row in the body and script-built headings or toolbars are flagged; forms, cards and plain script pass", () => {
+  const pane = (inner: string, js = "") => `<div class="x pane"><div class="tablewrap pane-body">${inner}</div>${js ? `<script>${js}</script>` : ""}</div>`;
+  for (const row of [`<div class="bar"><button>a</button><button>b</button></div>`, `<p><select></select><input type="search"></p>`]) {
+    assert.ok(violationsOf(pane(row), "toolbar-in-body").length > 0, row);
+  }
+  for (const ok of [
+    `<form><button>a</button><button>b</button></form>`,
+    `<ul><li><button>a</button><button>b</button></li></ul>`,
+    `<div class="one"><button>a</button></div>`,
+  ]) {
+    assert.deepEqual(violationsOf(pane(ok), "toolbar-in-body"), [], ok);
+  }
+  for (const js of [
+    `document.createElement("h2")`,
+    `document.createElement('style')`,
+    `bar.className = "filters"`,
+    `h = '<div class="toolbar">'`,
+    `n.className = "a toolbar"`,
+  ]) {
+    assert.ok(violationsOf(pane("", js), "script-forbidden").length > 0, js);
+  }
+  for (const js of [`document.createElement("tr"); li.className = "pane-empty"`, `var s = "filter"; const x = "<h3>";`]) {
+    assert.deepEqual(violationsOf(pane("", js), "script-forbidden"), [], js);
+  }
 });
 
 test("negative control: inline style on a non-root element is flagged (each property)", () => {
