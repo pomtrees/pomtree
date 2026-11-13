@@ -65,7 +65,6 @@ const ChromeKit = globalThis.ChromeKit || (globalThis.ChromeKit = (() => {
       return e;
     };
     const controlsEl = el("div", "tile-controls");
-    // TODO(pane-controls-keyboard): the scrollable .pane-notice (paneKit.ts) is not keyboard-focusable; the toolbar's own arrow-key navigation is built (roving tabindex, ctlStop).
     controlsEl.setAttribute("role", "toolbar");
     controlsEl.setAttribute("aria-label", title + " controls");
     const menusEl = el("div", "tile-menus");
