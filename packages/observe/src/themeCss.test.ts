@@ -466,7 +466,7 @@ test("the forced-colors title pairing check can fail: the previous ButtonFace/Hi
   const old = THEME_CSS.replace(
     /\.tile-title \{ background-color: transparent; color: inherit; border-color: transparent; \}/,
     ".tile-title { background-color: ButtonFace; color: ButtonText; }",
-  ).replace(/\n  \.tile-bar \{[^}]*\}/, "");
+  ).replace(/\n {2}\.tile-bar \{[^}]*\}/, "");
   assert.ok(forcedTitlePairing(old).length >= 2);
 });
 

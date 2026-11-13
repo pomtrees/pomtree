@@ -75,14 +75,20 @@ export function renderTree(rows: readonly Row[], opts: { color?: boolean; now?: 
     r.host,
     formatDeadline(r.deadlineAt, now),
   ]);
-  const widths = HEADERS.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i]!.length)));
+  const widths = HEADERS.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i]?.length ?? 0)));
   const line = (c: string[], color?: string) =>
     c
       .map((v, i) => {
-        const padded = v.padEnd(widths[i]!);
+        const padded = v.padEnd(widths[i] ?? 0);
         return color && i === 2 ? `\x1b[${color}m${padded}\x1b[0m` : padded;
       })
       .join("  ")
       .trimEnd();
-  return [line(HEADERS), ...cells.map((c, i) => line(c, opts.color ? stateColor(rows[i]!) : undefined))].join("\n");
+  return [
+    line(HEADERS),
+    ...cells.map((c, i) => {
+      const row = rows[i];
+      return line(c, opts.color && row ? stateColor(row) : undefined);
+    }),
+  ].join("\n");
 }

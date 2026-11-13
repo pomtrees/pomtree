@@ -605,7 +605,7 @@ test("params: report is accepted with its agent, refused alone, and any other ke
 });
 
 test("parse rejects a report without an agent, a bad report and an unsupported key", () => {
-  const rejects = (mut: (r: any) => void, needle: string) => {
+  const rejects = (mut: (r: Raw) => void, needle: string) => {
     const r = plain(three());
     mut(r);
     const out = K.parse(JSON.stringify(r));

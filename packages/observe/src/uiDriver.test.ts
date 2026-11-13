@@ -28,34 +28,34 @@ function boot(o: Opts = {}) {
   const calls: string[] = [];
   const j = (v: unknown) => JSON.stringify(v);
   const maybeThrow = (name: string) => {
-    if (o.throwOn === name) throw new Error("boom in " + name);
+    if (o.throwOn === name) throw new Error(`boom in ${name}`);
   };
   const api = {
     views: () => VIEWS,
-    notify: (key: string, text: string) => void calls.push("notify:" + key + ":" + text),
+    notify: (key: string, text: string) => void calls.push(`notify:${key}:${text}`),
     openView: (v: string, a?: string, r?: string) => {
-      calls.push("open:" + j([v, a ?? null, r ?? null]));
+      calls.push(`open:${j([v, a ?? null, r ?? null])}`);
       maybeThrow("openView");
     },
     focusSubject: (v: string, p: object) => {
-      calls.push("focusSubject:" + j([v, p]));
+      calls.push(`focusSubject:${j([v, p])}`);
       return o.focusSubject ?? true;
     },
     closeSubject: (v: string, p: object) => {
-      calls.push("closeSubject:" + j([v, p]));
+      calls.push(`closeSubject:${j([v, p])}`);
       return o.closeSubject ?? true;
     },
     focusDirection: (d: string) => {
-      calls.push("focusDirection:" + d);
+      calls.push(`focusDirection:${d}`);
       return o.focusDirection ?? true;
     },
     arrange: (p: string) => {
-      calls.push("arrange:" + p);
+      calls.push(`arrange:${p}`);
       return true;
     },
     resetLayout: () => void calls.push("reset"),
     leafOf: (v: string, p: object) => {
-      calls.push("leafOf:" + j([v, p]));
+      calls.push(`leafOf:${j([v, p])}`);
       return o.leafOf === undefined ? "l1" : o.leafOf;
     },
     focusedLeaf: () => {
@@ -63,7 +63,7 @@ function boot(o: Opts = {}) {
       return o.focused === undefined ? "f1" : o.focused;
     },
     windowCommand: (c: string, leaf: string | null) => {
-      calls.push("windowCommand:" + j([c, leaf]));
+      calls.push(`windowCommand:${j([c, leaf])}`);
       return o.windowCommand ?? true;
     },
     dismiss: (key: string) => void calls.push(`dismiss:${key}`),
@@ -396,7 +396,12 @@ test("a probe that cannot reach the daemon says so; a retrying stream never prob
   const r = await closed(new Error("net"));
   assert.match(r.notices[0]!, /The daemon could not be reached/);
   let probes = 0;
-  const s = boot({ fetch: () => (probes++, Promise.resolve({ status: 200 })) });
+  const s = boot({
+    fetch: () => {
+      probes++;
+      return Promise.resolve({ status: 200 });
+    },
+  });
   s.sources[0]!.readyState = 0;
   s.sources[0]!.fire("error");
   await settle();

@@ -64,8 +64,8 @@ function boot(o: Opts = {}) {
   const html = renderShell({ tabs: tabIds.map((id) => ({ id, title: id.toUpperCase(), render: () => "" })) });
   // the real ChromeKit (windowChrome.ts) is replaced by a fake in the sandbox so these tests do not depend on it
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!.replace(WINDOW_CHROME_JS, ""));
-  const chromes: { model: any; controls: Node_; menus: Node_; overflow: Node_; footer: Node_; destroyed: number }[] = [];
-  const models: any[] = [];
+  const chromes: { model: unknown; controls: Node_; menus: Node_; overflow: Node_; footer: Node_; destroyed: number }[] = [];
+  const models: unknown[] = [];
   const ids = ["wm-root", "wm-notices", "wm-stash"];
   const byId = new Map(ids.map((i) => [i, new Node_("div")]));
   const sections = tabIds.map((id) => {
@@ -111,7 +111,7 @@ function boot(o: Opts = {}) {
   const replaced: string[] = [];
   const blobs: { parts: unknown[] }[] = [];
   const downloads: Node_[] = [];
-  const registry = new Map<string, any>();
+  const registry = new Map<string, object>();
   if (o.registry !== false) {
     registry.set("terminal", {
       id: "terminal",
@@ -150,7 +150,7 @@ function boot(o: Opts = {}) {
       },
     });
   }
-  let sectionModelOf: any;
+  let sectionModelOf: object | undefined;
   const body = new Node_("body");
   const sandbox: Record<string, unknown> = {
     fetch: async () => ({ status: 200 }),
@@ -235,7 +235,7 @@ function boot(o: Opts = {}) {
               models.push(m);
               return m;
             },
-            windowHost: (m: any, base: object) => ({ ...base, model: m, setMenuState() {}, setStatus() {}, onCommand() {} }),
+            windowHost: (m: unknown, base: object) => ({ ...base, model: m, setMenuState() {}, setStatus() {}, onCommand() {} }),
             sectionModel: (id: string) => {
               if (!(o.menus || o.controlsOnly) || id !== "hosts") return undefined;
               if (!sectionModelOf)
@@ -251,7 +251,7 @@ function boot(o: Opts = {}) {
     ChromeKit: o.noChromeKit
       ? undefined
       : {
-          createChrome: (model: any, deps: { document: { createElement(t: string): Node_ } }) => {
+          createChrome: (model: unknown, deps: { document: { createElement(t: string): Node_ } }) => {
             const mk = (tag: string, cls: string) => {
               const n = deps.document.createElement(tag);
               n.className = cls;
@@ -273,8 +273,9 @@ function boot(o: Opts = {}) {
         },
   };
   // Capture anchors created for downloads.
-  const origCreate = (sandbox.document as any).createElement;
-  (sandbox.document as any).createElement = (t: string) => {
+  const doc = sandbox.document as { createElement(t: string): Node_ };
+  const origCreate = doc.createElement;
+  doc.createElement = (t: string) => {
     const n = origCreate(t);
     if (t === "a") downloads.push(n);
     return n;
@@ -346,6 +347,7 @@ function boot(o: Opts = {}) {
   };
 }
 
+type StoredNode = { hidden?: boolean; children?: StoredNode[] };
 const stored = (store: Record<string, string>) => JSON.parse(store["pomtree.layout"]!);
 const visibleSections = (s: ReturnType<typeof boot>) => s.sections.filter((x) => !x.hidden && x.parent !== s.stash).map((x) => x.getAttribute("data-tab"));
 
@@ -1199,7 +1201,7 @@ test("a registry view with declared menus gets a per-tile model; menus and overf
     ["tile-bar", "tile-body", "tile-foot"],
   );
   assert.equal(s.chromes.length, 1);
-  assert.equal((s.mounts[0]!.host as any).model, s.models[0]);
+  assert.equal((s.mounts[0]!.host as { model?: unknown }).model, s.models[0]);
   assert.equal(s.mounts[0]!.host.setTitle.length, 1); // setTitle stays
 });
 
@@ -1845,7 +1847,7 @@ test("minimize removes the tile and keeps the window in the state as hidden; the
     "two tiles fill the whole area (percent of width times percent of height)",
   );
   assert.equal(
-    stored(s.store).root.children.some((c: any) => c.hidden === true || (c.children ?? []).some((d: any) => d.hidden === true)),
+    stored(s.store).root.children.some((c: StoredNode) => c.hidden === true || (c.children ?? []).some((d: StoredNode) => d.hidden === true)),
     true,
   );
   assert.notEqual(s.api.state().focus, hosts, "focus left the minimized window");

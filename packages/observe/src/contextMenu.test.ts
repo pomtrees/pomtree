@@ -384,7 +384,7 @@ test("element blur (focus moving between items, opener blur) and element scroll 
     const u = setup();
     u.open();
     u.doc.win.fire(ev);
-    assert.equal(u.menu.isOpen(), false, "window-level " + ev);
+    assert.equal(u.menu.isOpen(), false, `window-level ${ev}`);
   }
 });
 

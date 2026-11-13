@@ -3,22 +3,102 @@ import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { TRACE_LOGIC_JS } from "./traceKit.ts";
 
-const T = runInContext(TRACE_LOGIC_JS + "\nT;", createContext({ TextEncoder, encodeURIComponent, Number, String, Promise })) as any;
+interface TraceResult {
+  ok: boolean;
+  via?: string;
+  chip: string;
+  text: string;
+  error: string;
+  meta: object;
+}
+interface TraceDeps {
+  fetch?: (u: string) => Promise<unknown>;
+  clipboard?: { writeText: (t: string) => unknown };
+  doc?: FakeDoc;
+  [k: string]: unknown;
+}
+interface TraceOpts {
+  short?: boolean;
+  children?: boolean;
+  raw?: boolean;
+}
+interface Viewer {
+  overlay: FakeEl;
+  parts: Record<"body" | "meta" | "status" | "retry" | "close" | "copy" | "refresh", FakeEl>;
+  dismiss(): void;
+}
+interface TraceKit {
+  url(base: string, id: string, o: TraceOpts): string;
+  filename(id: string, o: TraceOpts): string;
+  copyTrace(deps: TraceDeps, base: string, id: string, o: TraceOpts): Promise<TraceResult>;
+  view(deps: TraceDeps, base: string, id: string, o: TraceOpts): Promise<TraceResult>;
+  metaText(m: { bytes: number; events: number; omitted: number; redacted: number; raw: boolean }): string;
+  viewer(deps: TraceDeps, base: string, id: string, o: TraceOpts, opener: FakeEl): Viewer;
+  dismissLive(): void;
+  modal(doc: FakeDoc, text: string, error: string): FakeEl;
+  download(deps: TraceDeps, text: string, name: string): string;
+}
+// Menu item fields the declaration tests read.
+interface MenuItemView {
+  command?: string;
+  kind?: string;
+  label?: string;
+  caution?: string;
+  checked?: boolean;
+}
 
-function el(tag: string): any {
-  const n: any = { tag, children: [], style: {}, attrs: {}, value: "", textContent: "", className: "", listeners: {}, removed: false };
-  n.appendChild = (c: any) => {
+const T = runInContext(`${TRACE_LOGIC_JS}\nT;`, createContext({ TextEncoder, encodeURIComponent, Number, String, Promise })) as TraceKit;
+
+interface FakeEl {
+  tag: string;
+  children: FakeEl[];
+  style: Record<string, string>;
+  attrs: Record<string, string>;
+  value: string;
+  textContent: string;
+  className: string;
+  listeners: { click: (ev?: unknown) => void } & Record<string, (ev?: unknown) => void>;
+  removed: boolean;
+  parent?: FakeEl;
+  hidden?: boolean;
+  disabled?: boolean;
+  selected?: boolean;
+  clicked?: boolean;
+  focused?: number;
+  appendChild(c: FakeEl): void;
+  remove(): void;
+  setAttribute(k: string, v: string): void;
+  addEventListener(k: string, f: (ev?: unknown) => void): void;
+  select(): void;
+  click(): void;
+  focus(): void;
+}
+interface FakeDoc {
+  body: FakeEl;
+  copied: string[];
+  created: FakeEl[];
+  keyListeners: ((ev: unknown) => void)[];
+  addEventListener(k: string, f: (ev: unknown) => void): void;
+  removeEventListener(k: string, f: (ev: unknown) => void): void;
+  key(key: string): void;
+  createElement(t: string): FakeEl;
+  execCommand(cmd: string): boolean;
+}
+
+function el(tag: string): FakeEl {
+  const n = { tag, children: [], style: {}, attrs: {}, value: "", textContent: "", className: "", listeners: {}, removed: false } as unknown as FakeEl;
+  n.appendChild = (c: FakeEl) => {
     n.children.push(c);
     c.parent = n;
   };
   n.remove = () => {
     n.removed = true;
-    if (n.parent) n.parent.children = n.parent.children.filter((x: any) => x !== n);
+    if (n.parent) n.parent.children = n.parent.children.filter((x) => x !== n);
   };
   n.setAttribute = (k: string, v: string) => {
     n.attrs[k] = v;
   };
-  n.addEventListener = (k: string, f: () => void) => {
+  n.addEventListener = (k: string, f: (ev?: unknown) => void) => {
     n.listeners[k] = f;
   };
   n.select = () => {
@@ -32,9 +112,8 @@ function el(tag: string): any {
   };
   return n;
 }
-function fakeDoc(execResult: boolean | "throw") {
-  const doc: any = { body: el("body"), copied: [] as string[], created: [] as any[] };
-  doc.keyListeners = [] as ((ev: unknown) => void)[];
+function fakeDoc(execResult: boolean | "throw"): FakeDoc {
+  const doc = { body: el("body"), copied: [] as string[], created: [] as FakeEl[], keyListeners: [] as ((ev: unknown) => void)[] } as unknown as FakeDoc;
   doc.addEventListener = (k: string, f: (ev: unknown) => void) => {
     if (k === "keydown") doc.keyListeners.push(f);
   };
@@ -51,8 +130,8 @@ function fakeDoc(execResult: boolean | "throw") {
   };
   doc.execCommand = (cmd: string) => {
     if (execResult === "throw") throw new Error("nope");
-    const ta = doc.body.children.find((c: any) => c.tag === "textarea");
-    if (cmd === "copy" && execResult) doc.copied.push(ta.value);
+    const ta = doc.body.children.find((c) => c.tag === "textarea");
+    if (cmd === "copy" && execResult) doc.copied.push(ta?.value ?? "");
     return execResult;
   };
   return doc;
@@ -75,7 +154,7 @@ test("copy succeeds through navigator.clipboard and reports size/events/redactio
   const deps = {
     fetch: async (u: string) => {
       urls.push(u);
-      return reply("# Trace\n" + "x".repeat(2048), 200, { "x-trace-events": "12", "x-trace-redacted": "3" });
+      return reply(`# Trace\n${"x".repeat(2048)}`, 200, { "x-trace-events": "12", "x-trace-redacted": "3" });
     },
     clipboard: {
       writeText: async (t: string) => {
@@ -136,13 +215,13 @@ test("both copy paths failing returns the text for the manual modal", async () =
     assert.equal(r.text, "secret-free text <b>x</b>");
     assert.match(r.error, /manually/);
     const m = T.modal(doc, r.text, r.error);
-    const box = m.children[0];
-    const ta = box.children.find((c: any) => c.tag === "textarea");
+    const box = m.children[0]!;
+    const ta = box.children.find((c) => c.tag === "textarea")!;
     assert.equal(ta.value, "secret-free text <b>x</b>"); // set via .value, never markup
     assert.equal(ta.selected, true);
-    assert.equal(box.children[0].textContent, r.error);
+    assert.equal(box.children[0]!.textContent, r.error);
     assert.ok(doc.body.children.includes(m));
-    box.children.find((c: any) => c.tag === "button").listeners.click();
+    box.children.find((c) => c.tag === "button")!.listeners.click();
     assert.ok(!doc.body.children.includes(m), "close removes the modal");
   }
 });
@@ -190,16 +269,16 @@ test("download builds a markdown blob link and revokes the URL", () => {
     Blob: FakeBlob,
     URL: {
       createObjectURL: (b: FakeBlob) => {
-        log.push("create:" + b.type);
+        log.push(`create:${b.type}`);
         return "blob:1";
       },
-      revokeObjectURL: (u: string) => log.push("revoke:" + u),
+      revokeObjectURL: (u: string) => log.push(`revoke:${u}`),
     },
   };
   const name = T.download(deps, "text", T.filename("a/1", { short: true }));
   assert.equal(name, "trace-a_1-short.md");
   assert.deepEqual(log, ["create:text/markdown", "revoke:blob:1"]);
-  const a = doc.created.find((n: any) => n.tag === "a");
+  const a = doc.created.find((n) => n.tag === "a")!;
   assert.equal(a.clicked, true);
   assert.equal(a.attrs.download, "trace-a_1-short.md");
 });
@@ -207,17 +286,17 @@ test("download builds a markdown blob link and revokes the URL", () => {
 test("terminal declaration exposes Copy trace, Short, options (children/raw caution) and Download, wired to the trace logic", async () => {
   const { TERMINAL_DECLARATION } = await import("./viewMenus.ts");
   const { renderTerminalPane } = await import("./tabs.ts");
-  const items = (TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).filter((i: any) => i.command?.startsWith("terminal.trace-"));
-  const byCmd = (c: string): any => items.find((i: any) => i.command === c);
+  const items = (TERMINAL_DECLARATION.menus ?? []).flatMap((m) => m.items as MenuItemView[]).filter((i) => i.command?.startsWith("terminal.trace-"));
+  const byCmd = (c: string): MenuItemView | undefined => items.find((i) => i.command === c);
   assert.equal(byCmd("terminal.trace-copy")?.label, "Copy trace");
   assert.equal(byCmd("terminal.trace-short")?.label, "Short");
   assert.equal(byCmd("terminal.trace-download")?.label, "Download .md");
   assert.equal(byCmd("terminal.trace-children")?.kind, "toggle");
   const raw = byCmd("terminal.trace-raw");
   assert.equal(raw?.kind, "toggle");
-  assert.match(raw.label, /no redaction/);
-  assert.match(raw.caution, /skips secret redaction/); // the raw-output warning
-  assert.equal(raw.checked, false); // raw is off until confirmed
+  assert.match(raw?.label ?? "", /no redaction/);
+  assert.match(raw?.caution ?? "", /skips secret redaction/); // the raw-output warning
+  assert.equal(raw?.checked, false); // raw is off until confirmed
   const html = renderTerminalPane();
   assert.match(html, /const T = /); // trace logic is inlined into the pane script
   for (const c of ["trace-copy", "trace-short", "trace-download", "trace-children", "trace-raw"]) assert.ok(html.includes(`"terminal.${c}":`), c); // each command is wired in the script
@@ -387,10 +466,13 @@ test("in-viewer Copy writes the shown text through the clipboard helper and repo
 test("terminal declaration has View trace between Copy trace and Short and the viewer logic is inlined", async () => {
   const { TERMINAL_DECLARATION } = await import("./viewMenus.ts");
   const { renderTerminalPane } = await import("./tabs.ts");
-  const cmds = (TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).map((i: any) => i.command);
+  const cmds = (TERMINAL_DECLARATION.menus ?? []).flatMap((m) => m.items as MenuItemView[]).map((i) => i.command);
   const view = cmds.indexOf("terminal.trace-view");
   assert.ok(view > 0 && cmds.indexOf("terminal.trace-copy") < view && view < cmds.indexOf("terminal.trace-short"));
-  assert.equal((TERMINAL_DECLARATION.menus ?? []).flatMap((m: any) => m.items).find((i: any) => i.command === "terminal.trace-view").label, "View trace");
+  assert.equal(
+    (TERMINAL_DECLARATION.menus ?? []).flatMap((m) => m.items as MenuItemView[]).find((i) => i.command === "terminal.trace-view")?.label,
+    "View trace",
+  );
   const html = renderTerminalPane();
   assert.match(html, /"terminal\.trace-view": viewTrace/);
   assert.match(html, /TODO\(trace-view-autorefresh\)/);

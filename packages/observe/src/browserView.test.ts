@@ -723,9 +723,9 @@ test("a long page title is capped in the tile title, with an ellipsis; a short o
   ws.open();
   ws.text({ ...live, title: "T".repeat(500) });
   const named = t.titles.at(-1)!;
-  assert.equal(named, "Browser \u00b7 " + "T".repeat(79) + "\u2026", "capped at 80 characters of title, last one an ellipsis");
+  assert.equal(named, `Browser \u00b7 ${"T".repeat(79)}\u2026`, "capped at 80 characters of title, last one an ellipsis");
   ws.text({ ...live, title: "T".repeat(80) });
-  assert.equal(t.titles.at(-1), "Browser \u00b7 " + "T".repeat(80), "exactly at the cap is not truncated");
+  assert.equal(t.titles.at(-1), `Browser \u00b7 ${"T".repeat(80)}`, "exactly at the cap is not truncated");
 });
 
 test("an agent that no longer exists keeps the last frame under a danger overlay and stops reconnecting", async () => {
@@ -1052,7 +1052,7 @@ test("status path: every connection state pushes a validator-accepted tone and t
   await t.flush();
   t.sockets[0]!.drop();
   await t.flush();
-  for (const tone of tones()) assert.ok(["ok", "warn", "err", "info", "none"].includes(tone), "tone " + tone);
+  for (const tone of tones()) assert.ok(["ok", "warn", "err", "info", "none"].includes(tone), `tone ${tone}`);
   assert.equal(tones().includes("ok"), true);
   assert.equal(tones().includes("warn"), true);
 });

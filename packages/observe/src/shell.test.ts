@@ -153,7 +153,7 @@ test("auth guard fires once on a 401 fetch and probes on EventSource error", asy
       handlers.push(h);
     }
   }
-  const g: any = {
+  const g = {
     fetch: async (u: string) => {
       calls.push(u);
       return { status: u === "/probe" || u === "/x" ? 401 : 200 };
@@ -170,7 +170,7 @@ test("auth guard fires once on a 401 fetch and probes on EventSource error", asy
   );
   await g.fetch("/ok");
   assert.equal(fired, 0);
-  new g.EventSource("/s");
+  new (g.EventSource as new (url: string) => ES)("/s");
   handlers[0]!();
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(calls, ["/ok", "/probe"]);

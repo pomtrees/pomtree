@@ -43,13 +43,13 @@ test("audit, hosts, schedules and escalations follow the shared pane skeleton", 
     ["escalations", renderEscalationsPane(), 'class="escalations pane"', '<ul id="escalations" class="card-list pane-body">'],
   ];
   for (const [name, html, root, body] of panes) {
-    assert.ok(html.startsWith("<div " + root.slice(0, -1) + '">') || html.startsWith("<div " + root + ">"), name + " root");
-    assert.equal(html.split("pane-body").length - 1, 1, name + " has exactly one pane-body");
-    assert.ok(html.includes(body), name + " body kind");
+    assert.ok(html.startsWith(`<div ${root.slice(0, -1)}">`) || html.startsWith(`<div ${root}>`), `${name} root`);
+    assert.equal(html.split("pane-body").length - 1, 1, `${name} has exactly one pane-body`);
+    assert.ok(html.includes(body), `${name} body kind`);
     const markup = html.slice(0, html.indexOf("<script>"));
-    assert.ok(!/<h[1-6]/.test(markup), name + " has no heading");
-    assert.ok(!markup.includes("filters") && !markup.includes("<pre") && !markup.includes("<style"), name + " has no filters row, pre or style");
-    assert.ok(!html.includes("hosts-status") || name === "none", name + " no pre#hosts-status");
+    assert.ok(!/<h[1-6]/.test(markup), `${name} has no heading`);
+    assert.ok(!markup.includes("filters") && !markup.includes("<pre") && !markup.includes("<style"), `${name} has no filters row, pre or style`);
+    assert.ok(!html.includes("hosts-status") || name === "none", `${name} no pre#hosts-status`);
   }
   assert.ok(!renderHostsPane().includes("hosts-status"));
 });
@@ -61,7 +61,7 @@ test("audit declares its filters and More in the window chrome, with a count slo
     status: { id: string }[];
   };
   assert.deepEqual(
-    decl.controls.map((c) => c.kind + ":" + c.command + ":" + (c.placeholder ?? "")),
+    decl.controls.map((c) => `${c.kind}:${c.command}:${c.placeholder ?? ""}`),
     ["search:audit.agent:agent", "search:audit.kind:kind", "button:audit.more:"],
   );
   assert.deepEqual(
@@ -117,7 +117,7 @@ function gatedAudit() {
     runInContext(`PaneKit.sectionModel("audit").invoke(${JSON.stringify(cmd)}, ${JSON.stringify(arg)}).ok`, o.context) as boolean;
   const count = () => runInContext('PaneKit.sectionModel("audit").status().map((x) => x.text).join()', o.context) as string;
   const cells = () => o.doc.getElementById("audit-rows")!.children.map((tr) => tr.children.map((c) => c.textContent).join("|"));
-  const row = (seq: number, agent: string) => ({ seq, ts: 0, agent, kind: "k", summary: "s" + seq });
+  const row = (seq: number, agent: string) => ({ seq, ts: 0, agent, kind: "k", summary: `s${seq}` });
   return { ...o, pending, run, count, cells, row };
 }
 
@@ -239,7 +239,7 @@ test("escalations: open cards are warn-toned and the empty state is a pane-empty
   await flush();
   const li = empty.doc.getElementById("escalations")!.children;
   assert.deepEqual(
-    li.map((c) => c.className + ":" + c.textContent),
+    li.map((c) => `${c.className}:${c.textContent}`),
     ["pane-empty:No open escalations"],
   );
 });
@@ -2015,7 +2015,7 @@ test("new-agent logic: server error text is verbatim, trimmed, control-stripped;
   for (const fn of r.doc.getElementById("new-submit")!.listeners.get("click")!) fn({});
   await flush();
   const st = r.doc.getElementById("new-status")!;
-  assert.equal(st.textContent, "HTTP 400: " + xss); // set as text, never parsed as HTML
+  assert.equal(st.textContent, `HTTP 400: ${xss}`); // set as text, never parsed as HTML
   assert.equal(st.children.length, 0);
   assert.equal(st.className, "pane-notice err");
   const net = runShell("#/new", { "/v1/agents": { body: null, fail: true } });
@@ -2026,17 +2026,6 @@ test("new-agent logic: server error text is verbatim, trimmed, control-stripped;
   assert.match(net.doc.getElementById("new-status")!.textContent, /could not reach the daemon/);
   assert.doesNotMatch(net.doc.getElementById("new-status")!.textContent, /TypeError|ECONNREFUSED/);
 });
-
-const long = (n: number) => Array.from({ length: n }, (_, i) => "line " + i).join("\n");
-const findBtn = (n: FakeNode, text: string): FakeNode | undefined => {
-  if (n.tagName === "button" && n.textContent === text) return n;
-  for (const c of n.children) {
-    const r = findBtn(c, text);
-    if (r) return r;
-  }
-  return undefined;
-};
-const click = (n: FakeNode) => n.listeners.get("click")![0]!({});
 
 test("new agent pane leaves the budget blank (template/default budget applies) and explains it", () => {
   const html = renderNewAgentPane();
@@ -2212,8 +2201,6 @@ test("new-agent pane: advanced and deadline fields are posted; invalid ones bloc
   );
 });
 
-const walk = (n: FakeNode): FakeNode[] => [n, ...n.children.flatMap(walk)];
-
 // --- multi-instance terminal views ----------------------------------------------------------------
 
 interface ViewHost {
@@ -2314,7 +2301,7 @@ test("terminal views: two instances for different agents mount into two roots wi
 });
 
 test("terminal views: unmounting one instance releases its resources and leaves the other running", async () => {
-  const { sockets, terms, observers, intervals, timeouts, resize, resizeListeners, rootA, rootB, a, inRoot, hosts } = mountTwo();
+  const { sockets, terms, observers, intervals, timeouts, resize, resizeListeners, rootA, rootB, a, hosts } = mountTwo();
   await flush();
   sockets[0]!.open();
   sockets[1]!.open();
@@ -2417,7 +2404,7 @@ test("terminal views: the vendored xterm libraries load once per page across ins
   for (const name of ["xterm.js", "addon-fit.js", "addon-webgl.js"]) {
     await flush();
     const el = r.headNodes.filter((n) => n.tagName === "script").at(-1) as unknown as { src: string; onload(): void };
-    assert.equal(el.src, "/ui/vendor/" + name);
+    assert.equal(el.src, `/ui/vendor/${name}`);
     if (name === "xterm.js") Object.assign(r.context, { Terminal });
     if (name === "addon-fit.js") Object.assign(r.context, { FitAddon });
     el.onload();
@@ -2436,7 +2423,7 @@ test("terminal: an opening socket focuses the terminal only when its tile is the
   await flush();
   assert.equal(r.sockets.length, 2);
   for (const ws of r.sockets) ws.open();
-  const focusedOf = (agent: string) => r.terms[r.sockets.findIndex((w) => w.url.includes("/" + agent + "/"))]!.focused;
+  const focusedOf = (agent: string) => r.terms[r.sockets.findIndex((w) => w.url.includes(`/${agent}/`))]!.focused;
   assert.equal(focusedOf("a1"), 0, "a terminal in another tile does not take focus");
   assert.ok(focusedOf("b2") >= 1, "negative control: the focused tile's terminal does");
 });

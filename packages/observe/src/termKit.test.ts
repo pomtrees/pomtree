@@ -277,7 +277,7 @@ test("keyDecision: Shift+Enter is LF, Ctrl+Enter is CSI-u, Alt/plain/other combo
 
 test("keyDecision: Ctrl+Shift+<letter> maps to CSI-u modifier 6, with exclusions", () => {
   for (const l of "abdeghijklmnopqrstuwxyz") {
-    assert.equal(K.keyDecision(kd({ key: l.toUpperCase(), ctrlKey: true, shiftKey: true }), false).send, "\x1b[" + l.charCodeAt(0) + ";6u", l);
+    assert.equal(K.keyDecision(kd({ key: l.toUpperCase(), ctrlKey: true, shiftKey: true }), false).send, `\x1b[${l.charCodeAt(0)};6u`, l);
   }
   assert.equal(K.keyDecision(kd({ key: "p", ctrlKey: true, shiftKey: true }), false).send, K.NAMED_KEYS["Ctrl+Shift+P"]);
   assert.equal(K.keyDecision(kd({ key: "Dead", code: "KeyF", ctrlKey: true, shiftKey: true }), false).send, "\x1b[102;6u"); // code fallback
