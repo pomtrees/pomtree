@@ -121,6 +121,9 @@ export interface ProxySettlement extends ModelCallUpstream {
   route?: RouteClass;
   errorClass?: ErrorClass;
   basis?: ModelPriceBasis;
+  // "failed" only, when the call failed before any response headers: the reserved micro-USD released at charge 0. A provider may
+  // still bill such a call, so the settlement sink journals a daemon-authored record of it; never merged into `upstreamMessage`.
+  releasedMicros?: number;
 }
 
 // "failed": the upstream call produced nothing billable (non-2xx, redirect, transport error, timeout); charged 0 and
@@ -433,7 +436,7 @@ export class ModelProxy {
     }
     const where: ModelCallUpstream = { upstreamHost: target.host, upstreamPath: target.pathname };
     const at = `${target.host}${target.pathname}`;
-    const failed = (errorClass: ErrorClass, upstreamStatus?: number, message?: string): void => {
+    const failed = (errorClass: ErrorClass, upstreamStatus?: number, message?: string, releasedMicros?: number): void => {
       try {
         this.o.onSettlement?.({
           agent,
@@ -447,6 +450,7 @@ export class ModelProxy {
           errorClass,
           ...where,
           ...(message !== undefined && { upstreamMessage: message }),
+          ...(releasedMicros !== undefined && { releasedMicros }),
         });
       } catch {
         /* observing must never affect a request */
@@ -498,8 +502,9 @@ export class ModelProxy {
       const style = this.o.authStyle ?? "bearer";
       if (style !== "x-api-key") headers.set("authorization", `Bearer ${this.o.upstream.key}`);
       if (style !== "bearer") headers.set("x-api-key", this.o.upstream.key);
-      // TODO(gateway): decide whether a fetch that rejects or aborts before headers should be charged. Current behavior: its
-      // reservation is cancelled at zero charge.
+      // Policy: a fetch that rejects or aborts before the response headers is charged nothing and its reservation is released (nothing
+      // was generated); the catch below records a "failed" settlement naming the cause and the released amount, so the cost of that
+      // policy shows in the journal.
       upstream = await this.fetch(
         target,
         {
@@ -515,7 +520,7 @@ export class ModelProxy {
       done();
       this.o.budget.cancel(reserved.reservation);
       const cls = thrownClass(e);
-      failed(cls);
+      failed(cls, undefined, undefined, reserved.micros);
       const error =
         e instanceof ClientClosed
           ? `model call cancelled (aborted): ${CLIENT_CLOSED} before ${at} answered; nothing was generated, so the reservation was released`

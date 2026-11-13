@@ -24,6 +24,8 @@
 //                 every entry whose call was addressed upstream (core ModelCallUpstream)
 //   upstreamMessage  "failed" only: the upstream's error text, at most 200 characters, control characters stripped and
 //                 key-shaped substrings and the configured upstream key removed
+// A "failed" settlement for a call that never got response headers also journals a separate daemon-authored `error` entry
+// (keyed `model-preheader:`) naming the cause and the reserved micro-USD released at charge 0; it is never put in `upstreamMessage`.
 // The debit ledger row gets every field but kind, settlement, micros, requestId and the upstream* fields via recordCall
 // (also for a cancelled "failed" call): model, tokens, upstreamStatus, latencyMs, finishReason, route, errorClass and basis
 // (core ModelCallMeta).
@@ -141,6 +143,21 @@ export function settlementSink(o: {
         payload: settlementPayload(e),
         idempotencyKey: settlementKey(e),
       });
+      // A call that failed before any response headers is charged nothing and its reservation released, yet the provider may still
+      // have billed it. The daemon's own record of that, apart from the settlement entry (whose `upstreamMessage` is upstream text only).
+      if (e.kind === "failed" && e.releasedMicros !== undefined) {
+        const cause = e.errorClass ?? "transport";
+        await o.journal.append({
+          agent: rec.id,
+          host: o.host ?? rec.host,
+          generation: rec.generation,
+          payload: {
+            kind: "error",
+            message: `model call ${e.requestId} failed before response headers (${cause}); the reserved ${e.releasedMicros} micro-USD were released and the call charged 0, but the provider may still have billed it; retry the call, and compare the provider's usage with the budget if this recurs`,
+          },
+          idempotencyKey: `model-preheader:${settlementKey(e)}`,
+        });
+      }
     } catch {
       log("pomtreed: could not journal model settlement");
     }

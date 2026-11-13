@@ -270,3 +270,18 @@ test("a settlement with no basis (failed) journals and records none", () => {
   assert.equal("basis" in settlementPayload(e), false);
   assert.equal("basis" in settlementCallMeta(e), false);
 });
+
+test("settlementSink journals a daemon-authored error record for a pre-header release, and none for other failures", async () => {
+  const { sink, seen } = sinkRig();
+  const base = { agent: "a", requestId: "r9", kind: "failed" as const, micros: 0, errorClass: "connect" as const, route: "messages" as const };
+  await sink({ ...base, releasedMicros: 70 });
+  await sink({ ...base, requestId: "r10", upstreamStatus: 502 });
+  const payloads = [...seen.values()].map((v) => v.payload as Record<string, unknown>);
+  const notes = payloads.filter((p) => p.kind === "error");
+  assert.equal(notes.length, 1);
+  assert.match(String(notes[0]?.message), /r9.*before response headers \(connect\).*70 micro-USD.*may still have billed.*retry/);
+  assert.equal(payloads.filter((p) => p.settlement === "failed").length, 2, "both settlements are still journaled");
+  assert.equal("releasedMicros" in (payloads.find((p) => p.settlement === "failed") ?? {}), false, "the settlement payload shape is unchanged");
+  await sink({ ...base, releasedMicros: 70 }); // replay is idempotent
+  assert.equal([...seen.values()].filter((v) => (v.payload as { kind?: string }).kind === "error").length, 1);
+});
