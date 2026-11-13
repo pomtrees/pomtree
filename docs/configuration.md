@@ -10,7 +10,7 @@ Every daemon and `pomtree` client setting is a key in a typed registry. Names, k
 
 **Inspecting.** `pomtreed config show` prints the effective configuration (extension keys included); `--origin` adds which layer (default, file, env, `--set`) supplied each value, and `--json` prints it machine-readably. Secrets are masked.
 
-**Secrets.** A sensitive key is never read from the JSON file, a plain environment variable or `--set`. Write the value to a file (mode 0600, owned by the daemon user) and set `<ENV>_FILE` to its path: the upstream model key is `POMTREED_MODEL_UPSTREAM_KEY_FILE` and the search key is `POMTREED_SEARCH_KEY_FILE`. The proxy holds the upstream key and issues each agent a short-lived scoped token; agents never see it.
+**Secrets.** A sensitive key is never read from the JSON file, a plain environment variable or `--set`. Write the value to a file (mode 0600, owned by the daemon user) and set `<ENV>_FILE` to its path: the upstream model key is `POMTREED_MODEL_UPSTREAM_KEY_FILE` and the search key is `POMTREED_SEARCH_KEY_FILE`. The proxy holds the upstream key and issues each agent a short-lived scoped token; agents never see it. The daemon refuses to start while a secret file is readable by group or other (run `chmod 600` on it). Windows has no POSIX file modes, so the check is skipped there and the daemon prints a startup warning instead of refusing: restrict the file's ACL to the daemon's account yourself (the ACL is not inspected; `TODO(secret-file-acl-windows)`).
 
 Operator guidance the registry descriptions cannot carry:
 

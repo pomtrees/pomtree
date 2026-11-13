@@ -79,6 +79,7 @@ import { memoryGate, memoryHolders, pinnedAgentPort, writeSecretFile } from "./h
 import { acquireStateLock, configureAccessLog, listen, listenAgents, listenHost, listenUi } from "./server.ts";
 import { createExtensionRegistry } from "./extensions.ts";
 import { scanExtensionManifests } from "./extension-manifest.ts";
+import { secretFileModePolicy } from "./secret-file-mode.ts";
 import { raceUntil, sleepTick, WorkflowHost } from "./workflows.ts";
 import { hostPacer } from "./host-pacer.ts";
 import { WorkflowRuntimePolicy } from "./workflow-policy.ts";
@@ -122,14 +123,14 @@ if (argv.args.command === "preflight" || argv.args.command === "init") {
   const { runOnboardCommand } = await import("./onboard/cli.ts");
   process.exit(await runOnboardCommand(argv.args.command, argv.args.rest ?? []));
 }
+// POSIX modes only: win32 reports a synthetic 0666 for every file, which would refuse every secret (secret-file-mode.ts).
+const secretMode = secretFileModePolicy(process.platform, (path) => statSync(realpathSync(path)).mode);
+if (secretMode.warning) console.error(secretMode.warning);
 const loaded = loadDaemonConfig({
   env: process.env,
   args: { ...argv.args, ...(argv.args.configFile !== undefined && { configFile: resolvePath(argv.args.configFile) }) },
   readFile: (path) => readFileSync(path, "utf8"),
-  // TODO(secret-file-mode-fail-closed): a platform with no file-mode injector skips the secret-file mode check silently; current behavior: skipped on
-  // win32. Decide whether to refuse to start there instead.
-  // POSIX modes only: win32 reports a synthetic 0666 for every file, which would refuse every secret.
-  ...(process.platform !== "win32" && { fileMode: (path: string) => statSync(realpathSync(path)).mode }),
+  ...(secretMode.fileMode && { fileMode: secretMode.fileMode }),
   defaultStateDir: join(homedir(), ".pomtreed"),
   scanExtensions: scanExtensionManifests,
 });
