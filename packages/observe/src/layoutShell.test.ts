@@ -1112,40 +1112,25 @@ test("changing a tile's view to one shown elsewhere renders once when focus chan
   assert.equal(val, "reports");
 });
 
-test("a view focusing itself (xterm's hidden textarea after a socket opens) does not steal the tile focus; tabbing in and clicking do", () => {
+test("a mounted view can ask whether its tile is the focused one, so a terminal skips grabbing focus from another tile", () => {
   const s = boot();
-  s.btn(s.tiles()[0]!, "Split right").click(); // t2 = second tile, focused
-  const sel = s
-    .tileOf("t2")
-    .all()
-    .find((n) => n.tagName === "select")!;
-  sel.value = "terminal";
-  sel.fire("change");
+  s.api.openView("terminal", "a1"); // splits the tree tile; the terminal tile is focused
+  const host = s.mounts[0]!.host as unknown as { isFocused(): boolean };
+  assert.equal(host.isFocused(), true, "the terminal's tile is the focused one");
   s.tileOf("t1").fire("pointerdown"); // operator puts focus on t1
-  assert.equal(s.tileOf("t1").className, "tile tile-focused");
-  s.tileOf("t2").fire("focusin"); // programmatic focus inside the terminal tile, no operator input
-  assert.equal(s.tileOf("t1").className, "tile tile-focused", "a view's own focus() leaves the recorded focus alone");
-  assert.equal(s.tileOf("t2").className, "tile");
-  const key = s.docListeners.get("keydown")![0]!;
-  key.fn({ key: "Tab" }); // tabbing: keydown, then focusin on the next tile
-  s.tileOf("t2").fire("focusin");
-  assert.equal(s.tileOf("t2").className, "tile tile-focused", "keyboard focus moves the tile focus");
-  s.tileOf("t1").fire("pointerdown");
-  assert.equal(s.tileOf("t1").className, "tile tile-focused", "a click focuses the tile");
-  s.docListeners.get("keyup")![0]!.fn({ key: "Tab" });
-  s.tileOf("t2").fire("focusin");
-  assert.equal(s.tileOf("t1").className, "tile tile-focused", "after the key is released, programmatic focus is ignored again");
+  assert.equal(host.isFocused(), false, "negative control: the terminal's tile is no longer focused");
+  s.tileOf("t2").fire("pointerdown");
+  assert.equal(host.isFocused(), true, "a click focuses it again");
 });
 
-test("window blur clears the held-key flag, so a keyup lost to Alt+Tab does not let a view steal the tile focus", () => {
+test("focus that reaches a tile moves the tile focus with no key or pointer press, so a screen reader or voice control is followed", () => {
   const s = boot();
   s.btn(s.tiles()[0]!, "Split right").click(); // t2 = second tile, focused
-  s.tileOf("t1").fire("pointerdown"); // operator puts focus on t1
-  s.docListeners.get("keydown")![0]!.fn({ key: "Alt" }); // Alt+Tab: keydown seen, keyup goes to the other window
-  for (const fn of s.winListeners.get("blur") ?? []) fn({});
-  s.tileOf("t2").fire("focusin"); // programmatic focus after the window regains focus
-  assert.equal(s.tileOf("t1").className, "tile tile-focused", "blur released the held key");
-  assert.equal(s.tileOf("t2").className, "tile");
+  s.tileOf("t1").fire("pointerdown");
+  assert.equal(s.tileOf("t1").className, "tile tile-focused");
+  s.tileOf("t2").fire("focusin"); // assistive focus move: no keydown, no pointerdown
+  assert.equal(s.tileOf("t2").className, "tile tile-focused");
+  assert.equal(s.tileOf("t1").className, "tile");
 });
 
 test("api.state and api.views report the layout and the openable views as plain data", () => {

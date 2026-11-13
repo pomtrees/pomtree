@@ -225,7 +225,6 @@ function createWindowManager(tabs, storageKey) {
     for (const id of order) if (kindOf(id) !== "none" && !isItem(id) && !shown.has(id)) return id;
     return null;
   };
-  let keyDown = false;
   const focusLeaf = (id) => { commit(LK.focus(layout(), id)); };
   const splitLeaf = (id, dir, view, params) => {
     const p = params || {};
@@ -321,9 +320,8 @@ function createWindowManager(tabs, storageKey) {
       keyTarget: el,
       opener: el,
     });
-    // only focus the operator caused counts: a view calling focus() on its own (xterm's hidden textarea once its socket opens) must not move the layout's focus
-    // TODO(tile-focus-source): this key-held heuristic has two limits. (1) A key held down while a terminal's socket opens still counts as operator focus and moves the tile focus. (2) Focus that moves with no key or pointer press (screen-reader virtual cursor, voice control) no longer updates the focused tile. Preferred fix: stop the view stealing focus at the source (tabs.ts term.focus() after socket open skipped when its tile is not the focused one, e.g. via a host-provided focus-if-focused hook), then delete keyDown.
-    el.addEventListener("focusin", () => { if (keyDown) focusLeaf(lf.id); });
+    // a view must not call focus() on its own while its tile is unfocused (hostApi.isFocused); any focus that reaches the tile, including assistive technology, moves the layout focus
+    el.addEventListener("focusin", () => focusLeaf(lf.id));
     Object.assign(rec, { el, title, sel, bMin, bMax, bClose, body });
 
     const note = (text) => {
@@ -342,7 +340,7 @@ function createWindowManager(tabs, storageKey) {
     } else {
       const host = make("div", "wm-mount");
       body.appendChild(host);
-      const hostApi = { setTitle: (t) => { title.textContent = String(t); }, navigate: (h) => { location.hash = h; } };
+      const hostApi = { setTitle: (t) => { title.textContent = String(t); }, navigate: (h) => { location.hash = h; }, isFocused: () => layout().focus === lf.id };
       try {
         const inst = regDef(lf.view).mount(host, itemParams(lf.params.agent, lf.params.report), model ? K.windowHost(model, hostApi) : hostApi);
         rec.release = () => { if (chrome) chrome.destroy(); inst.unmount(); host.remove(); };
@@ -604,10 +602,7 @@ function createWindowManager(tabs, storageKey) {
     if (isItem(t.view)) showView(t.view, itemParams(t.agent, t.report));
     else commit(openBrowsing(layout(), t.view));
   });
-  document.addEventListener("keyup", () => { keyDown = false; }, true);
-  addEventListener("blur", () => { keyDown = false; });
   document.addEventListener("keydown", (ev) => {
-    keyDown = true;
     if (!ev.altKey || !ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
     const dir = DIRS[ev.key];
     if (!dir || narrow) return;

@@ -756,6 +756,7 @@ function runShell(
   const sandbox: Context = {
     matchMedia,
     document: {
+      activeElement: null,
       body: pageBody,
       head: { appendChild: (n: FakeNode) => headNodes.push(n) },
       addEventListener: (type: string, fn: Listener, capture?: boolean) => {
@@ -2218,6 +2219,7 @@ const walk = (n: FakeNode): FakeNode[] => [n, ...n.children.flatMap(walk)];
 interface ViewHost {
   setTitle(text: string): void;
   navigate(hash: string): void;
+  isFocused(): boolean;
 }
 interface ViewDef {
   id: string;
@@ -2235,7 +2237,7 @@ function mountTwo() {
   const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
   const titles: string[] = [];
   const navs: string[] = [];
-  const hostFor = (tag: string): ViewHost => ({ setTitle: (t) => titles.push(`${tag}:${t}`), navigate: (h) => navs.push(h) });
+  const hostFor = (tag: string): ViewHost => ({ setTitle: (t) => titles.push(`${tag}:${t}`), navigate: (h) => navs.push(h), isFocused: () => true });
   const rootA = fakeNode();
   const rootB = fakeNode();
   const a = def.mount(rootA, { agent: "a1" }, hostFor("A"));
@@ -2379,7 +2381,7 @@ test("terminal views: a mount that throws during setup clears what it put in the
   assert.throws(() => r.def.mount(root, { agent: "a1" }, {} as ViewHost), /setTitle/);
   assert.equal(root.children.length, 0, "the cloned template is removed again");
   const normal = fakeNode();
-  r.def.mount(normal, { agent: "a1" }, { setTitle() {}, navigate() {} }).unmount();
+  r.def.mount(normal, { agent: "a1" }, { setTitle() {}, navigate() {}, isFocused: () => true }).unmount();
   assert.equal(normal.children.length, 0, "a normal unmount still clears the root");
 });
 
@@ -2406,7 +2408,7 @@ test("terminal views: the vendored xterm libraries load once per page across ins
   const { Terminal, FitAddon } = r.context as { Terminal: unknown; FitAddon: unknown };
   runInContext("delete globalThis.Terminal; delete globalThis.FitAddon;", r.context);
   const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
-  const host: ViewHost = { setTitle() {}, navigate() {} };
+  const host: ViewHost = { setTitle() {}, navigate() {}, isFocused: () => true };
   def.mount(fakeNode(), { agent: "a1" }, host);
   def.mount(fakeNode(), { agent: "b2" }, host);
   const loaded = () => r.headNodes.filter((n) => n.tagName === "script").map((n) => (n as unknown as { src: string }).src);
@@ -2423,6 +2425,49 @@ test("terminal views: the vendored xterm libraries load once per page across ins
   await flush();
   assert.equal(r.terms.length, 2, "both instances mounted xterm once the shared load finished");
   assert.equal(loaded().length, 3);
+});
+
+test("terminal: an opening socket focuses the terminal only when its tile is the focused one", async () => {
+  const r = runShell("#/tree", twoAgents);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  const host = (focused: boolean): ViewHost => ({ setTitle() {}, navigate() {}, isFocused: () => focused });
+  def.mount(fakeNode(), { agent: "a1" }, host(false));
+  def.mount(fakeNode(), { agent: "b2" }, host(true));
+  await flush();
+  assert.equal(r.sockets.length, 2);
+  for (const ws of r.sockets) ws.open();
+  const focusedOf = (agent: string) => r.terms[r.sockets.findIndex((w) => w.url.includes("/" + agent + "/"))]!.focused;
+  assert.equal(focusedOf("a1"), 0, "a terminal in another tile does not take focus");
+  assert.ok(focusedOf("b2") >= 1, "negative control: the focused tile's terminal does");
+});
+
+test("terminal: a reconnect while its tile is unfocused does not take focus", async () => {
+  const r = runShell("#/tree", twoAgents);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  let focused = true;
+  def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {}, isFocused: () => focused });
+  await flush();
+  r.sockets[0]!.open();
+  assert.equal(r.terms[0]!.focused, 1, "the first open in the focused tile focuses");
+  focused = false;
+  r.sockets[0]!.open(); // a reconnect's open while the operator moved to another tile
+  assert.equal(r.terms[0]!.focused, 1, "no second focus");
+});
+
+test("terminal: an opening socket does not take focus from an input the operator is typing in", async () => {
+  const r = runShell("#/tree", twoAgents);
+  const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
+  def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {}, isFocused: () => true });
+  await flush();
+  const doc = (r.context as { document: { activeElement: unknown } }).document;
+  const input = fakeNode();
+  input.tagName = "input";
+  doc.activeElement = input;
+  r.sockets[0]!.open();
+  assert.equal(r.terms[0]!.focused, 0, "an input elsewhere keeps focus");
+  doc.activeElement = fakeNode(); // negative control: a non-editable active element does not block
+  r.sockets[0]!.open();
+  assert.equal(r.terms[0]!.focused, 1);
 });
 
 // Terminal review follow-ups.
@@ -2474,7 +2519,10 @@ test("terminal: the trace viewer belongs to the instance that opened it; A opens
 test("terminal: a missing template fails with a cause and an action instead of a TypeError", () => {
   const r = mountTwo();
   (r.context as { document: { querySelector: unknown } }).document.querySelector = () => null;
-  assert.throws(() => r.def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {} }), /template is missing from the page.*reload the page/);
+  assert.throws(
+    () => r.def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {}, isFocused: () => true }),
+    /template is missing from the page.*reload the page/,
+  );
 });
 
 test("terminal: a copy still in flight when the view unmounts opens no manual-copy modal", async () => {
@@ -2497,12 +2545,12 @@ test("terminal: a failed library load then a retry appends the stylesheet link o
   const r = runShell("#/tree", twoAgents);
   runInContext("delete globalThis.Terminal; delete globalThis.FitAddon;", r.context);
   const def = runInContext('PaneKit.view("terminal")', r.context) as ViewDef;
-  def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {} });
+  def.mount(fakeNode(), { agent: "a1" }, { setTitle() {}, navigate() {}, isFocused: () => true });
   await flush();
   const first = r.headNodes.filter((n) => n.tagName === "script").at(-1) as unknown as { onerror(): void };
   first.onerror();
   await flush();
-  def.mount(fakeNode(), { agent: "b2" }, { setTitle() {}, navigate() {} });
+  def.mount(fakeNode(), { agent: "b2" }, { setTitle() {}, navigate() {}, isFocused: () => true });
   await flush();
   assert.equal(r.headNodes.filter((n) => n.tagName === "link").length, 1, "one stylesheet across the retry");
 });
