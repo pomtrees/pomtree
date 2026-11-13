@@ -219,7 +219,12 @@ test("piArgv passes --no-approve on every launch (trust.json is agent-writable),
   }
 });
 
-test("safeWriteFile preserves a non-ENXIO open error instead of refusing it as a FIFO", () =>
+// Written for Linux, where opening a running executable for writing fails with ETXTBSY. Reported to fail on macOS (cause unconfirmed:
+// a different error code, or the copied system binary not running), so it is skipped there with a printed reason until reproduced on a Mac.
+const etxtbsySkip: string | false =
+  process.platform === "darwin" ? "ETXTBSY from writing a running copy of /bin/sh is Linux behavior; unconfirmed on macOS (#665)" : false;
+
+test("safeWriteFile preserves a non-ENXIO open error instead of refusing it as a FIFO", { skip: etxtbsySkip }, () =>
   withDir(async (dir) => {
     const shell = ["/bin/sh", "/usr/bin/sh"].find((p) => existsSync(p));
     assert.ok(shell);
@@ -250,4 +255,5 @@ test("safeWriteFile preserves a non-ENXIO open error instead of refusing it as a
       child.kill("SIGKILL");
       if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => child.once("exit", () => resolve()));
     }
-  }));
+  }),
+);
