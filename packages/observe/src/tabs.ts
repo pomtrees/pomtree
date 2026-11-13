@@ -177,6 +177,10 @@ const mountTerminalInstance = (root, params, hostApi) => {
   const agentId = String(params && params.agent || "");
   if (!agentId) throw new Error("terminal needs an agent id; open it from the Tree or the top bar");
   const self = {};
+  const typingElsewhere = () => {
+    const a = document.activeElement;
+    return !!a && (/^(input|textarea|select)$/.test(String(a.tagName).toLowerCase()) || a.isContentEditable === true);
+  };
   const tpl = document.querySelector('template[data-view-template="terminal"]');
   if (!tpl) throw new Error("terminal view: its template is missing from the page, so the terminal cannot open; reload the page and report this if it persists");
   root.appendChild(tpl.content.cloneNode(true));
@@ -384,7 +388,8 @@ const mountTerminalInstance = (root, params, hostApi) => {
       hostApi.setMenuState("terminal.reconnect", { visible: false });
       note("");
       doFit();
-      term.focus();
+      // a reconnect or a terminal in another tile must not take focus from where the operator is, nor from an input they are typing in
+      if (hostApi.isFocused() && !typingElsewhere()) term.focus();
     };
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
