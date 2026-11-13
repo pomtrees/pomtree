@@ -149,12 +149,12 @@ export class Daemon implements Driver {
   // from recover(), and each waiter also has an admitRetryMs safety-net timer, so losing the map loses nothing).
   private admitWaiters = new Map<AgentId, () => void>();
   private pendingSeq = 0; // keys each pending-reason change (with bootNonce) so a repeated reason after a change still journals
-  // Runtime host-health flags (not durable; the durable facts are the journal's
-  // host_error entry and the registry state). sandboxUp=false holds admission until the periodic probe
-  // succeeds; journalFailed is set once on a resource-error journal append and holds admission too.
-  // TODO(sandbox-up-memory): the sandbox-reachable flag is daemon memory, against the no-state-in-daemon-memory rule in SPEC.md; current behavior: a
-  // restart assumes the sandbox is up until the first probe says otherwise. Pre-existing.
+  // Host-health flags. sandboxUp=false holds admission until the periodic probe succeeds; journalFailed is set once on a
+  // resource-error journal append and holds admission too. sandboxUp is a cache of durable state: every transition is written
+  // through as an `ext.pomtreed.host_health` entry carrying `sandboxUp` on the root (see markSandboxDown/Up), and recover()
+  // reloads the newest one, so a restart during an outage starts down instead of assuming up until the first probe.
   private sandboxUp = true;
+  private sandboxStateSeq = 0;
   private journalFailed = false;
   // Store down (SQLITE_FULL/IOERR/CORRUPT/BUSY or ENOSPC): a durable write failed, so admission holds
   // and spawn 503s until the store recovers. Fail closed so a half-settled agent cannot strand runtime
@@ -1264,6 +1264,7 @@ export class Daemon implements Driver {
     this.sandboxUp = false;
     try {
       const root = await this.root();
+      await this.persistSandboxState(root, false).catch(() => {});
       await this.record(root, { kind: "host_error", component: "sandbox", message: "sandbox unavailable" }, `host:sandbox:down`);
     } catch {
       // the journal may be down too; the runtime flag still holds admission
@@ -1272,7 +1273,36 @@ export class Daemon implements Driver {
 
   private async markSandboxUp(): Promise<void> {
     this.sandboxUp = true;
+    // A failed write leaves the stored state down, which is the safe side: the next boot starts down and its first probe clears it.
+    await this.persistSandboxState(await this.root(), true).catch(() => {});
     await this.reconcileSandboxes();
+  }
+
+  // Write-through of the sandbox-reachable flag. A unique key per transition: a keyed replay of an earlier episode's entry would
+  // otherwise read as written and the stored state would lag the flag.
+  private async persistSandboxState(root: AgentRecord, up: boolean): Promise<void> {
+    await this.record(
+      root,
+      { kind: HOST_HEALTH_KIND, ok: up, sandboxUp: up, sweepsStale: this.sweepsStale(this.now()) },
+      `host:sandbox-state:${this.bootNonce}:${++this.sandboxStateSeq}`,
+    );
+  }
+
+  // Reload the flag from the newest `sandboxUp` host-health entry on the root (none, or no root yet: up, as on a first boot).
+  private async restoreSandboxState(): Promise<void> {
+    const root = await this.deps.registry.get(this.rootIdHint ?? rootAgentIdFor(this.deps.hostId));
+    if (!root) return;
+    let up: boolean | null = null;
+    for (let from = 0; ; ) {
+      const page = await this.deps.journal.read({ from, agent: root.id, limit: 500 });
+      for (const e of page) {
+        const p = e.payload as { kind: string; sandboxUp?: unknown };
+        if (p.kind === HOST_HEALTH_KIND && typeof p.sandboxUp === "boolean") up = p.sandboxUp;
+      }
+      if (page.length < 500) break;
+      from = page[page.length - 1]!.seq + 1;
+    }
+    if (up === false) this.sandboxUp = false;
   }
 
   private markJournalFailed(e: unknown): void {
@@ -1355,6 +1385,7 @@ export class Daemon implements Driver {
   }
 
   async recover() {
+    await this.restoreSandboxState();
     return this.reconciler.recover();
   }
 
