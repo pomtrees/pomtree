@@ -1,11 +1,10 @@
 {
-  "$comment": "The Docker-gated test groups: one docker matrix entry in .github/workflows/ci.yml and one root `test:docker:<group>` script each. `runs` lists, per working directory, the test files (a `*` matches within one path segment) that the group's script runs there; `required` lists full test titles that must pass in that group (scripts/ci/skip-guard.py). `exempt` names the Docker-gated test files that never pass in CI by design (a live key or the public web), with the reason; they need no group but may sit in one. `maxSkips` bounds the skipped tests in a group's log to the by-design skips that `maxSkipsWhy` names, so a test that newly skips fails the guard. packages/e2e/src/ci-guard.test.ts checks that every Docker-gated test file is in exactly one group, that the scripts run exactly these files, and that each required title is defined in one of its group's files.",
+  "$comment": "The Docker-gated test groups: one root `test:docker:<group>` script each; every group except `podman` is an entry of the `docker` matrix in .github/workflows/ci.yml, and the `podman` group is run by the separate `podman` job there. `runs` lists, per working directory, the test files (a `*` matches within one path segment) that the group's script runs there; `required` lists full test titles that must pass in that group (scripts/ci/skip-guard.py). `exempt` names the Docker-gated test files that never pass in CI by design (a live key or the public web), with the reason; they need no group but may sit in one. `maxSkips` bounds the skipped tests in a group's log to the by-design skips that `maxSkipsWhy` names, so a test that newly skips fails the guard. packages/e2e/src/ci-guard.test.ts checks that every Docker-gated test file is in exactly one group, that the scripts run exactly these files, and that each required title is defined in one of its group's files.",
   "exempt": {
     "packages/harness-pi/src/pi-ext-live.test.ts": "needs the agent image (PTREE_E2E_IMAGE) and POMTREED_PI_PROVIDER set to a provider name; it writes a throwaway placeholder credential and makes no model call, so it needs no live key. Exempt only because no CI group sets POMTREED_PI_PROVIDER yet; running it in a group is a ledgered follow-up",
     "packages/e2e/src/docker-pi.test.ts": "needs a live model key; runs in e2e-lifecycle, where it skips (counted in maxSkips)",
     "packages/sandbox-docker/src/docker.unit.test.ts": "tests the gate's own logic and the engine-profile transport with scripted engine answers and recording stubs, so it needs no Docker or Podman and runs in the normal lite suite; it imports docker-gate.ts only for those pure functions, which is what makes the guard count it as Docker-gated",
     "packages/sandbox-docker/src/docker-gate.test.ts": "tests the gate helpers (runtimeSkip, the engine-threading CLI wrappers, the recorded engine samples and the gated-suite drift guard) with scripted engines and recording stubs, so it needs no Docker or Podman and runs in the normal lite suite; it imports docker-gate.ts only for those pure functions, which is what makes the guard count it as Docker-gated",
-    "packages/sandbox-docker/src/network-podman.test.ts": "needs rootless Podman with pasta (PTREE_SANDBOX_BACKEND=podman), and CI has no Podman job, so it skips on the Docker backend; run it on a rootless Podman host. Its own file header gives the command",
     "packages/sandbox-docker/src/browser-real-article.test.ts": "its one test needs the public web (PTREE_NET_TESTS); runs in sandbox, where it skips (counted in maxSkips)"
   },
   "groups": {
@@ -65,6 +64,21 @@
         "real Docker, no model: scripted root spawns two children, waits, reaps, reports",
         "cli lifecycle REC-8: drain refuses the next spawn, the busy agent's container survives the SIGTERM restart, is adopted and finishes once",
         "docker browser stream: the operator websocket delivers a live JPEG frame and the container publishes no port"
+      ]
+    },
+    "podman": {
+      "maxSkips": 2,
+      "maxSkipsWhy": "E3 and E6 skip when http://example.com/ is unreachable from the runner (they need one plain request to the public web)",
+      "runs": [{ "cwd": "packages/sandbox-docker", "files": ["src/network-podman.test.ts"] }],
+      "required": [
+        "the engine under test is rootless Podman",
+        "E1/E2 worker has only lo; the socket volume is 1000:1000 mode 0770 and read-only (EROFS); the sidecar socket is ready",
+        "E4 a relay grant on host.docker.internal reaches a host listener bound only to 127.0.0.1",
+        "E5 allow: [] denies the public host, 169.254.1.2, the LAN address, docker0 and 127.0.0.1 at the proxy (and they stay denied beside a relay grant)",
+        "E7 two sidecars cannot reach each other (pasta isolation)",
+        "E8 killing a sandbox leaves no container or volume behind",
+        "E9 the sidecar's memory and pids limits are enforced by the rootless cgroup",
+        "an untemplated spawn under agent.untemplatedEgress registry reaches the model-proxy listener and nothing else"
       ]
     }
   }
