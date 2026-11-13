@@ -83,19 +83,17 @@ test("publish-pin: a stale remote-tracking ref cannot smuggle unreviewed commits
   await env.ws.refreshMirror();
   const c = await agentCommit(env, "a1", s, "work.txt");
   assert.equal(has(env.remote, s), false, "precondition: the remote no longer holds the feature commit");
-  // Default boundary: the operator's origin/feature, as the pomtreed pin computes it today.
-  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature" }), (e: Error) => {
+  // The pin's boundary the remote no longer holds is refused: the push would deliver commits the review did not cover.
+  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [s] } }), (e: Error) => {
     assert.ok(e instanceof PublishRefusedError);
     assert.match(e.message, /1 commit\(s\) the publish review did not cover.*fetch the remote and request the publish again/);
     return true;
   });
-  // An explicit boundary the remote does not hold is refused the same way.
-  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [s] } }), PublishRefusedError);
   assert.equal(heads(env.remote), "refs/heads/main");
   assert.equal(has(env.remote, c), false);
   assert.equal(has(env.remote, s), false);
-  // Once the operator fetches with prune the boundary is gone, the whole history counts as reviewed, and it goes out.
-  git(env.repo, "fetch", "-q", "--prune", "origin");
+  // No `reviewed` is an empty boundary, so the whole history counts as reviewed (the workspace no longer derives one from the
+  // operator's remote-tracking refs): the same push is not refused and goes out.
   await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature" });
   assert.equal(git(env.remote, "rev-parse", "refs/heads/feature"), c);
   // An explicit full-history review, and a boundary the remote does hold, both pass; a replay is up to date.
