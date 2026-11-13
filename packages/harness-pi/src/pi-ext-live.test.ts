@@ -37,6 +37,9 @@ const ok = (args: string[]): boolean => {
   }
 };
 
+// TODO(pi-ext-live-stale): this test runs the image directly with no egress sidecar, and the image's egress worker (/opt/pomtree/egress/worker.ts) exits with
+// "egress socket unavailable", so it fails on Docker as well (identical on the code before the engine threading). Under Podman it fails earlier on
+// `--tmpfs ...:uid=1000,gid=1000` ("unknown mount option"). Current behavior: CI keeps it skipped (scripts/ci/skip-guard.py) and it fails when run with an image and a provider.
 function skipReason(): string | false {
   const early = runtimeSkip("docker daemon unreachable");
   if (early) return early;
