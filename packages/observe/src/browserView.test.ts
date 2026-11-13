@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Script, createContext, runInContext } from "node:vm";
 import { BROWSER_LOGIC_JS, BROWSER_WS_PATH, renderBrowserView } from "./browserView.ts";
+import { LAYOUT_CSS } from "./layoutCss.ts";
 import { PANE_KIT_JS } from "./paneKit.ts";
 import { renderTerminalPane } from "./tabs.ts";
 import { renderShell } from "./shell.ts";
@@ -988,6 +989,17 @@ test("actual size scrolls the canvas holder, never the pane that carries the sta
   assert.ok(ov, "the overlay is a direct child of the non-scrolling pane, so it stays in view");
   t.command("browser.fit", true);
   assert.equal(scroller.style.overflow, "", "fit mode does not scroll");
+});
+
+test("the canvas holder, not the canvas, is the pane's flex child, and the layout CSS targets that class", () => {
+  const t = setup();
+  const holder = t.root.children[0]!.children.find((n) => n.children.some((c) => c.tagName === "canvas"))!;
+  assert.equal(holder.className, "browser-holder");
+  const rule = /\.tile-body \.pane\.browser \.browser-holder \{([^}]*)\}/.exec(LAYOUT_CSS);
+  assert.ok(rule, "a rule styles the holder inside the browser pane");
+  assert.match(rule[1]!, /flex: 1 1 auto/);
+  assert.match(rule[1]!, /min-height: 0/);
+  assert.doesNotMatch(LAYOUT_CSS, /\.pane\.browser canvas \{[^}]*flex:/, "the canvas is no longer the flex child");
 });
 
 test("copy URL writes the page URL; a blocked clipboard or no URL is reported in the stream slot with cause and action", async () => {

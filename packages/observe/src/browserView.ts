@@ -147,9 +147,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
   canvas.style.display = "block";
   // The canvas sits in its own holder, and the holder scrolls in actual-size mode: the pane (which carries the status
   // overlay) never scrolls, so the overlay stays over the visible area instead of scrolling away with the content.
-  const holder = el("div");
-  holder.style.flex = "1 1 auto";
-  holder.style.minHeight = "0";
+  const holder = el("div", "browser-holder"); // sized as the pane's flex child by layoutCss.ts
   holder.appendChild(canvas);
   for (const n of [aboutEl, holder]) wrap.appendChild(n);
   root.appendChild(wrap);
