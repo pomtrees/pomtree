@@ -61,6 +61,8 @@ export type PortMethod =
   | "files.put"
   | "files.get"
   | "snapshots.create"
+  | "snapshots.start"
+  | "snapshots.remove"
   | "pause.pause"
   | "lease.extend"
   | "images.prepare";
@@ -159,6 +161,9 @@ export const CLAUSE_IDS = [
   "loopback-stream",
   "files-hash-mismatch",
   "files-partial-upload",
+  "snapshot-start-from",
+  "snapshot-fork",
+  "snapshot-memory",
   "user-agent-stamped",
   "no-sentinel-in-env",
 ] as const;
@@ -733,6 +738,77 @@ export const SANDBOX_CONFORMANCE_CLAUSES = [
       }
     },
   },
+  {
+    id: "snapshot-start-from",
+    title: "a snapshot is created and removed idempotently and starts a new sandbox",
+    needs: ["snapshot.disk"],
+    targets: ["start", "snapshots.create", "snapshots.start", "snapshots.remove"],
+    fix: "make snapshots.create idempotent by key, start a new sandbox from the snapshot (restoring its files), refuse to start from a removed snapshot, and treat a repeated remove as success",
+    async check(ctx) {
+      const snaps = need(ctx.sandbox, "snapshot.disk");
+      const source = await ctx.sandbox.start(ctx.spec("snap-source"), ctx.key("snap-source"));
+      const filesDeclared = ctx.sut.capabilities.capabilities["files.put"] === true && ctx.sut.capabilities.capabilities["files.get"] === true;
+      const data = bytes("snapshot-conformance");
+      if (filesDeclared) await need(ctx.sandbox, "files.put").put(source.id, "/tmp/conformance-snap", chunks(data), sha256(data), ctx.key("snap-put"));
+      const ref = await snaps.create(source.id, { memory: false }, ctx.key("snap-create"));
+      assert.ok(typeof ref.id === "string" && ref.id.length > 0, "a snapshot reference must carry an id");
+      assert.equal(ref.memory, false, "a disk snapshot (memory: false) must report memory: false");
+      const again = await snaps.create(source.id, { memory: false }, ctx.key("snap-create"));
+      assert.equal(again.id, ref.id, "a repeated create key must return the same snapshot, not take a second one");
+      assert.equal((await ctx.sandbox.inspect(source.id))?.running, true, "taking a snapshot must leave the source running");
+      const restored = await snaps.start(ref, ctx.spec("snap-restored"), ctx.key("snap-restored"));
+      assert.notEqual(restored.id, source.id, "a start from a snapshot must create a new sandbox, not return the source");
+      assert.equal((await ctx.sandbox.inspect(restored.id))?.running, true, "a sandbox started from a snapshot must be running");
+      assert.equal(
+        (await snaps.start(ref, ctx.spec("snap-restored"), ctx.key("snap-restored"))).id,
+        restored.id,
+        "a repeated start key must return the same sandbox",
+      );
+      if (filesDeclared) {
+        const got = await need(ctx.sandbox, "files.get").get(restored.id, "/tmp/conformance-snap", 1 << 20);
+        assert.deepEqual(await drain(got.body), Buffer.from(data), "a sandbox started from a snapshot must hold the files the source held when it was taken");
+      }
+      await snaps.remove(ref, ctx.key("snap-remove"));
+      await snaps.remove(ref, ctx.key("snap-remove"));
+      const gone = ctx.agent("snap-gone");
+      await assert.rejects(() => snaps.start(ref, ctx.spec("snap-gone"), ctx.key("snap-gone")), isRealError, "a removed snapshot must not start a sandbox");
+      assert.equal(await countFor(ctx, gone), 0, "a refused start from a removed snapshot must create nothing");
+    },
+  },
+  {
+    id: "snapshot-fork",
+    title: "a snapshot started twice under distinct keys yields two distinct sandboxes",
+    needs: ["fork"],
+    targets: ["start", "snapshots.create", "snapshots.start"],
+    fix: "start a separate sandbox for each distinct key when starting from one snapshot, and leave the source and the other forks running",
+    async check(ctx) {
+      const snaps = need(ctx.sandbox, "fork");
+      const source = await ctx.sandbox.start(ctx.spec("fork-source"), ctx.key("fork-source"));
+      const ref = await snaps.create(source.id, { memory: false }, ctx.key("fork-create"));
+      const a = await snaps.start(ref, ctx.spec("fork-a"), ctx.key("fork-a"));
+      const b = await snaps.start(ref, ctx.spec("fork-b"), ctx.key("fork-b"));
+      assert.equal(new Set([source.id, a.id, b.id]).size, 3, `a fork must start a distinct sandbox per key; got ${source.id}, ${a.id}, ${b.id}`);
+      for (const id of [source.id, a.id, b.id]) {
+        assert.equal((await ctx.sandbox.inspect(id))?.running, true, `sandbox ${id} must keep running after the fork`);
+      }
+    },
+  },
+  {
+    id: "snapshot-memory",
+    title: "a memory snapshot reports memory: true and starts a new sandbox",
+    needs: ["snapshot.memory"],
+    targets: ["start", "snapshots.create", "snapshots.start"],
+    fix: "honour memory: true in snapshots.create, report memory: true on the returned reference, and start a new sandbox from it",
+    async check(ctx) {
+      const snaps = need(ctx.sandbox, "snapshot.memory");
+      const source = await ctx.sandbox.start(ctx.spec("snapmem-source"), ctx.key("snapmem-source"));
+      const ref = await snaps.create(source.id, { memory: true }, ctx.key("snapmem-create"));
+      assert.equal(ref.memory, true, "a memory snapshot (memory: true) must report memory: true");
+      const restored = await snaps.start(ref, ctx.spec("snapmem-restored"), ctx.key("snapmem-restored"));
+      assert.notEqual(restored.id, source.id, "a start from a memory snapshot must create a new sandbox, not return the source");
+      assert.equal((await ctx.sandbox.inspect(restored.id))?.running, true, "a sandbox started from a memory snapshot must be running");
+    },
+  },
   ...EXTENDED_CONFORMANCE_CLAUSES,
 ] as const satisfies readonly (Clause & { id: ClauseId })[];
 
@@ -1053,6 +1129,8 @@ export interface FakeUnderTestOptions {
   name?: string;
   // Default true: the fake with connect, files.put and files.get declared. false = the plain fake (terminal only).
   remote?: boolean;
+  // Default true: the fake with snapshot.disk, snapshot.memory and fork declared. false = no snapshots facet.
+  snapshots?: boolean;
   // Default an empty probe result; false = the fake has no probe().
   probe?: SandboxProbeShape | false;
   // Decorates the fake (a deliberately broken sandbox in tests); the hooks keep driving the undecorated fake's fault plan.
@@ -1064,7 +1142,7 @@ export interface FakeUnderTestOptions {
   // Hooks merged over the fake's own (add foreignRecord or engine here; the fake has neither).
   hooks?: SandboxConformanceHooks;
   requireCapabilities?: readonly SandboxCapability[];
-  fake?: Omit<FakeSandboxOptions, "faults" | "remote" | "probe">;
+  fake?: Omit<FakeSandboxOptions, "faults" | "remote" | "probe" | "snapshots">;
 }
 type SandboxProbeShape = NonNullable<FakeSandboxOptions["probe"]>;
 
@@ -1073,7 +1151,7 @@ type SandboxProbeShape = NonNullable<FakeSandboxOptions["probe"]>;
 export function fakeSandboxUnderTest(o: FakeUnderTestOptions = {}): SandboxUnderTest {
   const remote = o.remote !== false;
   const probe = o.probe === false ? undefined : (o.probe ?? { withheld: [], problems: [], account: null });
-  const options = (faults: FaultPlan): FakeSandboxOptions => ({ ...o.fake, faults, remote, ...(probe && { probe }) });
+  const options = (faults: FaultPlan): FakeSandboxOptions => ({ ...o.fake, faults, remote, snapshots: o.snapshots !== false, ...(probe && { probe }) });
   const plans = new WeakMap<SandboxConformanceWorld, FaultPlan>();
   return {
     name: o.name ?? "fake",

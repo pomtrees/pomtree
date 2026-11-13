@@ -35,7 +35,7 @@ function register(scenario: Scenario) {
       return;
     case "probe-widens":
       // A probe withholding a capability the backend never declared widens the declaration.
-      runSandboxConformance(fakeSandboxUnderTest({ name: "neg-probe-widens", probe: { withheld: ["snapshot.disk"], problems: [], account: null } }));
+      runSandboxConformance(fakeSandboxUnderTest({ name: "neg-probe-widens", probe: { withheld: ["pause"], problems: [], account: null } }));
       return;
     case "declared-no-clauses":
       // Declares connect and files but registers no clause: the declaration and probe checks pass, the floor must not.
@@ -47,6 +47,7 @@ function register(scenario: Scenario) {
         fakeSandboxUnderTest({
           name: "neg-all-capability-skipped",
           remote: false,
+          snapshots: false,
           fake: { declaration: { capabilities: { loopback: false } }, facets: { loopback: undefined } },
         }),
         {

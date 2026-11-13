@@ -92,6 +92,7 @@ import type {
   SessionStore,
   Signal,
   SignalId,
+  SnapshotRef,
   SpawnSpec,
   Subscription,
   Template,
@@ -1517,6 +1518,9 @@ export interface FakeSandboxOptions {
   // Sandbox ids are sandboxIdForKey(idempotencyKey), as the port specifies, instead of the default sbx-1, sbx-2, ... that older
   // tests assert on. Implied by `remote`.
   derivedIds?: boolean;
+  // Snapshot mode: declares snapshot.disk, snapshot.memory and fork and installs an in-memory snapshots facet (a snapshot keeps the
+  // sandbox's accepted files; a start from it restores them); `declaration` and `facets` still override.
+  snapshots?: boolean;
 }
 
 // A connect channel that loops written bytes back as output. With dropAfter set, the stream breaks after that many output bytes.
@@ -1661,7 +1665,11 @@ export class FakeSandbox implements Sandbox {
     this.derivedIds = remote || options.derivedIds === true;
     this.declaration = fakeSandboxDeclaration({
       ...options.declaration,
-      ...(remote ? { capabilities: { connect: true, "files.put": true, "files.get": true, ...options.declaration?.capabilities } } : {}),
+      capabilities: {
+        ...(remote ? { connect: true, "files.put": true, "files.get": true } : {}),
+        ...(options.snapshots === true ? { "snapshot.disk": true, "snapshot.memory": true, fork: true } : {}),
+        ...options.declaration?.capabilities,
+      },
     });
     const facets: { [K in keyof SandboxFacets]?: SandboxFacets[K] | undefined } = {
       terminal: {
@@ -1695,6 +1703,7 @@ export class FakeSandbox implements Sandbox {
         },
       },
       ...(remote ? { connect: this.remoteConnect(), files: this.remoteFiles() } : {}),
+      ...(options.snapshots === true ? { snapshots: this.fakeSnapshots() } : {}),
       ...options.facets,
     };
     for (const k of Object.keys(facets) as (keyof SandboxFacets)[]) {
@@ -1915,6 +1924,42 @@ export class FakeSandbox implements Sandbox {
           ...(s.labels ? { labels: { ...s.labels } } : {}),
         };
       });
+  }
+  // Snapshots by id, each with the files its source held when it was taken; create is idempotent by key (a different sandbox or memory
+  // flag under the same key is a conflict) and start restores the files into the new sandbox.
+  private readonly snapshotStore = new Map<string, { ref: SnapshotRef; files: Map<string, Uint8Array> }>();
+  private readonly snapshotKeys = new Map<string, { fingerprint: string; ref: SnapshotRef }>();
+  private readonly snapshotRemoved = new Set<string>();
+  private fakeSnapshots(): NonNullable<SandboxFacets["snapshots"]> {
+    return {
+      create: async (id, opts, idempotencyKey) => {
+        const fingerprint = JSON.stringify([id, opts.memory]);
+        const prior = this.snapshotKeys.get(idempotencyKey);
+        if (prior) {
+          if (prior.fingerprint !== fingerprint) throw new IdempotencyConflictError("snapshots.create", idempotencyKey);
+          return { ...prior.ref };
+        }
+        const s = this.running.get(id);
+        if (!s || s.exitCode !== null) throw new SandboxUnavailableError("not-found");
+        const ref: SnapshotRef = { id: `snap-${this.snapshotStore.size + 1}`, backend: this.declaration.backend, memory: opts.memory };
+        this.snapshotStore.set(ref.id, { ref, files: new Map(this.fileStore.get(id) ?? []) });
+        this.snapshotKeys.set(idempotencyKey, { fingerprint, ref });
+        return { ...ref };
+      },
+      start: async (from, spec, idempotencyKey) => {
+        const snap = this.snapshotStore.get(from.id);
+        if (!snap || this.snapshotRemoved.has(from.id)) {
+          throw new SandboxUnavailableError("not-found", `snapshot ${from.id} does not exist or was removed; create a new snapshot first`);
+        }
+        const replay = this.startKeys.has(idempotencyKey);
+        const handle = await this.start(spec, idempotencyKey);
+        if (!replay && snap.files.size > 0) this.fileStore.set(handle.id, new Map(snap.files));
+        return handle;
+      },
+      remove: async (ref) => {
+        this.snapshotRemoved.add(ref.id); // removing a removed or unknown snapshot is success: the key only deduplicates journaling
+      },
+    };
   }
   private remoteConnect(): NonNullable<SandboxFacets["connect"]> {
     return {
