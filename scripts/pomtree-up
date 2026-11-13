@@ -110,18 +110,37 @@ fi
 # image's sources since, so a docs-only or observe-only commit is not stale). An unlabelled
 # image has unknown provenance and is never rebuilt automatically (warn only).
 image="${POMTREED_AGENT_IMAGE:-pomtree/agent:dev}"
-command -v docker >/dev/null || die "docker CLI not found; install Docker (Docker Desktop or Engine) and put docker on PATH"
-docker_perm_hint="if docker says permission denied, add your user to the docker group (sudo usermod -aG docker \$USER), then log out and back in"
-docker info >/dev/null 2>&1 || die "docker daemon not reachable (the CLI is installed); start Docker Desktop (or the docker service) and check DOCKER_HOST; $docker_perm_hint"
+# Mirrors scripts/live/engine.sh (engine selection and the sha256: prefixing below); duplicated because the tests copy this script into temp dirs, so it cannot source that file.
+# The engine CLI follows pomtreed's own selector POMTREED_SANDBOX_BACKEND (unset means docker); auto and unknown values are refused because the checks below need one CLI.
+engine="${POMTREED_SANDBOX_BACKEND-}"; engine="${engine:-docker}"
+case "$engine" in
+  docker)
+    engine_name=Docker
+    engine_install="install Docker (Docker Desktop or Engine)"
+    engine_perm_hint="if docker says permission denied, add your user to the docker group (sudo usermod -aG docker \$USER), then log out and back in"
+    engine_start="start Docker Desktop (or the docker service) and check DOCKER_HOST"
+    engine_build_hint="run 'docker buildx version' to confirm buildx is installed"
+    engine_mount_hint="on Docker Desktop add the path under Settings > Resources > File sharing, or pass --state under \$HOME" ;;
+  podman)
+    engine_name=Podman
+    engine_install="install Podman"
+    engine_perm_hint="if podman says permission denied, run it as your own user (rootless, no sudo)"
+    engine_start="start the user socket (systemctl --user start podman.socket) and check CONTAINER_HOST"
+    engine_build_hint="run 'podman version' to confirm podman builds work for your user"
+    engine_mount_hint="pass --state under \$HOME and check that your user may share it with the rootless container (SELinux hosts need a relabel)" ;;
+  *) die "POMTREED_SANDBOX_BACKEND=$engine is not supported here; set it to docker or podman (auto cannot tell this script which CLI to check), or unset it for docker" ;;
+esac
+command -v "$engine" >/dev/null || die "$engine CLI not found; $engine_install and put $engine on PATH"
+"$engine" info >/dev/null 2>&1 || die "$engine daemon not reachable (the CLI is installed); $engine_start; $engine_perm_hint"
 src_sha="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
 need_build=0
 built=0
 build_reason=""
-if ! docker image inspect "$image" >/dev/null 2>&1; then
+if ! "$engine" image inspect "$image" >/dev/null 2>&1; then
   [ "$no_build" -eq 1 ] && die "image $image missing and --no-build given"
   need_build=1; build_reason="missing"
 else
-  img_rev="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
+  img_rev="$("$engine" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
   if [ "$rebuild" -eq 1 ]; then
     need_build=1; build_reason="forced (--rebuild)"
   elif [ "$no_build" -eq 0 ] && [ -n "$img_rev" ] && ! image_label_current "$root" "$img_rev"; then
@@ -134,11 +153,11 @@ else
 fi
 if [ "$need_build" -eq 1 ]; then
   echo "pomtree-up: building image $image ($build_reason) ..." >&2
-  (cd "$root" && AGENT_IMAGE_TAG="$image" pnpm --filter @pomtree/agent-image build:image) || die "image build failed; check the build output above, run 'docker buildx version' to confirm buildx is installed, and $docker_perm_hint"
+  (cd "$root" && AGENT_IMAGE_ENGINE="$engine" AGENT_IMAGE_TAG="$image" pnpm --filter @pomtree/agent-image build:image) || die "image build failed; check the build output above, $engine_build_hint, and $engine_perm_hint"
   built=1
 fi
 # The sidecar runs this image's egress proxy; an image without it fails every agent spawn at sidecar start, so refuse it here.
-docker run --rm --network none --entrypoint node "$image" -e "process.exit(require('node:fs').existsSync('/opt/pomtree/egress/proxy.ts')?0:3)" >/dev/null 2>&1 && rc_probe=0 || rc_probe=$?
+"$engine" run --rm --network none --entrypoint node "$image" -e "process.exit(require('node:fs').existsSync('/opt/pomtree/egress/proxy.ts')?0:3)" >/dev/null 2>&1 && rc_probe=0 || rc_probe=$?
 [ "$rc_probe" -ne 3 ] || die "agent image $image has no egress proxy (/opt/pomtree/egress/proxy.ts); every agent spawn would fail at sidecar start. Rebuild it: scripts/pomtree-up --rebuild"
 
 # Free UI port.
@@ -182,11 +201,11 @@ if [ "$fresh" = 1 ]; then
 fi
 chmod 700 "$state"
 
-# Startup probe: can Docker bind-mount the state dir? (skipped with --no-build or when the daemon is unreachable)
+# Startup probe: can the engine bind-mount the state dir? (skipped with --no-build or when the daemon is unreachable)
 # TODO(doctor-state-visible): the probe lives here in the shell; it belongs in pomtreed's doctor (pomtree talks only to the daemon API) once the Sandbox port can expose a mount-visibility check
-if [ "$no_build" -eq 0 ] && docker info >/dev/null 2>&1; then
-  docker run --rm --entrypoint ls -v "$state:/pomtreed-state-probe:ro" "$image" /pomtreed-state-probe >/dev/null 2>&1 ||
-    die "Docker cannot see the state dir $state; on Docker Desktop add the path under Settings > Resources > File sharing, or pass --state under \$HOME"
+if [ "$no_build" -eq 0 ] && "$engine" info >/dev/null 2>&1; then
+  "$engine" run --rm --entrypoint ls -v "$state:/pomtreed-state-probe:ro" "$image" /pomtreed-state-probe >/dev/null 2>&1 ||
+    die "$engine_name cannot see the state dir $state; $engine_mount_hint"
 fi
 
 # pomtreed refuses to start without these three safety settings (docs/configuration.md); local dev gets the permissive-but-contained choice
@@ -195,10 +214,12 @@ fi
 if [ -n "${POMTREED_AGENT_EGRESS_PROXY_IMAGE:-}" ]; then
   [ "$built" -eq 0 ] || echo "pomtree-up: warning: image $image was just rebuilt but POMTREED_AGENT_EGRESS_PROXY_IMAGE is pre-set, so the sidecar keeps the old pinned proxy image; run 'unset POMTREED_AGENT_EGRESS_PROXY_IMAGE' and re-run scripts/pomtree-up" >&2
 else
-  egress_image="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
+  egress_image="$("$engine" image inspect --format '{{.Id}}' "$image" 2>/dev/null | tr -d '\r\n' || true)"
+  # Podman prints the bare 64-hex id where Docker prints sha256:<hex>.
+  case "$engine:$egress_image" in podman:????????????????????????????????????????????????????????????????) egress_image="sha256:$egress_image" ;; esac
   case "$egress_image" in
     sha256:????????????????????????????????????????????????????????????????) ;;
-    *) die "could not read the id of image $image (docker image inspect --format '{{.Id}}'); set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image (name@sha256:<64 hex> or sha256:<64 hex>)" ;;
+    *) die "could not read the id of image $image ($engine image inspect --format '{{.Id}}'); set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image (name@sha256:<64 hex> or sha256:<64 hex>)" ;;
   esac
   POMTREED_AGENT_EGRESS_PROXY_IMAGE="$egress_image"
 fi
@@ -243,7 +264,7 @@ startup_hint() {
   case "$1" in
     *POMTREED_PI_PROVIDER*) echo "set POMTREED_PI_PROVIDER=<provider> (or pass --provider; the provider the model proxy serves, e.g. openrouter)" ;;
     *POMTREED_MODEL_BASE_URL*) echo "pass --model-base-url URL or set POMTREED_MODEL_BASE_URL; see docs/operating.md" ;;
-    *POMTREED_AGENT_EGRESS_PROXY_IMAGE*|*agent.egressProxyImage*) echo "set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image: name@sha256:<64 hex>, or the local id from docker image inspect --format '{{.Id}}' <image>" ;;
+    *POMTREED_AGENT_EGRESS_PROXY_IMAGE*|*agent.egressProxyImage*) echo "set POMTREED_AGENT_EGRESS_PROXY_IMAGE to a digest-pinned image: name@sha256:<64 hex>, or the local id from $engine image inspect --format '{{.Id}}' <image>" ;;
     *POMTREED_AGENT_UNTEMPLATED_EGRESS*|*agent.untemplatedEgress*) echo "set POMTREED_AGENT_UNTEMPLATED_EGRESS=none|registry (registry: untemplated code agents reach package registries only)" ;;
     *POMTREED_EXTENSIONS_APPROVAL*|*extensions.approval*) echo "set POMTREED_EXTENSIONS_APPROVAL=all|none|<extension,extension> (all: every gated extension action waits for approval)" ;;
     *"agent.listen binds"*) echo "set POMTREED_AGENT_LISTEN to a loopback or docker bridge gateway address (or unset it), or set POMTREED_LISTEN_ALLOW_NONLOOPBACK=1 to accept that bind" ;;

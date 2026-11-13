@@ -5,11 +5,11 @@
 // requested backend's socket identifies as that backend (from its own /_ping and /version, never from the socket path) and throws on a
 // mismatch instead of skipping. The suites named in the drift guard (docker-gate.test.ts) then run against that engine: they build DockerSandbox
 // with gateSandboxDeps() and run the engine CLI through gateExecFileSync / gateExecFile / gateSpawn / gateCommand, which use the verified
-// profile's binary and socket. docker-pi is only partly threaded: the live-model.ts helper it calls (startLiveModel) remains on the list below.
+// profile's binary and socket. docker-pi calls live-model.ts (startLiveModel), which takes its engine from POMTREED_SANDBOX_BACKEND.
 // TODO(gate-engine-threading): the gated suites outside this package still hard-code `docker` or build DockerSandbox without
 // gateSandboxDeps(). Current behavior: they always run the Docker defaults, so a Podman job can still run them on Docker. Remaining:
-// packages/e2e/src/live-model.ts and live-model.test.ts, browser-live-run.ts and browser-live-run.test.ts, docker-browse-smoke.test.ts,
-// crash-recovery-live.ts and crash-recovery-live-multi.ts;
+// packages/e2e/src/browser-live-run.ts and browser-live-run.test.ts, docker-browse-smoke.test.ts (live-model.ts and the crash-recovery-live*.ts
+// drivers are threaded differently: they take the engine from POMTREED_SANDBOX_BACKEND, not from the gate);
 // packages/harness-pi/src/pi-ext-live.test.ts; packages/pomtreed/src/agent-net.docker.test.ts;
 // examples/hn-digest/content-live-smoke.test.mts, content-live-browser-smoke.test.mts, content-live-runtime.mts and model-runtime.mts.
 // Behavior change for the docker backend: the gate now runs detectLocalEngine in a child process first (the gates are synchronous) where it
@@ -26,6 +26,7 @@ import {
 } from "node:child_process";
 import { after } from "node:test";
 import { pathToFileURL } from "node:url";
+import { normalizeImageId } from "./engine-dialect.ts";
 import { cliSocketEnv, engineProfile, ENGINE_IDS, isEngineId, type EngineId, type EngineProfile } from "./engine-profile.ts";
 
 export const IMAGE = process.env.PTREE_AGENT_TEST_IMAGE ?? "pomtree/agent:dev";
@@ -209,7 +210,14 @@ export function gatePinnedImage(image: string, deps: { engine?: GateEngine; run?
   if (/^sha256:[0-9a-f]{64}$/.test(image) || /@sha256:[0-9a-f]{64}$/.test(image)) return image;
   let id = pinnedByName.get(image);
   if (id === undefined) {
-    id = gateExecFileSync(["image", "inspect", "--format", "{{.Id}}", image], { timeout: 10000 }, deps).trim();
+    const raw = gateExecFileSync(["image", "inspect", "--format", "{{.Id}}", image], { timeout: 10000 }, deps).trim();
+    // Podman prints a bare 64-hex id where Docker prints `sha256:<hex>`; the sandbox requires the prefixed form.
+    id = normalizeImageId((deps.engine ?? gateEngine()).profile, raw);
+    if (id === undefined) {
+      throw new Error(
+        `${image}: the engine printed "${raw}" for its image id, which is not a sha256 image id; check that ${(deps.engine ?? gateEngine()).profile.binary} image inspect --format '{{.Id}}' ${image} prints one, or set PTREE_AGENT_TEST_IMAGE to a locally built image`,
+      );
+    }
     pinnedByName.set(image, id);
   }
   return id;

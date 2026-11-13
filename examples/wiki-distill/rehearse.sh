@@ -11,7 +11,7 @@
 #                 effort; no pasting needed). The opener receives the signed-in link, so the operator token is in the opener's
 #                 and the browser's argv (readable from /proc/<pid>/cmdline; see docs/operating.md); we never pass --show-token, so it is not printed in our output or the pomtree-up log.
 #
-# Needs: docker (working without sudo), the built agent image (POMTREED_AGENT_IMAGE, else the newest local
+# Needs: docker, or podman when POMTREED_SANDBOX_BACKEND=podman (working without sudo), the built agent image (POMTREED_AGENT_IMAGE, else the newest local
 # pomtree/agent:* tag; this script never builds one), node, git. Run it from anywhere; it finds the checkout itself.
 #
 # What it never does: it uses no real model key and spends no money. The model is the scripted stub on loopback, the key
@@ -115,11 +115,15 @@ fi
 [ "$target" != "$root" ] || die "--target is the pomtree checkout itself; pass a separate repo or omit --target"
 
 # --- agent image -----------------------------------------------------------------------------------------------------
-# Use the image the operator named, else the newest local pomtree/agent:* tag (docker lists newest first).
-command -v docker >/dev/null || die "docker CLI not found; install Docker and put docker on PATH"
+# Use the image the operator named, else the newest local pomtree/agent:* tag (the engine lists newest first; Podman prefixes localhost/).
+# Mirrors scripts/live/engine.sh; duplicated because rehearse.test.mts copies this script into a sandbox, so a relative source of that file would break.
+# The engine CLI follows pomtreed's own selector POMTREED_SANDBOX_BACKEND (unset means docker); auto and unknown values are refused.
+engine="${POMTREED_SANDBOX_BACKEND-}"; engine="${engine:-docker}"
+case "$engine" in docker | podman) ;; *) die "POMTREED_SANDBOX_BACKEND=$engine is not supported here; set it to docker or podman (auto cannot tell this script which CLI to use), or unset it for docker" ;; esac
+command -v "$engine" >/dev/null || die "$engine CLI not found; install $engine and put $engine on PATH"
 image="${POMTREED_AGENT_IMAGE:-}"
 if [ -z "$image" ]; then
-  image="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^pomtree/agent:' | head -n1 || true)"
+  image="$("$engine" images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(localhost/)?pomtree/agent:' | head -n1 || true)"
 fi
 [ -n "$image" ] || die "no local pomtree/agent:* image found; build one (see GETTING_STARTED.md) or set POMTREED_AGENT_IMAGE, then rerun (this script never builds)"
 echo "agent image: $image"
@@ -134,10 +138,10 @@ chmod 600 "$key"
 # --- model catalog from the image ------------------------------------------------------------------------------------
 # Without a Pi model catalog pomtreed cannot price the stub's usage and the run never completes (docs/operating.md,
 # "Zero-spend first agent"). Copy it out of the image into the scratch directory.
-cid="$(docker create "$image")" || die "docker create $image failed; check docker works without sudo and the image exists"
-docker cp "$cid:/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data" "$scratch/pi-catalog" ||
-  { docker rm "$cid" >/dev/null 2>&1 || true; die "could not copy the model catalog out of $image; check the image is a pomtree agent image"; }
-docker rm "$cid" >/dev/null 2>&1 || true
+cid="$("$engine" create "$image")" || die "$engine create $image failed; check $engine works without sudo and the image exists"
+"$engine" cp "$cid:/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data" "$scratch/pi-catalog" ||
+  { "$engine" rm "$cid" >/dev/null 2>&1 || true; die "could not copy the model catalog out of $image; check the image is a pomtree agent image"; }
+"$engine" rm "$cid" >/dev/null 2>&1 || true
 export POMTREED_PI_CATALOG_DIR="$scratch/pi-catalog"
 
 # --- templates -------------------------------------------------------------------------------------------------------

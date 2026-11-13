@@ -214,6 +214,18 @@ test("gateExecFile, gateSpawn and gatePinnedImage use the engine's binary and so
   assert.equal(calls.length, 1);
 });
 
+test("gatePinnedImage: Podman's bare 64-hex image id is prefixed with sha256:, Docker's is unchanged, and an unrecognisable id throws", () => {
+  const hex = "c".repeat(64);
+  assert.equal(gatePinnedImage("pomtree/agent:bare-hex", { engine: podmanEngine, run: recorder(`${hex}\n`).run }), `sha256:${hex}`);
+  assert.equal(gatePinnedImage("pomtree/agent:docker-id", { engine: dockerEngine, run: recorder(`sha256:${hex}\n`).run }), `sha256:${hex}`);
+  // Docker never prints a bare id, so a bare id there is not an image id it can pin.
+  assert.throws(() => gatePinnedImage("pomtree/agent:docker-bare", { engine: dockerEngine, run: recorder(`${hex}\n`).run }), /docker-bare[\s\S]*sha256/);
+  assert.throws(() => gatePinnedImage("pomtree/agent:garbage", { engine: podmanEngine, run: recorder("not-an-id\n").run }), /garbage[\s\S]*sha256/);
+  // A failed normalisation is not cached: the next call inspects again.
+  const retry = recorder(`${hex}\n`);
+  assert.equal(gatePinnedImage("pomtree/agent:garbage", { engine: podmanEngine, run: retry.run }), `sha256:${hex}`);
+});
+
 test("gateCommand: podman drops a named CONTAINER_CONNECTION that would outrank the socket; docker leaves the env alone", () => {
   const callerEnv: NodeJS.ProcessEnv = { PATH: "/bin", CONTAINER_CONNECTION: "other" };
   const p = gateCommand(["ps"], { env: callerEnv }, podmanEngine);

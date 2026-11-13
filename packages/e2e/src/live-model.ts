@@ -6,6 +6,8 @@ import { CONFIG_REGISTRY, resolveConfig } from "@pomtree/core";
 import { ModelProxy, ProxyCredentialGateway, createModelProxyServer, openPiCatalog, proxyPiCredentials } from "@pomtree/pomtreed";
 import type { PiCredentials } from "@pomtree/pomtreed";
 import { PI_AUTH_PATH } from "@pomtree/harness-pi";
+import { DOCKER_PROFILE, engineProfile, normalizeImageId } from "@pomtree/sandbox-docker";
+import type { EngineProfile } from "@pomtree/sandbox-docker";
 import type { Store } from "@pomtree/store-sqlite";
 import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { buildModelProxyOptions, startReservationReclaim } from "../../pomtreed/src/model-proxy-options.ts";
@@ -17,8 +19,9 @@ import type { ProxySettlement } from "../../pomtreed/src/model-proxy/service.ts"
 // every child would inherit), unless the caller passes the key it already holds as `upstreamKey`; token prices come from Pi's own catalog (POMTREED_PI_CATALOG_DIR overrides its location).
 // Containers reach the proxy at host.docker.internal through the egress sidecar, so the template's egress must relay
 // the proxy endpoint (policy `none` grants no relay and therefore no model path). The bind is pomtreed's own plan
-// (`planAgentListen`): loopback on Docker Desktop, which forwards host.docker.internal to host loopback, and the
-// docker bridge gateway on Linux (reachable from containers, not from the LAN); never a wildcard.
+// (`planAgentListen`): loopback on Docker Desktop, which forwards host.docker.internal to host loopback, the
+// docker bridge gateway on Docker on Linux (reachable from containers, not from the LAN), and loopback on rootless Podman
+// (its egress sidecar maps the host loopback); never a wildcard. The engine is the daemon's own selector POMTREED_SANDBOX_BACKEND.
 export interface LiveModel {
   gateway: ProxyCredentialGateway;
   credentials: PiCredentials;
@@ -26,6 +29,17 @@ export interface LiveModel {
   close(): Promise<void>;
 }
 
+export const SANDBOX_BACKEND_ENV = "POMTREED_SANDBOX_BACKEND";
+// What a harness that spawns pomtreed with a scrubbed env forwards so the daemon picks the same engine and finds its socket: every
+// POMTREED_SANDBOX_* setting (the selector SANDBOX_BACKEND_ENV and the per-engine socket keys) plus the engine CLIs' own locators.
+// A prefix, not the socket key names: those are registered by the sandbox backends, not by core's registry.
+const ENGINE_ENV_PREFIX = "POMTREED_SANDBOX_";
+const ENGINE_ENV_NAMES = ["DOCKER_HOST", "CONTAINER_HOST", "XDG_RUNTIME_DIR"];
+export function engineEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v && (k.startsWith(ENGINE_ENV_PREFIX) || ENGINE_ENV_NAMES.includes(k))) out[k] = v;
+  return out;
+}
 export const UPSTREAM_KEY_FILE_ENV = "POMTREED_MODEL_UPSTREAM_KEY_FILE";
 const RETIRED_KEY_ENV = "PTREE_E2E_MODEL_KEY";
 
@@ -45,22 +59,35 @@ export function readUpstreamKeyFile(env: Record<string, string | undefined>): st
   return r.values["model.upstreamKey"];
 }
 
-// The egress proxy image as DockerSandbox requires it: digest-pinned (`sha256:<hex>`, the local image id, resolved once per name).
-// An already pinned reference (`name@sha256:<hex>` or `sha256:<hex>`) is returned as is.
-// TODO(egress-image): import sandbox-docker's pinnedImage() once exported.
+// The container engine the live run drives: the profile for POMTREED_SANDBOX_BACKEND, as the daemon names it. Unset or empty means
+// docker; `auto` is refused because it only resolves inside pomtreed and the live helpers must know which CLI to run.
+export function liveEngine(env: Record<string, string | undefined>): EngineProfile {
+  const v = env[SANDBOX_BACKEND_ENV];
+  if (v === undefined || v === "") return DOCKER_PROFILE;
+  if (v === "docker" || v === "podman") return engineProfile(v);
+  throw new Error(
+    `${SANDBOX_BACKEND_ENV}=${v} is not supported by the live runs: set it to docker or podman (auto cannot tell them which CLI to use), or unset it for docker`,
+  );
+}
+
+// The egress proxy image as DockerSandbox requires it: digest-pinned (`sha256:<hex>`, the local image id, resolved once per engine and name;
+// Podman prints bare hex, which normalizeImageId prefixes). An already pinned reference (`name@sha256:<hex>` or `sha256:<hex>`) is returned as is.
+// TODO(egress-image): this duplicates gatePinnedImage in sandbox-docker's docker-gate.ts, which imports node:test and so cannot be used from a non-test helper; replace it once sandbox-docker exports a resolver outside the test gate.
 const pinnedImages = new Map<string, string>();
-export function pinnedImage(image: string): string {
+export function pinnedImage(image: string, engine: EngineProfile = DOCKER_PROFILE): string {
   if (/^sha256:[0-9a-f]{64}$/.test(image) || /@sha256:[0-9a-f]{64}$/.test(image)) return image;
-  let id = pinnedImages.get(image);
+  const key = `${engine.id}:${image}`;
+  let id = pinnedImages.get(key);
   if (id === undefined) {
-    id = execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", timeout: 10_000 }).trim();
-    if (!/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error(`docker image inspect ${image} returned ${JSON.stringify(id)}, not a sha256 image id`);
-    pinnedImages.set(image, id);
+    const raw = execFileSync(engine.binary, ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", timeout: 10_000 }).trim();
+    id = normalizeImageId(engine, raw);
+    if (id === undefined) throw new Error(`${engine.binary} image inspect ${image} returned ${JSON.stringify(raw)}, not a sha256 image id`);
+    pinnedImages.set(key, id);
   }
   return id;
 }
 
-const dockerExec = (cmd: string, args: string[]) =>
+const engineExec = (cmd: string, args: string[]) =>
   new Promise<string>((resolve, reject) => execFile(cmd, args, { timeout: 10_000 }, (e, out) => (e ? reject(e) : resolve(out))));
 
 export async function startLiveModel(o: {
@@ -71,7 +98,7 @@ export async function startLiveModel(o: {
   env: Record<string, string | undefined>;
   fetch?: typeof globalThis.fetch; // optional injection (counting/guard wrapper); default unchanged
   platform?: string; // test seam for the bind plan; default process.platform
-  gateway?: string; // test seam: the bridge gateway; default detected from docker on Linux
+  gateway?: string; // test seam: the bridge gateway; default detected from the Docker CLI on Linux (Podman binds loopback and needs none)
   // Settlement hook. Default: pomtreed's own sink (`settlementSink`) over `store`, so every call's metadata lands on its debit
   // ledger row and one `ext.pomtreed.model_settlement` entry is journaled, exactly as in the daemon. Override only to observe or
   // (in a negative control) to disable it.
@@ -87,6 +114,7 @@ export async function startLiveModel(o: {
   if (!o.provider) throw new Error("POMTREED_PI_PROVIDER is required: the scoped credential is written for one provider");
   if (o.env[RETIRED_KEY_ENV] !== undefined)
     throw new Error(`${RETIRED_KEY_ENV} is retired (a raw key in the env reaches every child): write the key to a 0600 file and set ${UPSTREAM_KEY_FILE_ENV}`);
+  const engine = liveEngine(o.env);
   const upstreamKey = o.upstreamKey ?? readUpstreamKeyFile(o.env);
   const catalog = openPiCatalog(o.env, o.provider);
   if (!catalog.found) console.error(catalog.message);
@@ -110,7 +138,7 @@ export async function startLiveModel(o: {
   const proxy = new ModelProxy(proxyOptions);
   const reclaim = startReservationReclaim(debits, upstreamTimeoutMs, (m) => console.error(m));
   const platform = o.platform ?? process.platform;
-  const plan = await agentBindPlan(platform, async () => o.gateway ?? detectBridgeGateway(dockerExec));
+  const plan = await agentBindPlan(platform, async () => o.gateway ?? detectBridgeGateway(engineExec, false, engine), engine);
   if (plan.warning) console.error(plan.warning);
   const server: Server = createModelProxyServer(proxy);
   await new Promise<void>((resolve, reject) => {

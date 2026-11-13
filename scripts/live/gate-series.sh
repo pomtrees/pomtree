@@ -6,8 +6,8 @@
 #   a failed item is reported at once and the series CONTINUES (--stop-on-failure to stop; exit 1 at the end);
 #   a spend rule PAUSES the series, resumable only with an explicit --grant N of further quota (exit 3; a pause is not a failure);
 #   a leak, or spend/leak state that cannot be determined, STOPS it for investigation (exit 4); 0 means every item passed; 2 is a refusal.
-# Needs: what the drivers need (Docker, POMTREED_AGENT_IMAGE, POMTREED_MODEL_KEY_FILE; the key file is only tested for mode and blank lines by count, never read or printed).
-# Calls ins3.sh, relay.sh and harness.sh unchanged and reads their run directories. Its only Docker calls are read-only (info, image inspect, label listings).
+# Needs: what the drivers need (Docker or Podman per POMTREED_SANDBOX_BACKEND, POMTREED_AGENT_IMAGE, POMTREED_MODEL_KEY_FILE; the key file is only tested for mode and blank lines by count, never read or printed).
+# Calls ins3.sh, relay.sh and harness.sh unchanged and reads their run directories. Its only engine calls are read-only (info, image inspect, label listings).
 # Writes <root>/series.tsv (the ledger: resume state), <root>/rows.md (docs/validation.md's results-table header, then one row per attempt, for pasting; this script only appends to that file) and <root>/NN-<item>/ run directories.
 # Rules (scripts/live/README.md, "Runbook: live runs"): one retry, only after exit 2 with spend < 50000 micros; pause when a run spends > 50000 micros and is not clean;
 # authorization starts at 2,000,000 micros cumulative (the stop-and-ask) and grows only by --grant; no item starts if prior spend + its ceiling would pass it.
@@ -15,6 +15,7 @@
 # Never enable `set -x`; the key file's contents are never read here.
 SP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 set -u
+source "$SP/engine.sh"
 source "$SP/results-row.sh"
 source "$SP/../image-sources.sh"
 
@@ -110,9 +111,9 @@ echo "  spent so far $CUM micros; authorization $AUTH micros ($SOFT standing + $
 [ "$AUTH" -le "$HARD" ] || echo "  note: this authorization exceeds the $HARD micros total in scripts/live/README.md; raising it means editing HARD in this script"
 
 # stores: the store_id of every container and volume on the host that carries one (the daemon's ownership label on sandboxes, egress sidecars and their
-# socket volumes). Prints sorted unique ids; fails if Docker cannot be queried.
+# socket volumes). Prints sorted unique ids; fails if the engine cannot be queried.
 stores() {
-  { docker ps -a --filter label=store_id --format '{{.Label "store_id"}}' && docker volume ls --filter label=store_id --format '{{.Label "store_id"}}'; } 2>/dev/null | sed '/^$/d' | sort -u
+  { "$ENGINE" ps -a --filter label=store_id --format '{{.Label "store_id"}}' && "$ENGINE" volume ls --filter label=store_id --format "$(volume_label_format store_id)"; } 2>/dev/null | sed '/^$/d' | sort -u
   [ "${PIPESTATUS[0]}" = 0 ]
 }
 # leakcheck <rundir> <rc> <stores-before-file>: sets L_STATE (clean|leak|unknown) and L_WHY. A leak is a labelled container or volume whose store_id did not
@@ -121,7 +122,7 @@ stores() {
 leakcheck() {
   local R="$1" rc="$2" now new n
   L_STATE=clean; L_WHY="no new store-labelled containers or volumes, 0 key-leak files"
-  now="$(stores)" || { L_STATE=unknown; L_WHY="docker could not be queried for store labels"; return; }
+  now="$(stores)" || { L_STATE=unknown; L_WHY="$ENGINE could not be queried for store labels"; return; }
   new="$(comm -13 "$3" <(printf '%s\n' "$now" | sed '/^$/d') | tr '\n' ' ')"
   [ -z "$new" ] || { L_STATE=leak; L_WHY="containers or volumes remain with store_id: $new"; return; }
   { [ "$rc" = 2 ] || [ "$rc" = 9 ]; } && return
@@ -134,9 +135,12 @@ leakcheck() {
 # Preflight and smoke: zero spend, each failure a refusal naming the cause and the action. Real runs only; a dry run prints the plan and checks none of this.
 preflight() {
   local v kf="$POMTREED_MODEL_KEY_FILE" mode lbl full drift IMG_WHY
-  docker info >/dev/null 2>&1 || die "Docker is not reachable; start the daemon (or fix DOCKER_HOST) and rerun"
-  docker image inspect "$POMTREED_AGENT_IMAGE" >/dev/null 2>&1 || die "agent image '$POMTREED_AGENT_IMAGE' is not present locally; build it from the committed HEAD (scripts/live/README.md) and rerun"
-  lbl="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$POMTREED_AGENT_IMAGE" 2>/dev/null | tr -d '\r\n')"; full="$(git -C "$REPO" rev-parse HEAD)"
+  "$ENGINE" info >/dev/null 2>&1 || {
+    if [ "$ENGINE" = podman ]; then die "Podman is not reachable; start the user socket (systemctl --user start podman.socket) or fix CONTAINER_HOST, and rerun"
+    else die "Docker is not reachable; start the daemon (or fix DOCKER_HOST) and rerun"; fi
+  }
+  "$ENGINE" image inspect "$POMTREED_AGENT_IMAGE" >/dev/null 2>&1 || die "agent image '$POMTREED_AGENT_IMAGE' is not present locally; build it from the committed HEAD (scripts/live/README.md) and rerun"
+  lbl="$("$ENGINE" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$POMTREED_AGENT_IMAGE" 2>/dev/null | tr -d '\r\n')"; full="$(git -C "$REPO" rev-parse HEAD)"
   # The image must match the code the runs execute. Requiring the label to BE HEAD also forbade committing anything during a
   # series: recording a results row moves HEAD, so the next item refused to start and the rule "commit after each item" and
   # this check could not both be honoured. So accept a label that is an ancestor of HEAD when nothing the image is built from
@@ -164,7 +168,7 @@ preflight() {
   mode="$(stat -c %a "$kf" 2>/dev/null || stat -f %Lp "$kf" 2>/dev/null)"
   [ "$mode" = 600 ] || die "the key file has mode ${mode:-unknown}, not 600; run chmod 600 on it and rerun"
   [ "$(grep -c '^$' "$kf" 2>/dev/null)" = 0 ] || die "the key file has a blank line (the drivers refuse that); remove it and rerun"
-  echo "preflight ok: docker, $IMG_WHY, pi, model env unset, key file 0600 without blank lines"
+  echo "preflight ok: $ENGINE, $IMG_WHY, pi, model env unset, key file 0600 without blank lines"
 }
 # smoke: proves the drivers are not stale in the ways cheap to check. It never uses the real key: the one driver run uses an empty dummy key file.
 smoke() {
@@ -177,7 +181,7 @@ smoke() {
     [ -e "$f" ] || die "driver for '$s' runs $f, which no longer exists at this commit; the driver is stale: update it and rerun"
   done; done
   case " $LIST " in *" egr2 "*)
-    : > "$sd/dummy.key"; chmod 600 "$sd/dummy.key"; stores > "$sd/stores.before" || die "docker could not be queried for store labels"
+    : > "$sd/dummy.key"; chmod 600 "$sd/dummy.key"; stores > "$sd/stores.before" || die "$ENGINE could not be queried for store labels"
     POMTREED_MODEL_KEY_FILE="$sd/dummy.key" bash "$SP/harness.sh" "$sd/egr2smoke" egr2smoke > "$sd/driver.log" 2>&1; rc=$?
     leakcheck "$sd/egr2smoke" "$rc" "$sd/stores.before"
     [ "$rc" = 0 ] || die "the zero-spend browser smoke (egr2smoke) exited $rc; read $sd/driver.log and $sd/egr2smoke/run.log, fix the cause (full image needed) and rerun"
@@ -269,7 +273,7 @@ for i in "${!SPECS[@]}"; do
     [ ! -e "$RD" ] || die "$RD already exists without a finished ledger entry; evidence is never overwritten. Read it, record its spend in $LEDGER (or move it aside) and resume"
     if ! gate "$CEIL"; then STOPPED="[$pos] $spec not started. $RULE"; STOPKIND=spend; NEXTPOS=$pos; break 2; fi
     echo "[$pos/${#SPECS[@]}] $I_ID attempt $att, ceiling $CEIL micros, started at +$(fmt $SECONDS)"; echo "  cmd: ${CMD[*]}"
-    mkdir -p "$RD"; stores > "$RD/stores.before" || { STOPPED="[$pos] $spec not started. fail closed: docker could not be queried for store labels"; STOPKIND=hard; break 2; }
+    mkdir -p "$RD"; stores > "$RD/stores.before" || { STOPPED="[$pos] $spec not started. fail closed: $ENGINE could not be queried for store labels"; STOPKIND=hard; break 2; }
     day="$(date -u +%F)"; ledger_add "$pos" "$spec" "$att" "$day" pending '?' '?' no 0
     trap 'echo "gate-series: interrupted during ${RD##*/}; its spend is unknown. Resume asks you to record it in the ledger (see the README)"; rmdir "$OUT/.lock" 2>/dev/null; exit 130' INT TERM
     t0=$SECONDS; "${CMD[@]}" > "$RD/series-driver.log" 2>&1; rc=$?   # exit code captured directly, never through a pipe
