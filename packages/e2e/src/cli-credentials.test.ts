@@ -94,7 +94,7 @@ const vanished = (e: unknown) => (e as NodeJS.ErrnoException)?.code === "ENOENT"
 // The walk is over a live tree the daemon may still be changing (workspace folders are evicted or rewritten), so an entry can legitimately
 // disappear between being listed and being read. Such an entry is skipped: a vanished file no longer holds anything at rest. Every other
 // error, and a missing `dir` itself, still throws. The walk is not a snapshot: content written after its directory was listed (for example a file renamed into place mid-walk) is not seen, a limit the walk had before this change too.
-// TODO(crd2-scan-race): the walk skips entries that vanish mid-walk (ENOENT) and reports them as a diagnostic; other errors still throw.
+// Skipped entries are reported as a diagnostic (reportVanished); the EACCES cases below keep the other errors throwing.
 // Suspected writer (code reading, not yet observed): the daemon evicts a reaped agent's workspace on the next cleanup tick, because the harness keeps the defaults folder.reapedGraceMs = 0 and cleanup.sweepMs = 60 s.
 // Proposed fix: set a large folder.reapedGraceMs in the harness stack so the workspace stays until teardown, then assert nothing vanished and keep this tolerance only as a backstop. See issue #531.
 async function scanTree(dir: string, ops: TreeOps = realOps): Promise<Scan & { files: number; withMatch: string[]; vanished: string[] }> {
