@@ -321,17 +321,28 @@ const open = () => {
   const es = new EventSource(base + "?from=" + encodeURIComponent(String(lastSeq)));
   const badge = document.createElement("span");
   es.onopen = () => { retryMs = 2000; K.setConn(badge, true); if (status.className === ERR && /^(Stream|Inbox stream)/.test(status.textContent)) say("", false); };
-  // TODO(inbox-stream-cause): the cause of the "Stream interrupted / reconnecting" notice is unconfirmed; the suspects are a 401, a 503 from the 64-stream SSE cap (MAX_SSE_STREAMS in packages/pomtreed/src/server.ts; each tab holds two streams) and a server close. Nobody has checked /live/messages in devtools. Trigger: the operator sees the notice again; first read the status and the close in the Network tab.
+  // An EventSource error carries no HTTP status. CLOSED means the browser gave up (a non-200 answer such as a 401 or the 503 of
+  // the 64-stream cap, or a wrong content type); CONNECTING means it is retrying itself (a network loss or a server close).
+  // TODO(inbox-stream-cause): the reconnecting notice cannot tell a server close from a dropped connection while the browser
+  // reports online, and a CLOSED stream is told apart only for a 401 (the probe below); nobody has read /live/messages in the
+  // browser's Network tab. Trigger: the operator sees "Stream interrupted" or the closed notice again; read the response status
+  // and the close there first (a 503 is the MAX_SSE_STREAMS cap in packages/pomtreed/src/server.ts, two streams per tab).
   es.onerror = () => {
     K.setConn(badge, false);
     if (es.readyState === 2) {
       // CLOSED for good (the browser will not retry itself): say so, and reopen on a capped backoff.
-      say("Inbox stream closed (the server refused it, e.g. sign-in expired or too many streams) \\u2014 reload the page", true);
+      const closedText = "Inbox stream closed (the server refused it, e.g. sign-in expired or too many streams) \\u2014 reload the page";
+      say(closedText, true);
+      // Probe an authenticated route: a 401 there means the sign-in expired, which the closed stream alone cannot say.
+      K.getJson(cfg.agents).catch((err) => {
+        if (err && err.status === 401 && status.textContent === closedText) say("Inbox stream closed: not signed in \\u2014 reload the page to sign in", true);
+      });
       es.close();
       const wait = retryMs;
       retryMs = Math.min(retryMs * 2, 30000);
       setTimeout(open, wait);
-    } else say("Stream interrupted \\u2014 reconnecting", true);
+    } else if (typeof navigator !== "undefined" && navigator.onLine === false) say("Stream offline \\u2014 reconnecting when the network returns", true);
+    else say("Stream interrupted \\u2014 reconnecting", true);
   };
   es.onmessage = (ev) => {
     let m;
