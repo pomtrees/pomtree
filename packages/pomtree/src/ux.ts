@@ -116,6 +116,7 @@ export function doctorNextSteps(d0: object): string[] {
     degraded?: boolean;
     sweepsStale?: boolean;
     agentEndpoint?: { containerReachable?: boolean; hostProbe?: boolean };
+    heldAgents?: string[];
   };
   const n: string[] = [];
   if (d.sandboxUp === false)
@@ -123,6 +124,10 @@ export function doctorNextSteps(d0: object): string[] {
   if (d.journalFailed) n.push("journal writes failing: check free disk space and write permissions on the pomtreed state dir (POMTREED_STATE_DIR)");
   if (d.degraded) n.push("daemon degraded: read pomtreed.log in the pomtreed state dir for the cause, then restart pomtreed");
   if (d.sweepsStale) n.push("background sweeps stale: read pomtreed.log in the pomtreed state dir; restart pomtreed if it persists");
+  if (d.heldAgents?.length)
+    n.push(
+      `held agents: select the sandbox backend they were started on again (sandbox.backend) and restart pomtreed, or end each run with ${d.heldAgents.map((id) => `pomtree abandon ${id}`).join(", ")}`,
+    );
   const ae = d.agentEndpoint;
   if (ae && (ae.hostProbe === false || ae.containerReachable === false))
     n.push(
@@ -175,6 +180,7 @@ export function renderDoctor(
       ? `WARNING: client/server revision mismatch: pomtreed git ${rev.gitSha ?? "unknown"} vs agent image ${rev.imageRevision ?? "unknown"} (run scripts/pomtree-up --rebuild)`
       : null;
   const next = doctorNextSteps(d);
+  const held = (d as { heldAgents?: string[] }).heldAgents ?? [];
   const states =
     Object.entries(d.agents ?? {})
       .map(([k, n]) => `${n} ${k}`)
@@ -190,6 +196,7 @@ export function renderDoctor(
     `  live:       ${d.live}`,
     ...(ms ? [`  max sessions: ${ms.value} (${ms.mode})`] : []),
     ...(be ? [`  backend:    ${renderBackend(be)}`] : []),
+    ...(held.length ? [`  held:       ${held.join(", ")} (sandbox on a backend that is not the selected one; never inspected, resumed or killed)`] : []),
     ...(ae
       ? [
           `  agent api:  ${(ae.bind ?? []).join(", ") || "off"} (${ae.containerReachable === false || ae.hostProbe === false ? "NOT reachable from containers" : "reachable from containers"})`,
