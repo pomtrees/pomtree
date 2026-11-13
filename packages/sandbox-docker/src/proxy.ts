@@ -81,6 +81,11 @@ export interface ProxyOptions {
   unsafeAllowLoopback?: boolean;
   // Presence both enables public destinations and requires synchronous durable admission.
   auditedPublic?: EgressAuditWriter;
+  // Ports other than 80 and 443 that audited-public destinations may use. Default none: any other port is refused (git over SSH, SMTP
+  // and the like need their port listed here).
+  // TODO(egress-public-ports): nothing sets this from policy yet. Current behavior: the sidecar config (EgressProxyConfig in audit.ts) has no key for it, so
+  // a deployed audited-public proxy allows 80 and 443 only; the key belongs on core's audited-public EgressPolicy and the template schema.
+  publicPorts?: ReadonlySet<number>;
   audit?: EgressAuditWriter;
   relay?: Set<string>;
   // Required: an absent list used to default to empty and silently disabled host-owned address denial.
@@ -402,12 +407,18 @@ export function attachProxy(server: ReturnType<typeof createServer>, allow: Set<
     const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
     const reservedName =
       bare === RELAY_HOSTNAME || bare === "localhost" || bare.endsWith(".localhost") || bare.endsWith(".local") || bare === "gateway.docker.internal";
-    // TODO(egress-residual): public ports and the writable audit log remain open. Current behavior: with auditedPublic set, any
-    // valid port 1..65535 to a public address is permitted; the audit-log half lives in audit.ts and the proxy mount.
-    // TODO(egress): ports are not restricted to 80/443; SMTP/SSH-style tunnels to public IPs are allowed and audited
-    // (the authority in every record carries the port). Current behavior: any valid port 1..65535 to a public address.
-    const permitted = host && port > 0 && port <= 65535 && (relay || (!reservedName && (opts.auditedPublic || isAllowed(allow, host, port))));
-    let verdict: ResolveVerdict = { deny: reservedName ? "reserved" : "not-allowlisted" };
+    // TODO(egress-residual): the writable audit log remains open. Current behavior: the audit-log half lives in audit.ts and the proxy
+    // mount; public ports are restricted above (80, 443 and `publicPorts`).
+    const allowedHere = isAllowed(allow, host, port);
+    // Audited-public destinations are web-only unless the port is listed: 80, 443 and `publicPorts`. An allow-list entry names its port.
+    const publicPortOk = port === 80 || port === 443 || (opts.publicPorts?.has(port) ?? false);
+    const portRefused = !relay && !reservedName && !!opts.auditedPublic && !publicPortOk && !allowedHere && port > 0 && port <= 65535;
+    const permitted = host && port > 0 && port <= 65535 && (relay || (!reservedName && (allowedHere || (!!opts.auditedPublic && publicPortOk))));
+    if (portRefused)
+      console.error(
+        `egress denied ${host}:${port}: port ${port} is not 80 or 443; list it in the proxy's publicPorts option to allow it, or use an https:// remote`,
+      );
+    let verdict: ResolveVerdict = { deny: reservedName ? "reserved" : portRefused ? "port" : "not-allowlisted" };
     // lookup() cannot cancel its OS resolver work. Keep a separate reservation until it settles,
     // even if the client/deadline has gone away; otherwise stalled DNS could grow an unbounded queue.
     if (permitted) {
@@ -427,7 +438,7 @@ export function attachProxy(server: ReturnType<typeof createServer>, allow: Set<
     const row: EgressAuditEvent = { ...event, phase: "admission", admittedAt };
     if (!append(adm.ip ? { ...row, outcome: "allowed", peer: adm.ip, peers: adm.peers } : { ...row, outcome: "denied", denyReason: adm.deny }))
       return undefined;
-    if (!adm.ip) logDenied(host, port);
+    if (!adm.ip && !portRefused) logDenied(host, port);
     return adm;
   }
   function flow(base: EgressAuditEvent, cls: TrafficClass, destroy: () => void) {

@@ -61,7 +61,7 @@ export interface EgressProxyConfig {
   limits?: { relayMaxBytes?: number };
 }
 // Closed enums, never free text. Additive: legacy records without these fields stay valid.
-export const DENY_REASONS = ["dns", "private", "hard-class", "not-allowlisted", "reserved", "resolver-limit"] as const;
+export const DENY_REASONS = ["dns", "private", "hard-class", "not-allowlisted", "reserved", "resolver-limit", "port"] as const;
 export const LIMIT_KINDS = ["deadline", "idle", "bytes", "connections"] as const;
 export const ERROR_CLASSES = ["dial", "reset", "timeout", "protocol", "internal"] as const;
 // Which limits a connection ran under: "relay" (an exact controller relay endpoint), "public" (allowlisted or audited-public).

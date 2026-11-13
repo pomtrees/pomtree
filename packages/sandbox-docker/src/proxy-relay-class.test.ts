@@ -83,7 +83,11 @@ async function sidecar(relayPort: number, limits?: EgressProxyConfig["limits"]) 
     auditedPublic: true,
     ...(limits ? { limits } : {}),
   };
-  const proxies = createSidecarProxies(validateProxyConfig(config), new Set(), writer, { resolve: async () => ["127.0.0.1"], unsafeAllowLoopback: true });
+  const proxies = createSidecarProxies(validateProxyConfig(config), new Set(), writer, {
+    resolve: async () => ["127.0.0.1"],
+    unsafeAllowLoopback: true,
+    publicPorts: new Set([relayPort]),
+  });
   const port = await listen(proxies.main.server);
   return {
     port,
@@ -179,6 +183,7 @@ async function tunnelProxy(opts: Partial<ProxyOptions>) {
     relay: new Set([`relay.test:${echoPort}`]),
     hostAddresses: new Set(),
     auditedPublic: writer,
+    publicPorts: new Set([echoPort]),
     resolve: async () => ["8.8.8.8"],
     connect: () => new Socket().connect(echoPort, "127.0.0.1"),
     ...opts,
@@ -320,6 +325,7 @@ async function exchangeTunnel(exchange: number, opts: Partial<ProxyOptions>) {
     relay: new Set([`relay.test:${upPort}`]),
     hostAddresses: new Set(),
     auditedPublic: writer,
+    publicPorts: new Set([upPort]),
     resolve: async () => ["8.8.8.8"],
     connect: () => new Socket().connect(upPort, "127.0.0.1"),
     ...opts,
@@ -469,6 +475,7 @@ test("one continuous body over a relay tunnel is cut near the ceiling although u
     auditedPublic: writer,
     relayMaxBytes: cap,
     relayTunnelCeilingBytes: ceiling,
+    publicPorts: new Set([upPort]),
     resolve: async () => ["8.8.8.8"],
     connect: () => new Socket().connect(upPort, "127.0.0.1"),
   });

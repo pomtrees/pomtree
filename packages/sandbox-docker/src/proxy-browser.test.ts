@@ -40,6 +40,7 @@ test("browser listener has no relay authorities; the main listener keeps them", 
     new Set<string>(),
     { append: (e) => void events.push(e) },
     {
+      publicPorts: new Set([fixturePort]),
       resolve: async (host) => [host === "relay.test" ? "10.0.0.5" : "8.8.8.8"],
       connect: () => connect(fixturePort, "127.0.0.1"),
     },

@@ -326,6 +326,7 @@ test("errorClass protocol: an upstream that answers an absolute-form request wit
   try {
     const events = await drive(
       {
+        publicPorts: new Set([8081]),
         resolve: async () => ["8.8.8.8"],
         request: ((options: RequestOptions, cb: (res: IncomingMessage) => void) =>
           httpRequest({ ...options, host: "127.0.0.1", port: raw.port }, cb)) as typeof httpRequest,

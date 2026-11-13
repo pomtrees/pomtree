@@ -42,6 +42,7 @@ test("audited public HTTP uses pinned validated IP, fsync seam precedes dial, me
         events.push(e);
       },
     },
+    publicPorts: new Set([8081]),
     resolve: async () => ["8.8.8.8"],
     request: ((options: RequestOptions, cb: (res: IncomingMessage) => void) => {
       assert.equal(events.at(-1)?.phase, "admission");
@@ -214,6 +215,7 @@ test("CONNECT deadline/cancellation and late audit keep connection metadata only
       // test's own timeout, so under load a short deadline can never fire before the abort or the failed append (TODO(load-flakes)).
       ...(mode === "deadline" ? { deadlineMs: 40 } : {}),
       signal: abort.signal,
+      publicPorts: new Set([8443]),
       auditedPublic: {
         append(e) {
           if (mode === "audit-failure" && e.outcome === "connected") throw Error("fsync failed");
@@ -296,8 +298,24 @@ test("oversized host over HTTP and CONNECT is denied with a bounded record; the 
   }
 });
 
-test("non-web public ports stay allowed (TODO(egress)) and the audit record carries the port", async () => {
+async function connectVia(port: number, authority: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let head = "";
+    const client = connect(port, "127.0.0.1", () => client.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`));
+    client.on("data", (d) => {
+      head += d.toString();
+      client.destroy();
+    });
+    client.on("close", () => resolve(head));
+    client.on("error", reject);
+  });
+}
+
+// Public destinations are web-only by default: a CONNECT to any other port is refused and audited, with the cause and the action on
+// stderr. `publicPorts` is the explicit allow list of further ports.
+async function portCase(publicPorts: ReadonlySet<number> | undefined, authority: string) {
   const events: EgressAuditEvent[] = [];
+  const logged: string[] = [];
   const upstream = tcpServer((s) => s.pipe(s));
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const proxy = createServer();
@@ -308,21 +326,49 @@ test("non-web public ports stay allowed (TODO(egress)) and the audit record carr
         events.push(e);
       },
     },
+    ...(publicPorts && { publicPorts }),
     resolve: async () => ["8.8.8.8"],
     connect: () => connect((upstream.address() as AddressInfo).port, "127.0.0.1"),
   });
   const port = await listen(proxy);
+  const realError = console.error;
+  console.error = (...a: unknown[]) => void logged.push(a.join(" "));
   try {
-    await new Promise<void>((resolve, reject) => {
-      const client = connect(port, "127.0.0.1", () => client.write("CONNECT mail.public.test:25 HTTP/1.1\r\nHost: mail.public.test:25\r\n\r\n"));
-      client.on("data", () => client.destroy());
-      client.on("close", resolve);
-      client.on("error", reject);
-    });
-    assert.ok(events.some((e) => e.phase === "admission" && e.outcome === "allowed" && e.authority === "mail.public.test:25" && e.peer === "8.8.8.8"));
+    const head = await connectVia(port, authority);
+    return { events, logged, head };
   } finally {
+    console.error = realError;
     control.close();
     proxy.close();
     upstream.close();
   }
+}
+
+test("public ports other than 80 and 443 are refused by default, audited with the port, and logged with cause and action", async () => {
+  const { events, logged, head } = await portCase(undefined, "git.public.test:22");
+  assert.match(head, /^HTTP\/1\.1 403 /);
+  assert.ok(events.some((e) => e.phase === "admission" && e.outcome === "denied" && e.denyReason === "port" && e.authority === "git.public.test:22"));
+  assert.ok(!events.some((e) => e.outcome === "allowed"), "nothing was admitted");
+  const line = logged.find((l) => l.includes("git.public.test:22")) ?? "";
+  assert.match(line, /port 22 is not 80 or 443/, "names the cause");
+  assert.match(line, /publicPorts/, "names the action");
+});
+
+test("public ports 80 and 443 stay allowed by default", async () => {
+  for (const authority of ["web.public.test:443", "web.public.test:80"]) {
+    const { events, head } = await portCase(undefined, authority);
+    assert.match(head, /^HTTP\/1\.1 200 /, authority);
+    assert.ok(
+      events.some((e) => e.phase === "admission" && e.outcome === "allowed" && e.authority === authority && e.peer === "8.8.8.8"),
+      authority,
+    );
+  }
+});
+
+test("a port on the publicPorts allow list is admitted and audited with its port; another port stays refused", async () => {
+  const ok = await portCase(new Set([25]), "mail.public.test:25");
+  assert.ok(ok.events.some((e) => e.phase === "admission" && e.outcome === "allowed" && e.authority === "mail.public.test:25" && e.peer === "8.8.8.8"));
+  const other = await portCase(new Set([25]), "mail.public.test:26");
+  assert.match(other.head, /^HTTP\/1\.1 403 /);
+  assert.ok(!other.events.some((e) => e.outcome === "allowed"));
 });
