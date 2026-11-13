@@ -1,4 +1,6 @@
-import { test } from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -492,16 +494,16 @@ test("tar large file and total caps are enforced on create and extract", () => {
   const src = tmpDir("pomtree-tar-src-");
   writeFileSync(join(src, "big.bin"), Buffer.alloc(4096, 1));
   assert.throws(
-    () => createTarSeed(src, { maxBytes: 1 << 20, maxFileBytes: 1000 }),
+    () => createTarSeed(src, { maxBytes: 1 << 20, maxFileBytes: 1000, maxEntries: 1000 }),
     (e: unknown) => e instanceof TarSeedError && e.reason === "too-large" && /per-file cap/.test(e.message),
   );
   assert.throws(
-    () => createTarSeed(src, { maxBytes: 2000, maxFileBytes: 1 << 20 }),
+    () => createTarSeed(src, { maxBytes: 2000, maxFileBytes: 1 << 20, maxEntries: 1000 }),
     (e: unknown) => e instanceof TarSeedError && e.reason === "too-large",
   );
   const ok = createTarSeed(src);
   assert.throws(
-    () => extractTarSeed(ok.bytes, tmpDir("pomtree-tar-dst-"), ok, { maxBytes: 1 << 20, maxFileBytes: 1000 }),
+    () => extractTarSeed(ok.bytes, tmpDir("pomtree-tar-dst-"), ok, { maxBytes: 1 << 20, maxFileBytes: 1000, maxEntries: 1000 }),
     (e: unknown) => e instanceof TarSeedError && e.reason === "too-large",
   );
 });
@@ -775,4 +777,71 @@ test("the seed apply script refuses a relative dest and a dest that is a file, n
   assert.notEqual(onFile.status, 0);
   assert.match(onFile.stderr, /not a directory/);
   assert.doesNotMatch(onFile.stderr, /at Object|node:internal/);
+});
+
+test("a tar archive over the entry cap is refused on create and on extract; at the cap it is accepted", () => {
+  const src = tmpDir("pomtree-tar-src-");
+  for (const n of ["a", "b", "c"]) writeFileSync(join(src, n), n);
+  const limits = { maxBytes: 1 << 20, maxFileBytes: 1 << 20, maxEntries: 3 };
+  const ok = createTarSeed(src, limits);
+  assert.equal(ok.fileCount, 3);
+  assert.equal(extractTarSeed(ok.bytes, tmpDir("pomtree-tar-dst-"), ok, limits).fileCount, 3);
+  writeFileSync(join(src, "d"), "d");
+  assert.throws(
+    () => createTarSeed(src, limits),
+    (e: unknown) => e instanceof TarSeedError && e.reason === "too-large" && /entry cap/.test(e.message),
+  );
+  const bytes = packEntries(["a", "b", "c", "d"].map((n) => file(n)));
+  assert.throws(
+    () => parseTarSeed(bytes, limits),
+    (e: unknown) => e instanceof TarSeedError && e.reason === "too-large" && /entry cap/.test(e.message),
+  );
+});
+
+test("an I/O error part-way through extraction empties the destination again and names the action", () => {
+  const entries = [file("a", "1"), file("b", "2"), file("c", "3")];
+  const bytes = packEntries(entries);
+  const expect = { sha256: hashOf(bytes), size: bytes.length };
+  const dest = tmpDir("pomtree-tar-dst-");
+  const real = fs.writeFileSync;
+  let calls = 0;
+  mock.method(fs, "writeFileSync", (...args: Parameters<typeof real>) => {
+    if (++calls === 2) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    return real(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => extractTarSeed(bytes, dest, expect),
+      (e: unknown) => e instanceof TarSeedError && e.reason === "partial" && /ENOSPC/.test(e.message) && /retry/.test(e.message),
+    );
+  } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+  assert.ok(calls >= 2, "the failing write was reached after a first file was written");
+  assert.deepEqual(readdirSync(dest), [], "no half-extracted files remain");
+  assert.equal(extractTarSeed(bytes, dest, expect).fileCount, 3, "the same directory can be reused");
+});
+
+test("a git failure while preparing the strict check names no scratch path", { skip: resultSkip }, async () => {
+  const { repo, bytes, sha } = await resultFixture();
+  const shims = tmpDir("pomtree-git-shim-");
+  const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
+  writeFileSync(
+    join(shims, "git"),
+    `#!/bin/sh\nfor a in "$@"; do [ "$a" = init ] && { echo "fatal: cannot init $*" >&2; exit 128; }; done\nexec ${realGit} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${shims}:${oldPath}`;
+  try {
+    await assert.rejects(
+      verifyAndFetchResult(repo, bytes, { sha256: sha, size: bytes.length, ref: "refs/pomtree/result/leak" }),
+      (e: unknown) =>
+        e instanceof SeedTransferError && e.reason === "partial" && !/pomtree-result|strict\.git|\/tmp/.test(e.message) && /collect again/.test(e.message),
+    );
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });

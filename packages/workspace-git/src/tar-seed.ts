@@ -17,7 +17,7 @@
 // who can modify the target while extraction runs, which is outside the threat model (the target is a fresh private directory).
 
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, sep } from "node:path";
 
 export class TarSeedError extends Error {
@@ -32,9 +32,16 @@ export class TarSeedError extends Error {
 export interface TarLimits {
   maxBytes: number; // whole archive
   maxFileBytes: number; // any single file
+  maxEntries: number; // files, directories and symlinks together: each costs a header block, an inode and a validation step
 }
 
-export const DEFAULT_TAR_LIMITS: TarLimits = { maxBytes: 256 * 1024 * 1024, maxFileBytes: 64 * 1024 * 1024 };
+export const DEFAULT_TAR_LIMITS: TarLimits = { maxBytes: 256 * 1024 * 1024, maxFileBytes: 64 * 1024 * 1024, maxEntries: 200_000 };
+
+const tooManyEntries = (limits: TarLimits) =>
+  new TarSeedError(
+    "too-large",
+    `archive has more than ${limits.maxEntries} entries, over the entry cap; exclude directories such as dependency trees or raise the cap`,
+  );
 
 export interface TarSeed {
   bytes: Uint8Array;
@@ -227,6 +234,7 @@ export function createTarSeed(root: string, limits: TarLimits = DEFAULT_TAR_LIMI
       if (isGitDirName(name)) continue;
       const path = rel ? `${rel}/${name}` : name;
       checkTarPath(path);
+      if (entries.length >= limits.maxEntries) throw tooManyEntries(limits);
       const abs = join(root, path);
       const st = lstatSync(abs);
       if (st.isDirectory()) {
@@ -295,6 +303,7 @@ export function parseTarSeed(bytes: Uint8Array, limits: TarLimits = DEFAULT_TAR_
     const copy = Buffer.from(h);
     copy.fill(0x20, 148, 156);
     if (copy.reduce((a, b) => a + b, 0) !== sum) throw new TarSeedError("partial", "tar header checksum mismatch; the archive is corrupt, resend it whole");
+    if (entries.length >= limits.maxEntries) throw tooManyEntries(limits);
     const type = String.fromCharCode(h[156] === 0 ? 48 : h[156]!);
     const prefix = field(h, 345, 155);
     const path = checkTarPath(prefix ? `${prefix}/${field(h, 0, 100)}` : field(h, 0, 100));
@@ -322,10 +331,8 @@ export function parseTarSeed(bytes: Uint8Array, limits: TarLimits = DEFAULT_TAR_
   }
 }
 
-// TODO(workspace-transfer-hardening): known gaps, current behaviour of each. (1) There is no cap on the tar entry count, only the byte
-// caps in TarLimits. (2) An I/O error part-way through the write loop below leaves the files already written in `dest`. (3) In seed.ts
-// verifyAndFetchResult, `index-pack --strict` inflation is not bounded beyond the bundle byte cap and the object-count cap. (4) A raw
-// GitError from seed.ts can carry the scratch tmp path, contrary to that file's header claim that failures name no path.
+// TODO(workspace-transfer-hardening): known gap, current behaviour. In seed.ts verifyAndFetchResult, `index-pack --strict` inflation is not
+// bounded beyond the bundle byte cap and the object-count cap; bounding it needs a decision on how to measure inflated size.
 // Verify size and sha256 first, then validate every entry, then write. `dest` must be an existing empty directory.
 export function extractTarSeed(
   bytes: Uint8Array,
@@ -348,14 +355,24 @@ export function extractTarSeed(
   if (readdirSync(root).length)
     throw new TarSeedError("unsafe", "extraction target is not empty; extract into a fresh empty directory so nothing existing is overwritten or followed");
   const inside = (p: string) => p === root || p.startsWith(root + sep);
-  for (const e of entries) {
-    const abs = join(root, e.path);
-    if (e.kind === "dir") mkdirSync(abs, { recursive: true });
-    else mkdirSync(dirname(abs), { recursive: true });
-    if (!inside(realpathSync(e.kind === "dir" ? abs : dirname(abs))))
-      throw new TarSeedError("unsafe", `tar entry ${JSON.stringify(e.path)} would be written outside the extraction target; refused, discard the archive`);
-    if (e.kind === "file") writeFileSync(abs, e.data, { flag: "wx", mode: e.mode });
-    else if (e.kind === "symlink") symlinkSync(e.target, abs);
+  try {
+    for (const e of entries) {
+      const abs = join(root, e.path);
+      if (e.kind === "dir") mkdirSync(abs, { recursive: true });
+      else mkdirSync(dirname(abs), { recursive: true });
+      if (!inside(realpathSync(e.kind === "dir" ? abs : dirname(abs))))
+        throw new TarSeedError("unsafe", `tar entry ${JSON.stringify(e.path)} would be written outside the extraction target; refused, discard the archive`);
+      if (e.kind === "file") writeFileSync(abs, e.data, { flag: "wx", mode: e.mode });
+      else if (e.kind === "symlink") symlinkSync(e.target, abs);
+    }
+  } catch (e) {
+    // The target was empty, so everything in it is ours: leave it empty again rather than half-extracted.
+    for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
+    if (e instanceof TarSeedError) throw e;
+    throw new TarSeedError(
+      "partial",
+      `writing the archive into the extraction target failed (${(e as NodeJS.ErrnoException).code ?? "I/O error"}); the target was emptied again, check free space and permissions, then retry`,
+    );
   }
   return { fileCount: entries.filter((e) => e.kind === "file").length };
 }
