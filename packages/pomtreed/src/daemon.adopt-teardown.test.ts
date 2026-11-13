@@ -88,3 +88,99 @@ test("two concurrent forced keyed resumes share one run: one new generation", as
   assert.equal((await get(t, aId)).generation, g0 + 1, "no second bump");
   assert.deepEqual(launches, [g0 + 1], "one segment launch for the shared run");
 });
+
+test("an adopted running sandbox whose spec fails template admission is killed and reported with cause and action", async () => {
+  const refusal = "template code needs egress.allowHost, which the podman backend does not declare";
+  const { t, a, sb } = await adoptable({ admitSpec: () => [refusal] });
+  await t.daemon.recover();
+  await until(async () => t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "kill" && JSON.stringify(c.args).includes(sb.id)));
+  await until(async () => (await get(t, a.id)).state !== "running");
+  assert.equal((await get(t, a.id)).exit, "cancelled");
+  const errs = (await t.journal.read({ agent: a.id })).filter((e) => e.payload.kind === "error").map((e) => (e.payload as { message: string }).message);
+  const report = errs.find((m) => m.includes(refusal));
+  assert.ok(report, `an admission refusal is journaled, got ${JSON.stringify(errs)}`);
+  assert.match(report, /stopped adopted sandbox/, "names what happened");
+  assert.match(report, /change the template|restart/, "names the action");
+});
+
+test("an adopted running sandbox whose spec passes template admission keeps running", async () => {
+  const { t, a, sb } = await adoptable({ admitSpec: () => [] });
+  await t.daemon.recover();
+  await until(async () => t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "attach"));
+  assert.ok(!t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "kill"), "no kill for an admitted spec");
+  assert.equal((await get(t, a.id)).state, "running");
+  t.fakes.hooks.raw.sandbox.exit(sb.id, 0);
+  await until(async () => (await get(t, a.id)).state !== "running");
+});
+
+test("an adopted sandbox that cannot be killed is reported with cause and action, never journaled as stopped, and its agent ends failed", async () => {
+  const { t, a, sb } = await adoptable({ admitSpec: () => ["template code needs egress.allowHost"] });
+  const real = t.daemon.deps.sandbox;
+  (t.daemon.deps as unknown as { sandbox: unknown }).sandbox = Object.assign(Object.create(real), {
+    kill: async () => {
+      throw new Error("engine socket closed");
+    },
+  });
+  await t.daemon.recover();
+  await until(async () => (await get(t, a.id)).state !== "running");
+  assert.equal((await get(t, a.id)).exit, "failed");
+  const errs = (await t.journal.read({ agent: a.id })).filter((e) => e.payload.kind === "error").map((e) => (e.payload as { message: string }).message);
+  assert.ok(!errs.some((m) => m.startsWith("stopped adopted sandbox")), `no false "stopped": ${JSON.stringify(errs)}`);
+  const report = errs.find((m) => m.startsWith("could not stop adopted sandbox"));
+  assert.ok(report, JSON.stringify(errs));
+  assert.match(report, /engine socket closed/, "names the cause");
+  assert.ok(report.includes(sb.id) && /remove command/.test(report), "names the operator action engine-neutrally when the engine is unknown");
+  assert.ok(!report.includes("docker rm"), "no hard-coded docker command");
+});
+
+test("a throw from admitSpec during adoption frees the reservation so the next pass adopts the agent", async () => {
+  let calls = 0;
+  const { t, a, sb } = await adoptable({
+    admitSpec: () => {
+      if (calls++ === 0) throw new Error("admission blew up");
+      return [];
+    },
+  });
+  await t.daemon.recover().catch(() => {});
+  await t.daemon.recover().catch(() => {});
+  await until(async () => t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "attach"));
+  assert.ok(calls >= 2, "admission ran again, so the live entry was released");
+  t.fakes.hooks.raw.sandbox.exit(sb.id, 0);
+  await until(async () => (await get(t, a.id)).state !== "running");
+});
+
+test("a failed kill names the selected engine's CLI in the operator action (podman, not docker)", async () => {
+  const { t, a, sb } = await adoptable({ admitSpec: () => ["needs egress.allowHost"] });
+  (t.daemon.deps as unknown as { backend: unknown }).backend = { id: "podman", engine: { binary: "podman" } };
+  const real = t.daemon.deps.sandbox;
+  (t.daemon.deps as unknown as { sandbox: unknown }).sandbox = Object.assign(Object.create(real), {
+    kill: async () => {
+      throw new Error("down");
+    },
+  });
+  await t.daemon.recover();
+  await until(async () => (await get(t, a.id)).state !== "running");
+  const errs = (await t.journal.read({ agent: a.id })).filter((e) => e.payload.kind === "error").map((e) => (e.payload as { message: string }).message);
+  const report = errs.find((m) => m.startsWith("could not stop adopted sandbox")) ?? "";
+  assert.ok(report.includes(`\`podman rm -f ${sb.id}\``), report);
+  assert.ok(!report.includes("docker"), report);
+});
+
+test("an adopted sandbox with no agent record is treated as unadmitted: killed and reported with cause and action", async () => {
+  const { t, a, sb } = await adoptable({ admitSpec: () => [] });
+  const reg = t.daemon.deps.registry;
+  (t.daemon.deps as unknown as { registry: unknown }).registry = Object.assign(Object.create(reg), { get: async () => null });
+  const logged: string[] = [];
+  const real = console.error;
+  console.error = (...x: unknown[]) => void logged.push(x.join(" "));
+  try {
+    const d = t.daemon as unknown as { lifecycle: { adoptRunning: (...x: unknown[]) => Promise<void> } };
+    await d.lifecycle.adoptRunning(a.id, sb.id, a.generation);
+    await until(async () => t.fakes.calls.some((c) => c.port === "Sandbox" && c.method === "kill" && JSON.stringify(c.args).includes(sb.id)));
+  } finally {
+    console.error = real;
+  }
+  const line = logged.find((l) => l.includes("no agent record")) ?? "";
+  assert.match(line, /stopped adopted sandbox/, "names what happened");
+  assert.match(line, /change the template or the backend/, "names the action");
+});
