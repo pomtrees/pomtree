@@ -29,17 +29,21 @@ export interface ContextMenuAttach {
   keyTarget?: unknown;
   // Element that receives focus on Escape or a pick; defaults to el. Pass a focusable element when el itself is not focusable.
   opener?: { focus(): void } | null;
+  // Timer functions for the touch long-press; default to the page's own. Without either, a long-press does not open the menu.
+  timers?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
 }
 export interface ContextMenuKitApi {
   create(deps: { document: unknown }): ContextMenu;
   attach(el: unknown, opts: ContextMenuAttach): () => void;
 }
 
-// TODO(wm-menu-touch): the menu opens from a right-click and from the ContextMenu key or Shift+F10; long-press on a touch screen is not built (a touch user reaches the window commands through the tile-bar buttons only).
+// TODO(wm-menu-touch): the long-press (a touch pointer held 500 ms, cancelled by release, cancel, a second finger or more than 10 px of movement) is covered only by synthetic pointer events; it is unverified on a real touch screen (iOS Safari fires no contextmenu on a long-press, and a page may need -webkit-touch-callout: none on the bar).
 export const CONTEXT_MENU_JS = `
 const ContextMenuKit = globalThis.ContextMenuKit || (globalThis.ContextMenuKit = (() => {
   "use strict";
   const TYPEAHEAD_MS = 700;
+  const LONG_PRESS_MS = 500;
+  const LONG_PRESS_SLOP = 10;
   let current = null; // the one open menu across every create(): opening a second closes the first
   const show = (v) => {
     let t;
@@ -214,10 +218,43 @@ const ContextMenuKit = globalThis.ContextMenuKit || (globalThis.ContextMenuKit =
       }
       opts.menu.open({ items, x, y, label: opts.label, opener: opts.opener || el, onPick: opts.onPick });
     };
+    const timers = opts.timers && typeof opts.timers.setTimeout === "function" && typeof opts.timers.clearTimeout === "function"
+      ? opts.timers
+      : typeof setTimeout === "function" && typeof clearTimeout === "function" ? { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) } : null;
+    let press = null; // the touch long-press in progress: {id, x, y, handle}
+    let pressOpened = false; // the long-press of this gesture already opened the menu
+    const cancelPress = () => {
+      if (press && timers) timers.clearTimeout(press.handle);
+      press = null;
+    };
     const onContext = (ev) => {
       prevent(ev);
+      if (pressOpened) return; // a long-press already opened the menu; the browser's own contextmenu of the same gesture must not rebuild it
+      cancelPress(); // a browser that fires contextmenu on a long-press itself wins; the timer must not open it a second time
       openAt(Number(ev.clientX) || 0, Number(ev.clientY) || 0);
     };
+    const isTouch = (ev) => ev.pointerType === "touch";
+    const onPointerDown = (ev) => {
+      if (ev.isPrimary !== false) pressOpened = false; // every new gesture, including a mouse right-click, may open the menu again
+      if (!timers || !isTouch(ev)) return;
+      if (!ev.isPrimary) { cancelPress(); return; } // a second finger is a gesture of its own
+      cancelPress();
+      const x = Number(ev.clientX) || 0;
+      const y = Number(ev.clientY) || 0;
+      const p = { x, y, handle: null };
+      p.handle = timers.setTimeout(() => {
+        if (press !== p) return;
+        press = null;
+        pressOpened = true;
+        openAt(x, y);
+      }, LONG_PRESS_MS);
+      press = p;
+    };
+    const onPointerMove = (ev) => {
+      if (!press || !isTouch(ev) || !ev.isPrimary) return;
+      if (Math.hypot((Number(ev.clientX) || 0) - press.x, (Number(ev.clientY) || 0) - press.y) > LONG_PRESS_SLOP) cancelPress();
+    };
+    const onPointerEnd = (ev) => { if (isTouch(ev)) cancelPress(); };
     const onKeyDown = (ev) => {
       const plain = !ev.ctrlKey && !ev.altKey && !ev.metaKey;
       const hit = ev.key === "ContextMenu" || (ev.key === "F10" && !!ev.shiftKey && plain);
@@ -231,11 +268,14 @@ const ContextMenuKit = globalThis.ContextMenuKit || (globalThis.ContextMenuKit =
     const onTargetKey = (ev) => { if (ev.target === kt) onKeyDown(ev); };
     el.addEventListener("contextmenu", onContext);
     el.addEventListener("keydown", onKeyDown);
+    for (const [t, fn] of [["pointerdown", onPointerDown], ["pointermove", onPointerMove], ["pointerup", onPointerEnd], ["pointercancel", onPointerEnd]]) el.addEventListener(t, fn);
     if (kt) kt.addEventListener("keydown", onTargetKey);
     return () => {
+      cancelPress();
       if (typeof el.removeEventListener === "function") {
         el.removeEventListener("contextmenu", onContext);
         el.removeEventListener("keydown", onKeyDown);
+        for (const [t, fn] of [["pointerdown", onPointerDown], ["pointermove", onPointerMove], ["pointerup", onPointerEnd], ["pointercancel", onPointerEnd]]) el.removeEventListener(t, fn);
       }
       if (kt && typeof kt.removeEventListener === "function") kt.removeEventListener("keydown", onTargetKey);
     };

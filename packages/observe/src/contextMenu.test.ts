@@ -535,6 +535,115 @@ test("attach: an all-invisible list still prevents the native menu but opens not
   assert.match(errors[0] ?? "", /could not build the menu items: bad model; reload/);
 });
 
+// ---- touch: long-press opens the menu (synthetic pointer events; a real touch screen is the manual check) ----
+function touchSetup() {
+  const t = attached();
+  let next = 1;
+  const pending = new Map<number, { fn: () => void; ms: number }>();
+  const timers = {
+    setTimeout: (fn: () => void, ms: number) => {
+      pending.set(next, { fn, ms });
+      return next++;
+    },
+    clearTimeout: (h: unknown) => {
+      pending.delete(h as number);
+    },
+  };
+  const el = t.doc.createElement("div") as El;
+  const seen: string[] = [];
+  const detach = t.Kit.attach(el, { menu: t.menu, items: () => ITEMS, onPick: (c) => seen.push(c), label: "Entry actions", timers });
+  const elapse = () => {
+    for (const [h, r] of [...pending]) {
+      pending.delete(h);
+      r.fn();
+    }
+  };
+  const down = (init: Record<string, unknown> = {}) => el.fire("pointerdown", { pointerType: "touch", isPrimary: true, clientX: 30, clientY: 40, ...init });
+  return { ...t, el, seen, detach, timers, pending, elapse, down };
+}
+
+test("touch: a long press opens the menu at the finger after the delay, and lifting the finger keeps it open", () => {
+  const t = touchSetup();
+  t.down();
+  assert.equal(t.menu.isOpen(), false, "nothing before the delay");
+  assert.equal(t.pending.size, 1);
+  assert.equal([...t.pending.values()][0]?.ms, 500);
+  t.elapse();
+  assert.equal(t.menu.isOpen(), true);
+  const s = (t.popup() as El).style;
+  assert.equal(`${s.left},${s.top}`, "30px,40px");
+  const up = t.el.fire("pointerup", { pointerType: "touch", isPrimary: true });
+  assert.equal(t.menu.isOpen(), true, "lifting the finger keeps the menu open");
+  assert.equal(up.defaultPrevented, false);
+  t.item("Close others").fire("click");
+  assert.deepEqual(t.seen, ["window.close-others"]);
+});
+
+test("touch: release, cancel, movement past the slop, a second pointer or a non-touch pointer cancel the press (negative controls)", () => {
+  const cases: Array<[string, (t: ReturnType<typeof touchSetup>) => void]> = [
+    ["pointerup", (t) => t.el.fire("pointerup", { pointerType: "touch", isPrimary: true })],
+    ["pointercancel", (t) => t.el.fire("pointercancel", { pointerType: "touch", isPrimary: true })],
+    ["pointermove far", (t) => t.el.fire("pointermove", { pointerType: "touch", isPrimary: true, clientX: 30, clientY: 60 })],
+    ["second pointer", (t) => t.el.fire("pointerdown", { pointerType: "touch", isPrimary: false, clientX: 90, clientY: 90 })],
+  ];
+  for (const [name, cancel] of cases) {
+    const t = touchSetup();
+    t.down();
+    cancel(t);
+    assert.equal(t.pending.size, 0, name);
+    t.elapse();
+    assert.equal(t.menu.isOpen(), false, name);
+  }
+  const mouse = touchSetup();
+  mouse.down({ pointerType: "mouse" });
+  assert.equal(mouse.pending.size, 0, "a mouse press is not a long-press");
+  const small = touchSetup();
+  small.down();
+  small.el.fire("pointermove", { pointerType: "touch", isPrimary: true, clientX: 33, clientY: 43 });
+  small.elapse();
+  assert.equal(small.menu.isOpen(), true, "finger jitter inside the slop keeps the press");
+});
+
+test("touch: a native contextmenu in the same gesture does not reopen the menu, and one after the press is cancelled still does", () => {
+  const t = touchSetup();
+  t.down();
+  t.elapse();
+  const first = t.popup();
+  const ev = t.el.fire("contextmenu", { clientX: 30, clientY: 40 });
+  assert.equal(ev.defaultPrevented, true, "the native menu is still suppressed");
+  assert.equal(t.popup(), first, "the open menu is kept, not rebuilt");
+  const early = touchSetup();
+  early.down();
+  early.el.fire("contextmenu", { clientX: 30, clientY: 40 });
+  assert.equal(early.menu.isOpen(), true, "a browser that fires contextmenu first opens it once");
+  assert.equal(early.pending.size, 0, "and the timer is gone");
+  early.elapse();
+  assert.equal(early.doc.body.byClass("ctx-menu").length, 1);
+});
+
+test("touch: after a long press, a later mouse right-click still opens the menu", () => {
+  const t = touchSetup();
+  t.down();
+  t.elapse();
+  t.menu.close();
+  t.el.fire("pointerdown", { pointerType: "mouse", isPrimary: true });
+  t.el.fire("contextmenu", { clientX: 5, clientY: 6 });
+  assert.equal(t.menu.isOpen(), true);
+});
+
+test("touch: detach removes the pointer listeners and cancels a pending press; no timer facility means no long-press", () => {
+  const t = touchSetup();
+  t.down();
+  t.detach();
+  assert.equal(t.pending.size, 0);
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) assert.equal(t.el.count(type), 0, type);
+  t.elapse();
+  assert.equal(t.menu.isOpen(), false);
+  const bare = attached();
+  bare.el.fire("pointerdown", { pointerType: "touch", isPrimary: true, clientX: 1, clientY: 1 });
+  assert.equal(bare.menu.isOpen(), false, "the vm sandbox has no setTimeout and no injected timers");
+});
+
 test("attach: the detach function removes both listeners (negative: before detach they are present)", () => {
   const t = attached();
   assert.equal(t.el.count("contextmenu"), 1);
