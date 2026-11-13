@@ -11,9 +11,7 @@
 
 import { createRequest } from "@pomtree/sandbox-kit";
 import type { Requester, RequestFn } from "@pomtree/sandbox-kit/request";
-import { checkSchema, type IdentityCollector, identityCollector, ProviderStub, type ProviderStubOptions } from "@pomtree/testing";
-// TODO(e2b-schema-export): @pomtree/testing's barrel does not export the vendored E2B schema; current behavior: imported by path.
-import { e2bSandboxCreate } from "../../testing/src/provider-schemas/e2b-sandbox-create.ts";
+import { checkSchema, e2bSandboxCreate, type IdentityCollector, identityCollector, ProviderStub, type ProviderStubOptions } from "@pomtree/testing";
 
 export const API_KEY_PLACEHOLDER = "<API_KEY>";
 
