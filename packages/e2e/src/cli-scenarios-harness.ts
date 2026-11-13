@@ -14,7 +14,7 @@ import { FakeModelUpstream, type ModelScript, until as pollUntil } from "@pomtre
 import { envName } from "../../pomtreed/src/daemon-config.ts";
 import { gitRepo } from "./harness.ts";
 import { cliSocketEnv } from "../../sandbox-docker/src/engine-profile.ts";
-import { gateBackend, gateEngine, gateExecFileSync, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
+import { gateBackend, gateEngine, gateExecFileSync, gatePinnedImage, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -193,17 +193,17 @@ export async function startStack(o: { script: ModelScript; templates?: Record<st
   const catalogDir = join(root, "pi-catalog");
   writeCatalogFixture(catalogDir);
 
-  const agentImageId = (image && engineSh(["image", "inspect", "--format", "{{.Id}}", image])) || image || "";
+  // The image id in the digest-pinned form the sandbox requires (Podman's bare hex id is prefixed); a dummy id when no image is named (the gate skips then).
+  const agentImageId = image ? gatePinnedImage(image) : "";
   const sets: Record<string, string> = {
     "state.dir": stateDir,
     "repo.dir": repo,
     "socket.path": socket,
     "templates.dir": templatesDir,
     "ui.listen": `127.0.0.1:${uiPort}`,
-    // TODO(egress-image): the egress sidecar image must be digest-pinned, so pass the image id; use sandbox-docker's pinnedImage() once exported.
     "agent.image": agentImageId,
-    // The sidecar runs the agent image; pomtreed refuses to start while this is empty (a dummy id when no image is named: the gate skips then).
-    "agent.egressProxyImage": agentImageId.startsWith("sha256:") ? agentImageId : `sha256:${"0".repeat(64)}`,
+    // The sidecar runs the agent image; pomtreed refuses to start while this is empty.
+    "agent.egressProxyImage": agentImageId || `sha256:${"0".repeat(64)}`,
     // The daemon under test runs on the engine the gate verified, selected by id; its socket reaches it through the engine's CLI variable below.
     "sandbox.backend": gateBackend(),
     "agent.untemplatedEgress": "registry", // required; registry keeps the prior behavior (untemplated agents reach package registries)

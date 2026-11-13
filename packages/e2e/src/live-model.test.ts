@@ -13,7 +13,7 @@ import { PI_AGENT_DIR, PI_AUTH_PATH } from "@pomtree/harness-pi";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
 import type { ProxySettlement } from "../../pomtreed/src/model-proxy/service.ts";
-import { pinnedImage, startLiveModel } from "./live-model.ts";
+import { engineEnv, liveEngine, pinnedImage, startLiveModel } from "./live-model.ts";
 import { assertModelProxyReachable, modelRouteProblem, sandboxModelRouteProbe } from "./model-preflight.ts";
 import { buildOpenAiJson } from "@pomtree/testing";
 import { SECRET, tmp } from "./harness.ts";
@@ -36,7 +36,10 @@ const keyFileEnv = (dir: string) => {
 };
 const relayTo = (port: number): SandboxEgress => ({ allow: [], relay: [{ host: "host.docker.internal", port }] });
 
-async function withLiveModel<T>(o: { platform?: string; gateway?: string }, fn: (live: Awaited<ReturnType<typeof startLiveModel>>) => Promise<T>): Promise<T> {
+async function withLiveModel<T>(
+  o: { platform?: string; gateway?: string; backend?: string },
+  fn: (live: Awaited<ReturnType<typeof startLiveModel>>) => Promise<T>,
+): Promise<T> {
   const stateDir = tmp("live-model");
   const store = openStore(join(stateDir, "pomtreed.sqlite"));
   const live = await startLiveModel({
@@ -44,8 +47,14 @@ async function withLiveModel<T>(o: { platform?: string; gateway?: string }, fn: 
     secret: SECRET,
     stateDir,
     provider: "openrouter",
-    env: { POMTREED_MODEL_BASE_URL: "http://127.0.0.1:1/api/v1", ...keyFileEnv(stateDir), POMTREED_PI_CATALOG_DIR: join(stateDir, "no-catalog") },
-    ...o,
+    env: {
+      POMTREED_MODEL_BASE_URL: "http://127.0.0.1:1/api/v1",
+      ...keyFileEnv(stateDir),
+      POMTREED_PI_CATALOG_DIR: join(stateDir, "no-catalog"),
+      ...(o.backend !== undefined && { POMTREED_SANDBOX_BACKEND: o.backend }),
+    },
+    ...(o.platform !== undefined && { platform: o.platform }),
+    ...(o.gateway !== undefined && { gateway: o.gateway }),
   });
   try {
     return await fn(live);
@@ -59,6 +68,51 @@ test("the model proxy never binds a wildcard: loopback off Linux, the injected b
   await withLiveModel({ platform: "darwin" }, async (live) => assert.equal(live.bind.host, "127.0.0.1"));
   // 127.0.0.1 stands in for the docker0 address so the bind succeeds on any host.
   await withLiveModel({ platform: "linux", gateway: "127.0.0.1" }, async (live) => assert.equal(live.bind.host, "127.0.0.1"));
+});
+
+test("the live model follows the daemon's engine selector: Podman binds loopback with no bridge gateway, Docker binds the gateway", async () => {
+  // 192.0.2.1 (TEST-NET-1) cannot be bound on any host, so a Docker plan that uses the gateway fails, which proves the engine reaches the plan.
+  await withLiveModel({ platform: "linux", gateway: "192.0.2.1", backend: "podman" }, async (live) => assert.equal(live.bind.host, "127.0.0.1"));
+  await assert.rejects(
+    withLiveModel({ platform: "linux", gateway: "192.0.2.1", backend: "docker" }, async () => undefined),
+    /EADDRNOTAVAIL|listen/,
+  );
+  await assert.rejects(
+    withLiveModel({ platform: "linux", backend: "auto" }, async () => undefined),
+    /POMTREED_SANDBOX_BACKEND=auto.*docker or podman/,
+  );
+});
+
+test("liveEngine: unset or empty is docker, docker and podman select their profile, auto and unknown values are refused", () => {
+  assert.equal(liveEngine({}).binary, "docker");
+  assert.equal(liveEngine({ POMTREED_SANDBOX_BACKEND: "" }).binary, "docker");
+  assert.equal(liveEngine({ POMTREED_SANDBOX_BACKEND: "docker" }).id, "docker");
+  assert.equal(liveEngine({ POMTREED_SANDBOX_BACKEND: "podman" }).binary, "podman");
+  assert.throws(() => liveEngine({ POMTREED_SANDBOX_BACKEND: "auto" }), /auto cannot tell them which CLI/);
+  assert.throws(() => liveEngine({ POMTREED_SANDBOX_BACKEND: "nerdctl" }), /nerdctl is not supported.*set it to docker or podman/);
+});
+
+test("engineEnv: the scrubbed-env harnesses forward the engine selector and socket locators, and nothing else", () => {
+  const src = {
+    POMTREED_SANDBOX_BACKEND: "podman",
+    POMTREED_SANDBOX_PODMAN_SOCKET: "/run/user/1000/podman/podman.sock",
+    POMTREED_SANDBOX_DOCKER_SOCKET: "/var/run/docker.sock",
+    CONTAINER_HOST: "unix:///x",
+    DOCKER_HOST: "unix:///y",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    POMTREED_MODEL_UPSTREAM_KEY_FILE: "/k",
+    POMTREED_SANDBOX_EMPTY: "",
+    HOME: "/h",
+  };
+  assert.deepEqual(engineEnv(src), {
+    POMTREED_SANDBOX_BACKEND: "podman",
+    POMTREED_SANDBOX_PODMAN_SOCKET: "/run/user/1000/podman/podman.sock",
+    POMTREED_SANDBOX_DOCKER_SOCKET: "/var/run/docker.sock",
+    CONTAINER_HOST: "unix:///x",
+    DOCKER_HOST: "unix:///y",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+  });
+  assert.deepEqual(engineEnv({}), {});
 });
 
 const base = (port: number) => `http://host.docker.internal:${port}`;

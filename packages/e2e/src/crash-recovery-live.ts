@@ -17,12 +17,13 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { EngineProfile } from "@pomtree/sandbox-docker";
 import { sanitizeJournal } from "./browser-live-audit.ts";
 import type { DebitRow } from "./browser-live-audit.ts";
 import { evaluateRecovery, parseArgs, TASK } from "./crash-recovery-decisions.ts";
 import type { AgentView, Args, ContainerView, Evidence, JEntry } from "./crash-recovery-decisions.ts";
 import { Deadline, Fatal, freePort, getSock, sh, sleep, until } from "./live-harness-util.ts";
-import { pinnedImage, readUpstreamKeyFile } from "./live-model.ts";
+import { engineEnv, liveEngine, pinnedImage, readUpstreamKeyFile } from "./live-model.ts";
 
 const pomtreedMain = join(import.meta.dirname, "../../pomtreed/src/main.ts");
 const pomtreeMain = join(import.meta.dirname, "../../pomtree/src/main.ts");
@@ -44,8 +45,14 @@ export async function main(args: Args, env: NodeJS.ProcessEnv): Promise<{ exitCo
   } catch (e) {
     return refuse(`${(e as Error).message} (set POMTREED_MODEL_UPSTREAM_KEY_FILE to a 0600 key file per scripts/live/README.md, 'Runbook: live runs')`);
   }
-  if ((await sh("docker", ["image", "inspect", args.image], undefined, 15_000)).code !== 0)
-    return refuse(`image ${args.image} unavailable (docker unreachable or not built; this never pulls)`);
+  let engine: EngineProfile;
+  try {
+    engine = liveEngine(env);
+  } catch (e) {
+    return refuse((e as Error).message);
+  }
+  if ((await sh(engine.binary, ["image", "inspect", args.image], undefined, 15_000)).code !== 0)
+    return refuse(`image ${args.image} unavailable (${engine.binary} unreachable or not built; this never pulls)`);
 
   mkdirSync(args.out, { recursive: true });
   const out = realpathSync(args.out);
@@ -80,14 +87,15 @@ export async function main(args: Args, env: NodeJS.ProcessEnv): Promise<{ exitCo
       env: {
         PATH: env.PATH ?? "",
         HOME: env.HOME ?? homedir(),
-        ...(env.DOCKER_HOST && { DOCKER_HOST: env.DOCKER_HOST }),
+        // The engine selection and the sockets pomtreed discovers it by; pomtreed's env is scrubbed, so each is forwarded only when set.
+        ...engineEnv(env),
         ...(env.POMTREED_PI_CATALOG_DIR && { POMTREED_PI_CATALOG_DIR: env.POMTREED_PI_CATALOG_DIR }),
         POMTREED_STATE_DIR: stateDir,
         POMTREED_SOCKET_PATH: sock,
         POMTREED_REPO_DIR: repo,
         POMTREED_REPO_DEFAULT_BRANCH: "main",
         POMTREED_AGENT_IMAGE: args.image,
-        POMTREED_AGENT_EGRESS_PROXY_IMAGE: pinnedImage(args.image), // required: the sidecar runs the agent image, digest-pinned by its local id
+        POMTREED_AGENT_EGRESS_PROXY_IMAGE: pinnedImage(args.image, engine), // required: the sidecar runs the agent image, digest-pinned by its local id
         POMTREED_AGENT_UNTEMPLATED_EGRESS: "registry", // required; the prior behavior (untemplated agents reach package registries)
         POMTREED_EXTENSIONS_APPROVAL: "all", // required; what unset resolved to with the default ["ui"] escalation channel
         POMTREED_PI_PROVIDER: provider,
@@ -176,7 +184,7 @@ export async function main(args: Args, env: NodeJS.ProcessEnv): Promise<{ exitCo
   const containers = async (): Promise<(ContainerView & { sandbox: string })[]> => {
     const sid = storeId();
     if (!sid) return [];
-    const r = await sh("docker", ["ps", "-a", "--filter", `label=store_id=${sid}`, "--format", '{{.Names}}|{{.State}}|{{.Label "pomtree.sandbox"}}']);
+    const r = await sh(engine.binary, ["ps", "-a", "--filter", `label=store_id=${sid}`, "--format", '{{.Names}}|{{.State}}|{{.Label "pomtree.sandbox"}}']);
     return r.out
       .split("\n")
       .filter(Boolean)
@@ -227,9 +235,9 @@ export async function main(args: Args, env: NodeJS.ProcessEnv): Promise<{ exitCo
     await p1.exited;
     console.error("pomtreed SIGKILLed");
     const sandbox = pre.sandbox!;
-    if (args.variant === "dead-container") await sh("docker", ["kill", `pomtree-${sandbox}`]);
+    if (args.variant === "dead-container") await sh(engine.binary, ["kill", `pomtree-${sandbox}`]);
     await sleep(2_000);
-    const insp = await sh("docker", ["inspect", "-f", "{{.State.Running}}", `pomtree-${sandbox}`]);
+    const insp = await sh(engine.binary, ["inspect", "-f", "{{.State.Running}}", `pomtree-${sandbox}`]);
     const containerRunningAfterKill = insp.out.trim() === "true";
     const maxSeq = withDb((db) => (db.prepare("SELECT MAX(seq) AS m FROM journal").get() as { m: number | null }).m ?? 0);
     const preSnap = { agent: pre as AgentView, maxSeq, debit: debitOf(agentId), spentMicros: spentOf(agentId), containerRunningAfterKill };
@@ -318,21 +326,21 @@ export async function main(args: Args, env: NodeJS.ProcessEnv): Promise<{ exitCo
       }
     }
     await trackSandboxes().catch(() => {});
-    const ids = async (...a: string[]) => (await sh("docker", a)).out.split("\n").filter(Boolean);
+    const ids = async (...a: string[]) => (await sh(engine.binary, a)).out.split("\n").filter(Boolean);
     for (const sb of seenSandboxes) {
       // agent container, egress sidecar, egress volume and network are all found by the sandbox id (label, or name for networks)
       const cs = await ids("ps", "-aq", "--filter", `label=pomtree.sandbox=${sb}`);
-      if (cs.length) await sh("docker", ["rm", "-f", "-v", ...cs]);
-      await sh("docker", ["rm", "-f", "-v", `pomtree-${sb}`]);
+      if (cs.length) await sh(engine.binary, ["rm", "-f", "-v", ...cs]);
+      await sh(engine.binary, ["rm", "-f", "-v", `pomtree-${sb}`]);
       const vs = await ids("volume", "ls", "-q", "--filter", `label=pomtree.sandbox=${sb}`);
-      if (vs.length) await sh("docker", ["volume", "rm", "-f", ...vs]);
+      if (vs.length) await sh(engine.binary, ["volume", "rm", "-f", ...vs]);
       const ns = [
         ...new Set([
           ...(await ids("network", "ls", "-q", "--filter", `label=pomtree.sandbox=${sb}`)),
           ...(await ids("network", "ls", "-q", "--filter", `name=${sb}`)),
         ]),
       ];
-      if (ns.length) await sh("docker", ["network", "rm", ...ns]);
+      if (ns.length) await sh(engine.binary, ["network", "rm", ...ns]);
     }
     rmSync(root, { recursive: true, force: true });
   }

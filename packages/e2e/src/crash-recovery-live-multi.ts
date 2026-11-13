@@ -23,6 +23,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { EngineProfile } from "@pomtree/sandbox-docker";
 import { sanitizeJournal } from "./browser-live-audit.ts";
 import { dumpDeadlineEvidence } from "./crash-recovery-evidence.ts";
 import type { DebitRow } from "./browser-live-audit.ts";
@@ -45,7 +46,7 @@ import {
 } from "./crash-recovery-multi-decisions.ts";
 import type { AgentEvidence, ApprovalRow, MultiArgs, MultiEvidence, Role, WireDebitRow } from "./crash-recovery-multi-decisions.ts";
 import { Deadline, Fatal, freePort, getSock, sh, sleep, until } from "./live-harness-util.ts";
-import { pinnedImage, readUpstreamKeyFile } from "./live-model.ts";
+import { engineEnv, liveEngine, pinnedImage, readUpstreamKeyFile } from "./live-model.ts";
 
 const pomtreedMain = join(import.meta.dirname, "../../pomtreed/src/main.ts");
 const pomtreeMain = join(import.meta.dirname, "../../pomtree/src/main.ts");
@@ -75,8 +76,14 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
   } catch (e) {
     return refuse(`${(e as Error).message} (set POMTREED_MODEL_UPSTREAM_KEY_FILE to a 0600 key file per scripts/live/README.md, 'Runbook: live runs')`);
   }
-  if ((await sh("docker", ["image", "inspect", args.image], undefined, 15_000)).code !== 0)
-    return refuse(`image ${args.image} unavailable (docker unreachable or not built; this never pulls)`);
+  let engine: EngineProfile;
+  try {
+    engine = liveEngine(env);
+  } catch (e) {
+    return refuse((e as Error).message);
+  }
+  if ((await sh(engine.binary, ["image", "inspect", args.image], undefined, 15_000)).code !== 0)
+    return refuse(`image ${args.image} unavailable (${engine.binary} unreachable or not built; this never pulls)`);
   if (args.dryRun) return { exitCode: 0, message: renderPlan(args) };
 
   mkdirSync(args.out, { recursive: true });
@@ -112,14 +119,15 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
       env: {
         PATH: env.PATH ?? "",
         HOME: env.HOME ?? homedir(),
-        ...(env.DOCKER_HOST && { DOCKER_HOST: env.DOCKER_HOST }),
+        // The engine selection and the sockets pomtreed discovers it by; pomtreed's env is scrubbed, so each is forwarded only when set.
+        ...engineEnv(env),
         ...(env.POMTREED_PI_CATALOG_DIR && { POMTREED_PI_CATALOG_DIR: env.POMTREED_PI_CATALOG_DIR }),
         POMTREED_STATE_DIR: stateDir,
         POMTREED_SOCKET_PATH: sock,
         POMTREED_REPO_DIR: repo,
         POMTREED_REPO_DEFAULT_BRANCH: "main",
         POMTREED_AGENT_IMAGE: args.image,
-        POMTREED_AGENT_EGRESS_PROXY_IMAGE: pinnedImage(args.image), // required: the sidecar runs the agent image, digest-pinned by its local id
+        POMTREED_AGENT_EGRESS_PROXY_IMAGE: pinnedImage(args.image, engine), // required: the sidecar runs the agent image, digest-pinned by its local id
         POMTREED_AGENT_UNTEMPLATED_EGRESS: "registry", // required; the prior behavior (untemplated agents reach package registries)
         POMTREED_EXTENSIONS_APPROVAL: "all", // required; what unset resolved to with the default ["ui"] escalation channel
         POMTREED_PI_PROVIDER: provider,
@@ -227,7 +235,7 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
   const containers = async (): Promise<Container[]> => {
     const sid = storeId();
     if (!sid) return [];
-    const r = await sh("docker", ["ps", "-a", "--filter", `label=store_id=${sid}`, "--format", '{{.Names}}|{{.State}}|{{.Label "pomtree.sandbox"}}']);
+    const r = await sh(engine.binary, ["ps", "-a", "--filter", `label=store_id=${sid}`, "--format", '{{.Names}}|{{.State}}|{{.Label "pomtree.sandbox"}}']);
     return r.out
       .split("\n")
       .filter(Boolean)
@@ -261,12 +269,12 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
     }
   };
   // Remove this run's containers, sidecars, volumes and networks (found by the sandbox id: label, or name for networks). Idempotent.
-  // Returns what a second look still finds; a failed docker query is reported as a leftover so the check fails closed.
+  // Returns what a second look still finds; a failed engine query is reported as a leftover so the check fails closed.
   const removeDocker = async (): Promise<MultiEvidence["leftovers"]> => {
     await sample().catch(() => {});
     const ids = async (...a: string[]) => {
-      const r = await sh("docker", a);
-      return r.code === 0 ? r.out.split("\n").filter(Boolean) : [`docker ${a.slice(0, 2).join(" ")} failed: exit ${r.code}`];
+      const r = await sh(engine.binary, a);
+      return r.code === 0 ? r.out.split("\n").filter(Boolean) : [`${engine.binary} ${a.slice(0, 2).join(" ")} failed: exit ${r.code}`];
     };
     const sweep = async (remove: boolean) => {
       const found: MultiEvidence["leftovers"] = { containers: [], volumes: [], networks: [] };
@@ -281,9 +289,9 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
           ]),
         ];
         if (remove) {
-          if (cs.length || named.length) await sh("docker", ["rm", "-f", "-v", ...new Set([...cs, ...named])]);
-          if (vs.length) await sh("docker", ["volume", "rm", "-f", ...vs]);
-          if (ns.length) await sh("docker", ["network", "rm", ...ns]);
+          if (cs.length || named.length) await sh(engine.binary, ["rm", "-f", "-v", ...new Set([...cs, ...named])]);
+          if (vs.length) await sh(engine.binary, ["volume", "rm", "-f", ...vs]);
+          if (ns.length) await sh(engine.binary, ["network", "rm", ...ns]);
         } else {
           found.containers.push(...new Set([...cs, ...named]));
           found.volumes.push(...vs);
@@ -354,7 +362,7 @@ export async function main(args: MultiArgs, env: NodeJS.ProcessEnv): Promise<{ e
     const maxSeq = maxSeqNow();
     const preSnap = new Map<string, AgentEvidence["pre"] & { journal: JEntry[] }>();
     for (const a of pre) {
-      const insp = await sh("docker", ["inspect", "-f", "{{.State.Running}}", `pomtree-${a.sandbox}`]);
+      const insp = await sh(engine.binary, ["inspect", "-f", "{{.State.Running}}", `pomtree-${a.sandbox}`]);
       preSnap.set(a.id, {
         agent: a,
         debit: debitOf(a.id),

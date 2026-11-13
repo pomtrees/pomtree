@@ -1,14 +1,15 @@
 # Live validation drivers
 
-Shell drivers behind the live runs recorded in [docs/validation.md](../../docs/validation.md), which also expands the gate ids used below (INS-3, BUD-1, CUS-1, REC-1, YLD-1, EGR-2, BUD-2). They drive a real model through `pomtree-up` or the e2e live harnesses, so every run spends money and needs Docker. Run them only deliberately, under the runbook below.
+Shell drivers behind the live runs recorded in [docs/validation.md](../../docs/validation.md), which also expands the gate ids used below (INS-3, BUD-1, CUS-1, REC-1, YLD-1, EGR-2, BUD-2). They drive a real model through `pomtree-up` or the e2e live harnesses, so every run spends money and needs Docker or rootless Podman (see "Engine" below). Run them only deliberately, under the runbook below.
 
 ## Scripts
 
+- `engine.sh`: sourced by `stack.sh`, `results-row.sh` and `gate-series.sh`; sets `ENGINE` (the CLI the scripts run) from `POMTREED_SANDBOX_BACKEND` and defines `image_id`. Not run directly.
 - `stack.sh`: sourced helpers (`stack_up`, `stack_down`, `stack_rm`, `snap`, and the count-only `leak_*` greps). Not run directly.
 - `ins3.sh <rundir>`: first live agent through `pomtree-up` (INS-3) with the key-leak greps.
 - `relay.sh <rundir> <k> <topBudget> <reserve> [cus1]`: the poem relay at depth k, where each level hands the poem to the next agent; with `cus1` the middle agent is killed while it holds (CUS-1).
 - `verify-relay.mjs <rundir> <topBudget> <k>`: checks a relay run directory offline (level count, poem identity, reaps, carve and settle arithmetic, spend under the cap). Exits 4 when a check fails, so a caller can gate on it; `relay.sh` runs it itself and folds its status into its own exit code. `<k>` is required: without it the level count cannot be checked and a relay that never relayed would pass.
-- `harness.sh <rundir> <kind>`: one e2e live harness with Docker snapshots and the leak grep. Kinds: `rec10` and `rec10k` (a single-agent `SIGKILL` recovery: adopting a running container, and a dead container), `rec1` (REC-1), `yld1` (YLD-1), `bud1` (BUD-1), `egr2smoke` (the no-spend browser smoke test with `PTREE_NET_TESTS=1`) and `egr2` (one live browser story with `POMTREED_WORKFLOW_FETCH_USER_AGENT` unset; it keeps each worker's `Chromium User-Agent` stderr line in `ua-lines.txt`). Both EGR-2 kinds need the full image.
+- `harness.sh <rundir> <kind>`: one e2e live harness with engine snapshots and the leak grep. Kinds: `rec10` and `rec10k` (a single-agent `SIGKILL` recovery: adopting a running container, and a dead container), `rec1` (REC-1), `yld1` (YLD-1), `bud1` (BUD-1), `egr2smoke` (the no-spend browser smoke test with `PTREE_NET_TESTS=1`) and `egr2` (one live browser story with `POMTREED_WORKFLOW_FETCH_USER_AGENT` unset; it keeps each worker's `Chromium User-Agent` stderr line in `ua-lines.txt`). Both EGR-2 kinds need the full image.
 - `gate-series.sh --out <root> [--prior-micros <N>] [flags] <item>...`: runs a chosen list of the drivers above back to back under the runbook's stop rules (below).
 - `results-row.sh`: sourced helpers (`results_header`, `results_row`, `host_token`) that write results-table rows by the column names of the Results header in docs/validation.md. Not run directly.
 - `rec1-poll.mjs <tmp dir>`: read-only side poller that `harness.sh rec1` runs; it prints the budget-stall escalation rows, approvals and unsettled debits of the harness's pomtreed database (ids and numbers only) to `rec1-poll.log`.
@@ -16,10 +17,29 @@ Shell drivers behind the live runs recorded in [docs/validation.md](../../docs/v
 ## Environment
 
 - `POMTREED_MODEL_KEY_FILE` (required): path to the operator's key file. A driver-only variable read by these scripts, distinct from the daemon's `POMTREED_MODEL_UPSTREAM_KEY_FILE`; the scripts pass the path on to pomtreed as that daemon variable and use it only as a grep pattern file.
+- `POMTREED_SANDBOX_BACKEND` (optional, default `docker`): `docker` or `podman`; the daemon's own selector, also read by the drivers (see Engine).
 - `POMTREED_AGENT_IMAGE` (required): the agent image tag the run uses (build it first from the committed commit under test).
 - `POMTREE_LIVE_TMP` (optional, default `/tmp`): parent of the short state root. `pomtree-up` relocates a socket path over 100 characters to `/tmp/pomtreed-<hash>/` and exports `POMTREE_SOCKET` for its readiness probe (`pomtree-up-sock`), so a long root also works; a short one keeps the socket inside the state dir, where `stack_rm` removes it.
 - `POMTREE_LIVE_REPO` (optional): repo root to run `pomtree` and `pomtree-up` from; default is the checkout containing these scripts.
 - `POMTREE_LIVE_MODEL` (optional): model for `ins3.sh` and `relay.sh`; default `openrouter/anthropic/claude-haiku-5.5`; the id forms and their source are in [docs/validation.md](../../docs/validation.md#model-ids).
+
+## Engine
+
+The drivers run Docker by default. `POMTREED_SANDBOX_BACKEND` is the daemon's own selector; the drivers read the same variable to pick the CLI they snapshot and leak-grep with, so there is one setting. `docker` and unset mean Docker, `podman` means rootless Podman. `auto` and any other value are refused by the drivers with a message (they must know which CLI to run). The variable is inherited by `pomtree-up`, `pomtreed` and the e2e harnesses (which also forward `POMTREED_SANDBOX_DOCKER_SOCKET`, `POMTREED_SANDBOX_PODMAN_SOCKET`, `DOCKER_HOST`, `CONTAINER_HOST` and `XDG_RUNTIME_DIR` when set). Under Podman `pomtreed` binds the model proxy and agent endpoint on loopback; the egress sidecar reaches them through pasta.
+
+To run on Podman:
+
+```
+export POMTREED_SANDBOX_BACKEND=podman
+systemctl --user start podman.socket                 # the user socket pomtreed talks to (or set POMTREED_SANDBOX_PODMAN_SOCKET / CONTAINER_HOST)
+AGENT_IMAGE_ENGINE=podman AGENT_IMAGE_TAG=<tag> pnpm --filter @pomtree/agent-image build:image    # Podman has its own image store
+export POMTREED_AGENT_IMAGE=<tag>
+scripts/live/ins3.sh <rundir>
+```
+
+Under Podman the Host token written by `gate-series.sh` carries `+podman<version>` where Docker's carries `+docker<version>`. Podman prints image ids as bare hex; the scripts and `pomtree-up` prefix `sha256:`.
+
+Verified: the daemon side (engine selection, loopback bind, image id normalisation) from the captured Podman 5.7 fixtures and the gated Podman egress suite. Not yet verified against a live Podman run: the snapshot and leak-grep forms (`ps -a --format '{{.Names}} {{.Image}} {{.Status}}'`, `volume ls -q`, `network ls --format '{{.Name}}'`, `inspect --format '{{json .Config.Env}}'`, `logs`, `export | tar -xO`, `ps --filter label=pomtree=1`), the `store_id` label listings in `gate-series.sh`, `harness.sh` `egr2`, `examples/wiki-distill/rehearse.sh` (`images` lists local names as `localhost/pomtree/agent:<tag>`; the script accepts both forms), and `pomtree-up`'s state-dir mount probe (skipped with `--no-build`, which `stack.sh` passes; on an SELinux host the probe has no relabel). The REC-10 and REC-1 harnesses (`rec10`, `rec10k`, `rec1`) pass their own engine calls through the same selector. The demos under `packages/e2e/src/demo/`, `examples/hn-digest` and the browser smoke test still assume Docker.
 
 ## Order of use
 
@@ -30,7 +50,7 @@ Shell drivers behind the live runs recorded in [docs/validation.md](../../docs/v
 
 ## Running a series
 
-`gate-series.sh` runs the items you list, in order, serially, and nothing by default (no list, no run). It calls the drivers unchanged, reads each run directory, and enforces the runbook's spend rules. Its only Docker calls are read-only (`info`, `image inspect`, label listings); it never reads the key file (it checks its mode and counts blank lines).
+`gate-series.sh` runs the items you list, in order, serially, and nothing by default (no list, no run). It calls the drivers unchanged, reads each run directory, and enforces the runbook's spend rules. Its only engine calls are read-only (`info`, `image inspect`, label listings); it never reads the key file (it checks its mode and counts blank lines).
 
 ```
 scripts/live/gate-series.sh --out <root> --prior-micros <N> ins3 bud1 cus1 rec1 rec1 rec1 yld1 yld1 egr2
@@ -44,7 +64,7 @@ Items: `ins3` (INS-3), `bud1`, `cus1` (the relay at k=2 with a dead middle), `re
 
 ### Phases
 
-1. Preflight, zero spend, each a refusal naming cause and action: Docker reachable; the agent image present with an `org.opencontainers.image.revision` label that matches the commit under test (or is an ancestor of it with no change to the image's source paths in between); `packages/agent-image` and `packages/sandbox-docker` clean; a host `pi` on `PATH`; the model environment variables unset in the invoking shell (`POMTREED_MODEL_BASE_URL`, `POMTREED_MODEL_UPSTREAM_KEY_FILE`, `POMTREED_PI_PROVIDER`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`; values are never shown); the key file a non-empty regular file, mode 600, with no blank line.
+1. Preflight, zero spend, each a refusal naming cause and action: the engine reachable; the agent image present with an `org.opencontainers.image.revision` label that matches the commit under test (or is an ancestor of it with no change to the image's source paths in between); `packages/agent-image` and `packages/sandbox-docker` clean; a host `pi` on `PATH`; the model environment variables unset in the invoking shell (`POMTREED_MODEL_BASE_URL`, `POMTREED_MODEL_UPSTREAM_KEY_FILE`, `POMTREED_PI_PROVIDER`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`; values are never shown); the key file a non-empty regular file, mode 600, with no blank line.
 2. Smoke, zero spend, run once per series with an empty dummy key file so the real key is never loaded: every driver script parses (`bash -n`); every file a listed driver runs still exists at this commit (this catches a driver left stale while `packages/e2e` moved); and, when `egr2` is listed, the existing `egr2smoke` browser test runs through `harness.sh` and must leave nothing behind. It does not prove that a driver's flags, a paid path, the daemon's budget enforcement or the spend files' shapes are right at HEAD; a driver can pass the smoke and still fail its first paid run.
 3. The items. After each one the script prints PASS or FAIL at once, and for a non-pass the run directory and the existing log files (`series-driver.log`, `run.log`, `pomtreed.log`) by absolute path, then a progress line. A summary of every attempt prints at the end, so a long unattended run can be read from the bottom.
 
@@ -95,13 +115,13 @@ A spend limit is a pause to give further quota, not a termination. Reaching the 
 
 ### Retry and hard stop
 
-One retry only, and only after a pre-start refusal or an environmental failure that spent under `STOP_SPEND`. A run that spends over `STOP_SPEND` and is not clean pauses the series and reports instead of retrying. One case stays a hard stop and is not softened into a pause: being unable to determine spend, or to establish a run's leak and leftover state (an unreadable settlement, a missing journal row, a failed `docker ps`, volume or network snapshot, or any other gap that leaves the figures unknown). It ends the series with no resume until the cause is understood, because continuing on unknown spend is how a cap is passed unnoticed.
+One retry only, and only after a pre-start refusal or an environmental failure that spent under `STOP_SPEND`. A run that spends over `STOP_SPEND` and is not clean pauses the series and reports instead of retrying. One case stays a hard stop and is not softened into a pause: being unable to determine spend, or to establish a run's leak and leftover state (an unreadable settlement, a missing journal row, a failed container, volume or network snapshot, or any other gap that leaves the figures unknown). It ends the series with no resume until the cause is understood, because continuing on unknown spend is how a cap is passed unnoticed.
 
 ### Run protocol
 
 - Run from a checkout at the committed commit under test, with an image built from that same commit.
 - Capture the exit code without a pipe: `cmd > log 2>&1; echo $? > exit_code`. A pipe into `tee` hides the command's status (under zsh read `${pipestatus[1]}` if a pipe is unavoidable).
-- Snapshot `docker ps`, volumes and networks before and after the run. The drivers do this; do it by hand for anything else.
+- Snapshot containers, volumes and networks (`engine-ps.*`, `engine-vol.*`, `engine-net.*`) before and after the run. The drivers do this; do it by hand for anything else.
 - Report the spend (from pomtreed's own accounting, in micros) and every check that ran, and add the row to [docs/validation.md](../../docs/validation.md).
 - Remove the images built for a run afterwards; they are local.
 - An agent or script that runs a live driver passes a temporary `--state-dir` for digest runs (an existing empty directory), so a run never touches `~/.pomtreed`.
@@ -116,7 +136,7 @@ The key file is created by a credential wrapper that the operator supplies; the 
 
 ### Image build and launch
 
-1. Preconditions: Docker reachable, a host `pi` on `PATH` and the model environment variables unset in the invoking shell (the series preflight checks all three).
+1. Preconditions: the engine reachable, a host `pi` on `PATH` and the model environment variables unset in the invoking shell (the series preflight checks all three).
 2. Build the image from the committed commit: `AGENT_IMAGE_TAG=<tag> pnpm --filter @pomtree/agent-image build:image:demo` for the slim target, `build:image` for the full one. The full target clones pi-browser at a pinned revision during the build and is needed only for EGR-2. Set `POMTREED_AGENT_IMAGE` to the tag. `scripts/pomtree-up --no-build` uses that image, dies if it is missing, and only warns when its revision label is neither HEAD nor an ancestor of HEAD with no change to the image sources (`IMGSRC` in `scripts/image-sources.sh`) since, so a docs-only commit is not reported as stale.
 3. Launch: `POMTREED_BUDGET_TOP_LEVEL_MICROS=150000 POMTREED_BUDGET_DEFAULT_MICROS=60000 scripts/pomtree-up --no-build --state <temp dir> --provider openrouter --model-base-url https://openrouter.ai/api --model-key-file <0600 key file>`. The base URL for an Anthropic-messages model on OpenRouter is `https://openrouter.ai/api`, never ending in `/v1`, because the request path `/v1/messages` is appended to it; OpenAI-compatible models use the provider's `/v1` endpoint. `pomtree-up` neither sets nor clears the budget variables, so pomtreed inherits them.
 4. Pass an explicit `--budget` on every `pomtree spawn`. The configured defaults (`budget.topLevelMicros`, `budget.rootMicros`, see [configuration](../../docs/configuration.md)) are far above a live-run cap, and the demo scripts default their root budget well above it too, so override both.

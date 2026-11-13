@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Wave 4 live-stack helpers. Source this file; never prints key material.
+# Wave 4 live-stack helpers. Source this file; never prints key material. The engine CLI (ENGINE) comes from engine.sh.
 # Usage: source stack.sh; stack_up <rundir>; ...; stack_down
 # Required: POMTREED_MODEL_KEY_FILE (path to the operator key file, set by the operator) and POMTREED_AGENT_IMAGE (agent image tag). Optional: POMTREE_LIVE_REPO (repo root, default: two levels above this file), POMTREE_LIVE_TMP (parent of the short state root, default /tmp), POMTREE_LIVE_MODEL.
 # Rules: grep on the key file uses only -c/-l/-q with stderr to $R/grep.err (unquoted log); no tracing (never set -x).
@@ -11,11 +11,12 @@ export -n POMTREED_MODEL_KEY_FILE
 : "${POMTREED_AGENT_IMAGE:?set POMTREED_AGENT_IMAGE to the agent image tag}"; export POMTREED_AGENT_IMAGE
 MODEL="${POMTREE_LIVE_MODEL-}"; MODEL="${MODEL:-openrouter/anthropic/claude-haiku-5.5}"
 pomtree() { node "$WT/packages/pomtree/src/main.ts" "$@"; }
+source "$(dirname "${BASH_SOURCE[0]}")/engine.sh"
 
 snap() { # snap <dir> <label>
-  docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' > "$1/docker-ps.$2"
-  docker volume ls -q > "$1/docker-vol.$2"
-  docker network ls --format '{{.Name}}' > "$1/docker-net.$2"
+  "$ENGINE" ps -a --format '{{.Names}} {{.Image}} {{.Status}}' > "$1/engine-ps.$2"
+  "$ENGINE" volume ls -q > "$1/engine-vol.$2"
+  "$ENGINE" network ls --format '{{.Name}}' > "$1/engine-net.$2"
 }
 
 stack_up() { # stack_up <rundir> [extra env assignments are taken from the caller's env]
@@ -65,9 +66,9 @@ stack_rm() {
 # Coordinator constraints: only -c/-l/-q; grep stderr to $R/grep.err (never quoted); nonzero stops the run.
 leak_container() { # leak_container <container>
   local c="$1"
-  echo "env $(docker inspect "$c" --format '{{json .Config.Env}}' | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
-  echo "logs $(docker logs "$c" 2>&1 | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
-  echo "fs $(docker export "$c" 2>>"$R/grep.err" | tar -xO 2>/dev/null | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
+  echo "env $("$ENGINE" inspect "$c" --format '{{json .Config.Env}}' | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
+  echo "logs $("$ENGINE" logs "$c" 2>&1 | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
+  echo "fs $("$ENGINE" export "$c" 2>>"$R/grep.err" | tar -xO 2>/dev/null | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
 }
 leak_dir() { grep -r -l -F -f "$KEYFILE" "$1" > "$R/leak-files.$2" 2>>"$R/grep.err"; echo "files-$2 $(wc -l < "$R/leak-files.$2")"; }
 key_ok() { echo "emptylines $(grep -c '^$' "$KEYFILE" 2>>"$R/grep.err")"; }

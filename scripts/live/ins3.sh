@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # INS-3 + CRD-5: first live agent through pomtree-up, with count-only key-leak greps. Usage: ins3.sh <rundir>
 # Serves: items INS-3 and CRD-5 (first live agent; count-only key-leak greps). Spends real money; see scripts/live/README.md.
-# Needs: Docker, a built agent image (POMTREED_AGENT_IMAGE), the operator key file (POMTREED_MODEL_KEY_FILE; never read or printed here), a short state root (POMTREE_LIVE_TMP, default /tmp).
+# Needs: Docker or Podman (ENGINE, from POMTREED_SANDBOX_BACKEND; see scripts/live/README.md), a built agent image (POMTREED_AGENT_IMAGE), the operator key file (POMTREED_MODEL_KEY_FILE; never read or printed here), a short state root (POMTREE_LIVE_TMP, default /tmp).
 SP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SP/stack.sh"
 R="$1"; mkdir -p "$R"
@@ -17,11 +17,11 @@ echo "agent $ID"
 [ -n "$ID" ] || { cat "$R/spawn.json"; stack_down && stack_rm; exit 2; }
 # Leak-grep the running containers once they have done some work.
 for i in $(seq 1 60); do
-  C=$(docker ps --filter label=pomtree=1 --format '{{.Names}}')
+  C=$("$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}')
   [ -n "$C" ] && break; sleep 0.5
 done
 sleep 2
-for c in $(docker ps --filter label=pomtree=1 --format '{{.Names}}'); do echo "container $c"; leak_container "$c"; done
+for c in $("$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}'); do echo "container $c"; leak_container "$c"; done
 pomtree wait "$ID" --timeout 240000 > "$R/wait.txt" 2>&1; rc=$?; echo "wait rc=$rc"
 # 2 and 9 mean a pre-start refusal to gate-series.sh (spend 0, a paid retry allowed), but `pomtree wait` uses 2 for usage and
 # daemon-400 errors that happen after the stack is up, when money may already be spent. Remap so the two cannot be confused.
@@ -33,7 +33,7 @@ pomtree tree > "$R/tree.txt" 2>&1
 pomtree trace "$ID" --out "$R/trace.md" > /dev/null 2>&1
 cat "$R/show.txt" | head -30; cat "$R/spend.txt"
 # Verdict: the agent must have actually succeeded. Without this the script's only verdict was `pomtree wait`'s status, and its
-# exit status was whatever the last docker snapshot diff below returned, so a failed agent still looked like a clean run.
+# exit status was whatever the last snapshot diff below returned, so a failed agent still looked like a clean run.
 ST=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const a=s.agent??s;console.log(`${a.state}/${a.exit}`)' "$R/show.json" 2>/dev/null)
 echo "final state $ST"
 case "$ST" in reaped/succeeded|exited/succeeded) echo "verdict: the live agent succeeded" ;;
@@ -41,9 +41,9 @@ case "$ST" in reaped/succeeded|exited/succeeded) echo "verdict: the live agent s
 stack_down || exit 8
 leak_dir "$S/state" state; stack_rm
 leak_dir "$R" rundir
-echo "leftover: $(docker ps -a --filter label=pomtree=1 -q | wc -l) containers"
-diff "$R/docker-vol.before" "$R/docker-vol.after" && echo "volumes unchanged"
-diff "$R/docker-net.before" "$R/docker-net.after" && echo "networks unchanged"
+echo "leftover: $("$ENGINE" ps -a --filter label=pomtree=1 -q | wc -l) containers"
+diff "$R/engine-vol.before" "$R/engine-vol.after" && echo "volumes unchanged"
+diff "$R/engine-net.before" "$R/engine-net.after" && echo "networks unchanged"
 # Exit with the RUN's status, like harness.sh does. Previously the script fell off the end, so its exit status was the
 # network-snapshot diff above and every run that left the networks alone reported success whatever the agent did.
 echo "$rc" > "$R/exit_code"

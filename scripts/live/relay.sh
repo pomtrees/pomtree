@@ -2,7 +2,7 @@
 # Live poem relay (RLY-5/RLY-6) and the dead-middle variant (CUS-1). Usage: relay.sh <rundir> <k> <topBudget> <reserve> [cus1]
 # Serves: RLY-5 (k=1), RLY-6 (k=2,3) and CUS-1 (mode cus1: the middle is killed while holding). Spends real money; see scripts/live/README.md.
 # Example: relay.sh <rundir> 2 120000 30000.
-# Needs: Docker, a built agent image (POMTREED_AGENT_IMAGE), the operator key file (POMTREED_MODEL_KEY_FILE; never read or printed here), a short state root (POMTREE_LIVE_TMP, default /tmp).
+# Needs: Docker or Podman (ENGINE, from POMTREED_SANDBOX_BACKEND; see scripts/live/README.md), a built agent image (POMTREED_AGENT_IMAGE), the operator key file (POMTREED_MODEL_KEY_FILE; never read or printed here), a short state root (POMTREE_LIVE_TMP, default /tmp).
 SP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SP/stack.sh"
 R="$1"; K="$2"; TOPB="$3"; RES="$4"; MODE="${5:-}"; LEAF=$((K + 1)); mkdir -p "$R"
@@ -30,7 +30,7 @@ while [ $((SECONDS - T0)) -lt 900 ]; do
   sleep 3
   # Leak-grep each agent container once (while it runs).
   if [ "$grepped" -lt "$((K + 1))" ]; then
-    for c in $(docker ps --filter label=pomtree=1 --format '{{.Names}}'); do
+    for c in $("$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}'); do
       grep -qx "$c" "$R/grepped.txt" 2>/dev/null && continue
       echo "$c" >> "$R/grepped.txt"; grepped=$((grepped + 1))
       out=$(leak_container "$c"); echo "container $c: $(echo $out)" | tee -a "$R/leak-containers.txt"
@@ -84,9 +84,9 @@ grep -E "^FAIL|^VERDICT|^SPEND" "$R/verify.txt"
 stack_down || exit 8
 leak_dir "$S/state" state; stack_rm
 leak_dir "$R" rundir
-echo "leftover: $(docker ps -a --filter label=pomtree=1 -q | wc -l) containers"
-diff "$R/docker-vol.before" "$R/docker-vol.after" && echo "volumes unchanged"
-diff "$R/docker-net.before" "$R/docker-net.after" && echo "networks unchanged"
+echo "leftover: $("$ENGINE" ps -a --filter label=pomtree=1 -q | wc -l) containers"
+diff "$R/engine-vol.before" "$R/engine-vol.after" && echo "volumes unchanged"
+diff "$R/engine-net.before" "$R/engine-net.after" && echo "networks unchanged"
 # Exit with the RUN's status, like harness.sh does (see the verdict note above).
 echo "$rc" > "$R/exit_code"
 echo "rc=$rc"

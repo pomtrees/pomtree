@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run one live harness/demo under the key-file rule with docker snapshots. Usage: harness.sh <rundir> <kind> [args...]
+# Run one live harness/demo under the key-file rule with engine snapshots. Usage: harness.sh <rundir> <kind> [args...]
 # Serves: REC-10 (rec10 adopt, rec10k dead-container), REC-1 (rec1), YLD-1 (yld1), BUD-1 (bud1), EGR-2 (egr2smoke, egr2; full image). Spends real money; see scripts/live/README.md.
-# Needs: Docker, POMTREED_AGENT_IMAGE, POMTREED_MODEL_KEY_FILE (never read or printed), run from a built checkout; POMTREE_LIVE_REPO overrides the repo root.
+# Needs: Docker or Podman (ENGINE, from POMTREED_SANDBOX_BACKEND; see scripts/live/README.md), POMTREED_AGENT_IMAGE, POMTREED_MODEL_KEY_FILE (never read or printed), run from a built checkout; POMTREE_LIVE_REPO overrides the repo root.
 # kind: rec10 | rec10k | rec1 | yld1 | bud1 | egr2smoke | egr2
 SP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SP/stack.sh"
@@ -27,10 +27,10 @@ case "$KIND" in
   egr2smoke) PTREE_DOCKER_TESTS=1 PTREE_NET_TESTS=1 PTREE_E2E_IMAGE="$IMG" \
           node --test --test-timeout=240000 examples/hn-digest/content-live-browser-smoke.test.mts > "$R/run.log" 2>&1; rc=$? ;;
   egr2) mkdir -p "$R/state" "$R/digest"
-        ( while :; do for c in $(docker ps --filter label=pomtree=1 --format '{{.Names}}'); do
-            docker logs "$c" 2>&1 | grep -a 'Chromium User-Agent' | sed "s/^/$c /" >> "$R/ua-raw.txt"; done; sleep 2; done ) & UA=$!
+        ( while :; do for c in $("$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}'); do
+            "$ENGINE" logs "$c" 2>&1 | grep -a 'Chromium User-Agent' | sed "s/^/$c /" >> "$R/ua-raw.txt"; done; sleep 2; done ) & UA=$!
         # content-live.mts takes a digest pin or a local image id, never a tag.
-        IMGID=$(docker image inspect --format '{{.Id}}' "$IMG") || { echo "no image $IMG"; exit 2; }
+        IMGID=$(image_id "$IMG") || { echo "no image $IMG"; exit 2; }
         env -u POMTREED_WORKFLOW_FETCH_USER_AGENT node examples/hn-digest/content-live.mts --stories 1 --article-method browser \
           --budget-micros 200000 --state-dir "$R/state" --output-dir "$R/digest" --image "$IMGID" > "$R/run.log" 2>&1; rc=$?
         kill "$UA" 2>/dev/null; sort -u "$R/ua-raw.txt" > "$R/ua-lines.txt" 2>/dev/null ;;
@@ -47,8 +47,8 @@ leak_dir "$R" rundir
 # Additions still print and are what a reader should act on. For containers compare the NAME only: the snapshot carries the status text,
 # which drifts on its own ("Exited (0) 2 days ago"), and a status that merely aged is not a change in what exists.
 for x in ps vol net; do
-  if [ "$x" = ps ]; then cut -d' ' -f1 < "$R/docker-$x.before" | sort > "$R/.$x.b"; cut -d' ' -f1 < "$R/docker-$x.after" | sort > "$R/.$x.a"
-  else sort < "$R/docker-$x.before" > "$R/.$x.b"; sort < "$R/docker-$x.after" > "$R/.$x.a"; fi
+  if [ "$x" = ps ]; then cut -d' ' -f1 < "$R/engine-$x.before" | sort > "$R/.$x.b"; cut -d' ' -f1 < "$R/engine-$x.after" | sort > "$R/.$x.a"
+  else sort < "$R/engine-$x.before" > "$R/.$x.b"; sort < "$R/engine-$x.after" > "$R/.$x.a"; fi
   added=$(comm -13 "$R/.$x.b" "$R/.$x.a"); removed=$(comm -23 "$R/.$x.b" "$R/.$x.a")
   rm -f "$R/.$x.b" "$R/.$x.a"
   if [ -n "$added" ]; then echo "$x LEAKED $(printf '%s\n' "$added" | wc -l) entry(ies) left behind by this run:"; printf '%s\n' "$added" | sed 's/^/  leaked /'
