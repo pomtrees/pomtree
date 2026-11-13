@@ -7,6 +7,11 @@ export type Principal =
   | { scope: "host"; channel: MessagingChannel }
   | { scope: "ext"; name: string };
 
+// The clock expiry is judged by, in epoch ms. Every function that reads time takes one as its last parameter so tests control it; callers with
+// a daemon pass its clock (`daemon.now()`), and the default is the wall clock.
+export type Now = () => number;
+const wallClock: Now = () => Number(new Date());
+
 const mac = (secret: string, subject: string) => createHmac("sha256", secret).update(subject).digest("hex");
 
 // Extension names appear in `ext.<name>.<hmac>` tokens, so they must be token-safe: lowercase,
@@ -50,14 +55,14 @@ export function issueToken(secret: string, p: Principal): string {
   return `ht.${p.channel}.${mac(secret, `channel:${p.channel}`)}`;
 }
 
-export function verifyToken(secret: string, token: string): Principal | null {
+export function verifyToken(secret: string, token: string, now: Now = wallClock): Principal | null {
   const parts = token.split(".");
   let principal: Principal;
   if (parts.length === 2 && parts[0] === "op") principal = { scope: "operator" };
   else if (parts.length === 5 && parts[0] === "ag" && parts[1] && parts[2] && parts[3] && /^\d+$/.test(parts[2]) && /^\d+$/.test(parts[3])) {
     const generation = Number(parts[2]);
     const expiry = Number(parts[3]);
-    if (!Number.isInteger(generation) || generation < 0 || !Number.isFinite(expiry) || expiry <= Date.now()) return null;
+    if (!Number.isInteger(generation) || generation < 0 || !Number.isFinite(expiry) || expiry <= now()) return null;
     principal = { scope: "agent", agent: parts[1], generation, expiry };
   } else if (parts.length === 3 && parts[0] === "ht" && parts[1] && CHANNEL_RE.test(parts[1])) principal = { scope: "host", channel: parts[1] };
   else if (parts.length === 3 && parts[0] === "ext" && parts[1] && EXT_NAME_RE.test(parts[1])) principal = { scope: "ext", name: parts[1] };
@@ -69,28 +74,26 @@ export function verifyToken(secret: string, token: string): Principal | null {
 
 // Why a presented token did not verify, for the 401 body's `code` (never its text: nothing from the token is echoed). `expired`
 // is only ever an agent token this daemon issued (its MAC checks) whose expiry has passed; anything else is `invalid`.
-export function tokenProblem(secret: string, token: string): "invalid" | "expired" {
+export function tokenProblem(secret: string, token: string, now: Now = wallClock): "invalid" | "expired" {
   const parts = token.split(".");
   if (parts.length !== 5 || parts[0] !== "ag" || !parts[1] || !/^\d+$/.test(parts[2] ?? "") || !/^\d+$/.test(parts[3] ?? "")) return "invalid";
   const p: Principal = { scope: "agent", agent: parts[1], generation: Number(parts[2]), expiry: Number(parts[3]) };
   const a = Buffer.from(issueToken(secret, p));
   const b = Buffer.from(token);
-  return a.length === b.length && timingSafeEqual(a, b) && p.expiry <= Date.now() ? "expired" : "invalid";
+  return a.length === b.length && timingSafeEqual(a, b) && p.expiry <= now() ? "expired" : "invalid";
 }
 
 // Browser UI session cookie: `pomtreed_ui=<expiry>.<hmac(secret, "ui:"+expiry)>`. The expiry is the
 // absolute epoch ms the cookie stops being valid; the HMAC binds it to the daemon's secret so the
 // daemon holds no session table. Expiry is checked on verify, so a stolen cookie decays on
 // its own rather than living forever.
-// TODO(auth-now-inject): the cookie expiry reads the real clock (Date.now here and in the verify functions), so expiry tests cannot control time;
-// current behavior: real clock only. Take a `now` parameter, defaulting to Date.now, like the daemon's injected clock.
-export function issueUiCookie(secret: string, ttlMs: number): string {
-  const expiry = Date.now() + ttlMs;
+export function issueUiCookie(secret: string, ttlMs: number, now: Now = wallClock): string {
+  const expiry = now() + ttlMs;
   return `pomtreed_ui=${expiry}.${mac(secret, `ui:${expiry}`)}`;
 }
 
 // Accepts either the full Cookie header (`pomtreed_ui=...; other=...`) or the bare `pomtreed_ui=...` value.
-export function verifyUiCookie(secret: string, cookie: string): boolean {
+export function verifyUiCookie(secret: string, cookie: string, now: Now = wallClock): boolean {
   if (!cookie) return false;
   let value: string | undefined;
   for (const part of cookie.split(";")) {
@@ -107,7 +110,7 @@ export function verifyUiCookie(secret: string, cookie: string): boolean {
   const got = value.slice(dot + 1);
   if (!/^\d+$/.test(expiryStr)) return false;
   const expiry = Number(expiryStr);
-  if (!Number.isFinite(expiry) || expiry < Date.now()) return false;
+  if (!Number.isFinite(expiry) || expiry < now()) return false;
   const a = Buffer.from(mac(secret, `ui:${expiryStr}`));
   const b = Buffer.from(got);
   return a.length === b.length && timingSafeEqual(a, b);
