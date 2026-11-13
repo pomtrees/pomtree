@@ -1,5 +1,5 @@
 import type { CaptureBroker } from "./capture/types.ts";
-import type { AllowlistProfile, ContainerConfigValues, InboundIntent, InboundMessage, MessageReceipt, ResultDisposition } from "@pomtree/core";
+import type { AllowlistProfile, ContainerConfigValues, InboundIntent, InboundMessage, MessageReceipt, PublishReview, ResultDisposition } from "@pomtree/core";
 import type { ChannelRegistry } from "./channels.ts";
 import type { ModelCatalog } from "./model-catalog.ts";
 import type { StatePolicy } from "./state-policy.ts";
@@ -255,8 +255,9 @@ export interface DaemonDeps {
   // that sha from the mirror (never a moving tip, never a branch name). Both are mandatory: an unpinned push is refused.
   publisher?: {
     allowedTargets: string[];
-    push: (agent: AgentId, branch: string, target: string, sha: string) => Promise<void>;
-    resolve: (agent: AgentId, branch: string, target: string) => Promise<{ sha: string; summary: string; paths: string[] }>;
+    // `reviewed` is the pin's own boundary (`PublishPin.exclude`): the push delivers nothing outside `sha ^reviewed.exclude`.
+    push: (agent: AgentId, branch: string, target: string, sha: string, reviewed: PublishReview) => Promise<void>;
+    resolve: (agent: AgentId, branch: string, target: string) => Promise<{ sha: string; summary: string; paths: string[]; exclude: string[] }>;
     requireApproval?: boolean;
     // Repo-relative path prefixes a publish may not touch (publish.deny); absent = DEFAULT_DENIED_PATHS, [] = no denylist.
     deniedPaths?: readonly string[];

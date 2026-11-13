@@ -83,25 +83,28 @@ test("publish-pin: a stale remote-tracking ref cannot smuggle unreviewed commits
   await env.ws.refreshMirror();
   const c = await agentCommit(env, "a1", s, "work.txt");
   assert.equal(has(env.remote, s), false, "precondition: the remote no longer holds the feature commit");
-  // Default boundary: the operator's origin/feature, as the pomtreed pin computes it today.
-  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature" }), (e: Error) => {
+  // The pin's boundary the remote no longer holds is refused: the push would deliver commits the review did not cover.
+  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [s] } }), (e: Error) => {
     assert.ok(e instanceof PublishRefusedError);
     assert.match(e.message, /1 commit\(s\) the publish review did not cover.*fetch the remote and request the publish again/);
     return true;
   });
-  // An explicit boundary the remote does not hold is refused the same way.
-  await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [s] } }), PublishRefusedError);
   assert.equal(heads(env.remote), "refs/heads/main");
   assert.equal(has(env.remote, c), false);
   assert.equal(has(env.remote, s), false);
-  // Once the operator fetches with prune the boundary is gone, the whole history counts as reviewed, and it goes out.
-  git(env.repo, "fetch", "-q", "--prune", "origin");
-  await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature" });
+  // An explicitly empty boundary says the whole history was reviewed (the workspace derives none from the operator's remote-tracking
+  // refs): the same push is not refused and goes out.
+  await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [] } });
   assert.equal(git(env.remote, "rev-parse", "refs/heads/feature"), c);
   // An explicit full-history review, and a boundary the remote does hold, both pass; a replay is up to date.
   await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [] } });
   await env.ws.publish("a1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [env.baseCommit] } });
   await assert.rejects(env.ws.publish("a1", { commit: c, remote: "origin", target: "x", reviewed: { exclude: ["main"] } }), /full commit ids/);
+  for (const bad of [undefined, "a".repeat(40), [1]])
+    await assert.rejects(
+      env.ws.publish("a1", { commit: c, remote: "origin", target: "x", reviewed: { exclude: bad as unknown as string[] } }),
+      /exclude list of full commit ids/,
+    );
 });
 
 test("publish-pin: never forced; a non-fast-forward target is rejected and keeps its tip", { skip }, async () => {
@@ -115,7 +118,7 @@ test("publish-pin: never forced; a non-fast-forward target is rejected and keeps
   git(other, "commit", "-qm", "theirs");
   git(other, "push", "-q", "origin", "HEAD:refs/heads/main");
   const theirs = git(other, "rev-parse", "HEAD");
-  await assert.rejects(env.ws.publish("f1", { commit: c, remote: env.remote, target: "main" }), (e: Error) => {
+  await assert.rejects(env.ws.publish("f1", { commit: c, remote: env.remote, target: "main", reviewed: { exclude: [] } }), (e: Error) => {
     assert.doesNotMatch(e.message, new RegExp(env.base), "the remote path is redacted");
     assert.match(e.message, /<remote>/);
     return true;
@@ -146,7 +149,7 @@ test("publish-pin: the operator's push.followTags and url rewrites cannot add ta
     });
     assert.match(git(ctl, "for-each-ref", "--format=%(refname)"), /refs\/tags\/v1/);
 
-    await env.ws.publish("t1", { commit: c, remote: env.remote, target: "t" });
+    await env.ws.publish("t1", { commit: c, remote: env.remote, target: "t", reviewed: { exclude: [] } });
     assert.equal(heads(env.remote), "refs/heads/main\nrefs/heads/t", "no tag, no other ref");
 
     await assert.rejects(env.ws.publish("t1", { commit: c, remote: "https://evil.invalid/x", target: "t" }));
@@ -165,7 +168,7 @@ test("abs-remote: local paths, embedded credentials and option-like hosts are re
   await env.ws.refreshMirror();
   const c = await agentCommit(env, "r1", env.baseCommit, "r.txt");
   const refuse = async (remote: string, why: RegExp) => {
-    await assert.rejects(env.ws.publish("r1", { commit: c, remote, target: "x" }), (e: Error) => {
+    await assert.rejects(env.ws.publish("r1", { commit: c, remote, target: "x", reviewed: { exclude: [] } }), (e: Error) => {
       assert.match(e.message, /^invalid publish remote: /);
       assert.match(e.message, why);
       assert.doesNotMatch(e.message, /s3cret/);
@@ -226,4 +229,19 @@ test("construction sweeps stale ingest/serve scratch and the mirror's half-writt
   for (const p of keepTmp) assert.equal(existsSync(p), true, p);
   assert.deepEqual(readdirSync(pack), packsBefore);
   assert.equal(await ws.has("live"), true);
+});
+
+test("publish-pin: a publish without the pin's reviewed boundary is refused, naming the action; nothing is pushed", { skip }, async () => {
+  const env = setup({ allowLocalPublishRemotes: true });
+  await env.ws.refreshMirror();
+  const c = await agentCommit(env, "n1", env.baseCommit, "n.txt");
+  await assert.rejects(env.ws.publish("n1", { commit: c, remote: "origin", target: "feature" }), (e: Error) => {
+    assert.ok(e instanceof PublishRefusedError);
+    assert.match(e.message, /no reviewed boundary.*pass the publish pin's reviewed boundary; use \{ exclude: \[\] \} when the whole history was reviewed/);
+    return true;
+  });
+  assert.equal(heads(env.remote), "refs/heads/main");
+  assert.equal(has(env.remote, c), false);
+  await env.ws.publish("n1", { commit: c, remote: "origin", target: "feature", reviewed: { exclude: [] } });
+  assert.equal(git(env.remote, "rev-parse", "refs/heads/feature"), c);
 });

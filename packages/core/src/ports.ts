@@ -641,6 +641,12 @@ export type IngestResult =
   | { ok: true; refs: { ref: string; commit: string }[]; forced: true; forcedFrom: ForcedRefUpdate[] }
   | { ok: false; code: IngestFailCode; message: string };
 
+// What the publish pin reviewed: every commit reachable from the pinned commit except those reachable from `exclude` (full
+// 40-hex commit ids; empty = the whole reachable history was reviewed).
+export interface PublishReview {
+  exclude: string[];
+}
+
 // Each agent works in a private full clone (own objects, refs and config, no remote, no credentials)
 // on node-local disk. The controller runs git inside a clone only on a fork copy it has sanitised first; otherwise work crosses only as a bundle
 // through `ingest` (quarantined, verified) into the controller's mirror, and back through `serve`.
@@ -672,7 +678,9 @@ export interface Workspace {
   // `paths` is the NFC-normalized, sorted list of changed files (same base as the diffstat) for publish-time flagging.
   resolve(agent: AgentId, ref: string): Promise<{ commit: string; diffstat: string; subject: string; paths: string[] }>;
   // Pushes exactly `commit` from the mirror to `remote`:`target`. Refuses a commit not reachable from the agent's refs.
-  publish(agent: AgentId, push: { commit: string; remote: string; target: string }): Promise<void>;
+  // `reviewed` is the boundary the publish pin checked, as full 40-hex commit ids: the push may deliver only commits reachable
+  // from `commit` and not from any `exclude` entry (an empty `exclude` means the whole reachable history was reviewed).
+  publish(agent: AgentId, push: { commit: string; remote: string; target: string; reviewed?: PublishReview }): Promise<void>;
   // Deletes the agent's mirror refs only when their tips are ancestors of `mergedInto`'s ref, so
   // un-merged work is never lost. "pruned": refs deleted. "nothing": the agent has no refs (never ingested, or already pruned),
   // so a replay after a crash reads "nothing". "refused": refs remain because a tip is not merged, the target has no refs, or

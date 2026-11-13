@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runningAgent, setup } from "./test-setup.ts";
+import type { PublishReview } from "@pomtree/core";
 
 test("publish fails closed when the pin carries no path list, and still publishes when it carries an empty one", async () => {
   const pushed: string[] = [];
   const publisher = (paths: string[]) => ({
     allowedTargets: ["origin/main"],
     requireApproval: false,
-    resolve: async () => ({ sha: "abc123def456", summary: "s", paths }),
+    resolve: async () => ({ sha: "abc123def456", summary: "s", paths, exclude: [] }),
     push: async (_a: string, _b: string, _t: string, sha: string) => void pushed.push(sha),
   });
 
@@ -36,7 +37,7 @@ test("publish.deny reaches the publish check through the publisher (default deny
   const publisher = (deniedPaths?: readonly string[]) => ({
     allowedTargets: ["origin/main"],
     requireApproval: false,
-    resolve: async () => ({ sha: "abc123def456", summary: "s", paths: [".github/workflows/ci.yml", "docs/x.md"] }),
+    resolve: async () => ({ sha: "abc123def456", summary: "s", paths: [".github/workflows/ci.yml", "docs/x.md"], exclude: [] }),
     push: async (_a: string, _b: string, _t: string, sha: string) => void pushed.push(sha),
     ...(deniedPaths !== undefined && { deniedPaths }),
   });
@@ -66,4 +67,35 @@ test("publish.deny reaches the publish check through the publisher (default deny
     "c",
   );
   assert.deepEqual(pushed, ["abc123def456"]);
+});
+
+test("publish fails closed with a 409 naming the action when the pin carries no review boundary, and hands the pin's exclude to the push", async () => {
+  const pushed: { sha: string; reviewed: PublishReview }[] = [];
+  const TIP = "c".repeat(40);
+  const publisher = (exclude: unknown) => ({
+    allowedTargets: ["origin/main"],
+    requireApproval: false,
+    // `exclude` is required by the type; the unknown-typed stub simulates an untyped or stale resolver
+    resolve: async () => ({ sha: "abc123def456", summary: "s", paths: [], exclude: exclude as string[] }),
+    push: async (_a: string, _b: string, _t: string, sha: string, reviewed: PublishReview) => void pushed.push({ sha, reviewed }),
+  });
+  for (const bad of [undefined, "main", [1]]) {
+    const t = setup(async () => {}, { publisher: publisher(bad) });
+    const a = await runningAgent(t, "a");
+    await assert.rejects(
+      t.daemon.publish(a.id, { branch: `agent/${a.id}`, target: "origin/main", idempotencyKey: "k" }),
+      (e: { status?: number; message?: string }) => e.status === 409 && /no review boundary \(exclude\).*request the publish again/.test(e.message ?? ""),
+      String(bad),
+    );
+  }
+  assert.deepEqual(pushed, []);
+  for (const exclude of [[], [TIP]]) {
+    const t = setup(async () => {}, { publisher: publisher(exclude) });
+    const a = await runningAgent(t, "a");
+    await t.daemon.publish(a.id, { branch: `agent/${a.id}`, target: "origin/main", idempotencyKey: "k" });
+  }
+  assert.deepEqual(pushed, [
+    { sha: "abc123def456", reviewed: { exclude: [] } },
+    { sha: "abc123def456", reviewed: { exclude: [TIP] } },
+  ]);
 });

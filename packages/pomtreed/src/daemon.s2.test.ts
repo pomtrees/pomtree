@@ -201,7 +201,7 @@ test("approvals fail closed: an unanswered approval times out into a denial", as
   await assert.rejects(t.daemon.extCall(a, "web_fetch", {}, "k"), (e: { status?: number }) => e.status === 403);
 });
 
-const pin = async (_agent: string, branch: string) => ({ sha: "abc123def456", summary: `1 file changed on ${branch}`, paths: [] });
+const pin = async (_agent: string, branch: string) => ({ sha: "abc123def456", summary: `1 file changed on ${branch}`, paths: [], exclude: [] });
 
 test("publish: only the agent's own branch to an allowed target; approval-gated; idempotent push of the pinned commit", async () => {
   const pushed: string[] = [];
@@ -249,7 +249,7 @@ test("publish pinned commit: publish refuses an unpinned push (no resolver, an e
   await assert.rejects(t1.daemon.publish(a1.id, req(a1.id)), (e: { status?: number }) => e.status === 503);
   // the resolver answers without a commit
   const t2 = setup(async () => {}, {
-    publisher: { allowedTargets: ["origin/main"], requireApproval: false, resolve: async () => ({ sha: "", summary: "", paths: [] }), push },
+    publisher: { allowedTargets: ["origin/main"], requireApproval: false, resolve: async () => ({ sha: "", summary: "", paths: [], exclude: [] }), push },
   });
   const a2 = await runningAgent(t2, "a2");
   await assert.rejects(t2.daemon.publish(a2.id, req(a2.id)), (e: { status?: number }) => e.status === 409);
@@ -626,7 +626,7 @@ test("publish pinned commit: the push carries the sha pinned at approval; a move
   const t = setup(async () => {}, {
     publisher: {
       allowedTargets: ["origin/main"],
-      resolve: async () => ({ sha: tip, summary: "s", paths: [] }),
+      resolve: async () => ({ sha: tip, summary: "s", paths: [], exclude: [] }),
       push: async (_a, _b, _t, sha) => void pushed.push(sha),
     },
     approvalWaitMs: 5,

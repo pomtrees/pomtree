@@ -358,7 +358,7 @@ test("publish: the top-level agent may publish the default branch; others may no
     publisher: {
       allowedTargets: ["origin/main"],
       requireApproval: false,
-      resolve: async (_a, b) => ({ sha: "abc123", summary: b, paths: [] }),
+      resolve: async (_a, b) => ({ sha: "abc123", summary: b, paths: [], exclude: [] }),
       push: async (_a, b, tg, sha) => void pushed.push(`${b}->${tg}@${sha}`),
     },
   });

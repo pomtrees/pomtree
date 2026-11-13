@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { COMMIT_MARK, describeFindings, scanDiff, scanMessages } from "./publish-scan.ts";
 
 // Host-side publish pin (TODO(publish-pin)): pins the branch to a commit plus a one-line diffstat for the approval prompt
@@ -10,6 +10,14 @@ import { COMMIT_MARK, describeFindings, scanDiff, scanMessages } from "./publish
 // content in workflow/CI files is refused (a symlink there included: its target is an added line). Empty CI adds,
 // mode-only changes and deletions add no content and are left to the path denylist. A
 // finding throws a PublishPinError naming the commit, file and line, never the matched text. `contentScan: false` skips it.
+// The pin also returns `exclude`, the exact boundary it checked (the remote tip as a full commit id, or empty when the whole
+// reachable history was checked); the push must deliver nothing outside `sha ^exclude`.
+// Bounds: every git call runs in its own process group, and a timeout, abort or output overflow SIGKILLs the whole group (git's
+// own children, such as pack-objects, hooks and remote helpers, die with it). Each call is bounded (`gitTimeoutMs`, output
+// limit), and the whole resolution is bounded too: `resolveTimeoutMs` of wall clock and `resolveMaxBytes` of stdout summed over
+// all its calls (stderr is capped per call but not charged to this budget; it is never returned), so N calls cannot run N times the per-call bound. Both are code options (main.ts uses the defaults; there is no config key). A blown deadline is a plain error (409); a blown stdout budget
+// is a refusal (PublishPinError, 403). TODO(publish-pin): git still runs with the daemon's inherited environment (current
+// behavior; a scrubbed environment is not yet built).
 
 export class PublishPinError extends Error {
   constructor(message: string) {
@@ -24,6 +32,9 @@ export interface PublishPin {
   sha: string;
   summary: string;
   paths: string[];
+  // The review boundary the pin actually checked: the remote tip as a full commit id when known, else empty (the whole reachable
+  // history was checked). Handed to the push, which may deliver only commits reachable from `sha` and not from these.
+  exclude: string[];
 }
 
 export interface GitRunOptions {
@@ -46,6 +57,10 @@ export interface PublishResolverOptions {
   scanMaxBytes?: number;
   // Wall-clock bound per git call (default 120 s; capped at 180 s). A call over it fails closed as a plain error (409).
   gitTimeoutMs?: number;
+  // Wall-clock bound on one whole resolution, all git calls together (default 300 s). Over it fails closed as a plain error (409).
+  resolveTimeoutMs?: number;
+  // Git stdout bytes one whole resolution may buffer, summed over all its calls (default 512 MiB); stderr is not charged. Over it is a refusal (403).
+  resolveMaxBytes?: number;
   // The git runner; the default is execGit. Injected by tests so they run without a repository or a child process.
   runGit?: GitRunner;
   // Pins an agent's ingested branch (GitWorkspace.resolve): net diff against merge-base(HEAD, commit).
@@ -66,51 +81,113 @@ const GIT_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_CAP_MS = 180_000;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const SCAN_MAX_BYTES = 128 * 1024 * 1024;
+const RESOLVE_TIMEOUT_MS = 300_000;
+const RESOLVE_MAX_BYTES = 512 * 1024 * 1024;
+const FULL_ID = /^[0-9a-f]{40}$/;
 
-// The default GitRunner: the one async, bounded spawn. stdin is closed at once (no call reads it); maxBuffer caps stdout
-// and stderr, and the timeout and overflow kill the child. Every kill is SIGKILL, so a git that ignores SIGTERM cannot
-// hold the call open. An abort is handled here rather than by execFile's `signal`: execFile rejects on abort before the
-// child has exited, but this call settles only on the child's close, so the child is reaped before the promise settles.
+// The default GitRunner: the one async, bounded spawn. stdin is closed at once (no call reads it). The child leads its own
+// process group, and a timeout, abort or output overflow SIGKILLs the whole group, so git's own children (pack-objects,
+// hooks, remote helpers) cannot outlive the call; SIGKILL cannot be ignored. stdout and stderr are each capped at maxBytes.
+// The call settles only on the child's close, so the child is reaped before the promise settles; the first cause wins.
 export const execGit: GitRunner = (args, opts) =>
   new Promise<string>((resolve, reject) => {
-    let aborted = false;
-    const onAbort = () => {
-      aborted = true;
-      child.kill("SIGKILL");
+    const child = spawn("git", args, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let cause: "ETIMEOUT" | "EABORT" | "EOVERFLOW" | undefined;
+    const out: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let settled = false;
+    const killGroup = () => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL"); // no group to signal: at least the child
+      }
     };
-    const child = execFile("git", args, { encoding: "utf8", maxBuffer: opts.maxBytes, timeout: opts.timeoutMs, killSignal: "SIGKILL" }, (err, stdout) => {
+    const stop = (why: NonNullable<typeof cause>) => {
+      cause ??= why;
+      killGroup();
+    };
+    const onAbort = () => stop("EABORT");
+    const timer = setTimeout(() => stop("ETIMEOUT"), opts.timeoutMs);
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
-      if (aborted) return reject(new GitRunError("EABORT", "git call aborted"));
-      if (!err) return resolve(stdout);
-      const code = (err as { code?: unknown }).code;
-      if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || code === "ENOBUFS")
-        return reject(new GitRunError("EOVERFLOW", `git output exceeded ${opts.maxBytes} bytes`));
-      if ((err as { killed?: boolean }).killed) return reject(new GitRunError("ETIMEOUT", `git call timed out after ${opts.timeoutMs} ms`));
-      reject(new GitRunError("EGIT", `git call failed (exit ${typeof code === "number" ? code : "unknown"})`));
+      fn();
+    };
+    child.stdout.on("data", (b: Buffer) => {
+      outBytes += b.length;
+      if (outBytes > opts.maxBytes) return stop("EOVERFLOW");
+      out.push(b);
     });
-    child.stdin?.end();
+    child.stderr.on("data", (b: Buffer) => {
+      errBytes += b.length;
+      if (errBytes > opts.maxBytes) stop("EOVERFLOW");
+    });
+    child.on("error", () => {
+      // a spawn failure (no git binary): there is no child to wait for
+      if (child.pid === undefined) settle(() => reject(new GitRunError("EGIT", "git call failed (exit unknown)")));
+    });
+    child.on("close", (code) =>
+      settle(() => {
+        if (cause === "EABORT") return reject(new GitRunError("EABORT", "git call aborted"));
+        if (cause === "EOVERFLOW") return reject(new GitRunError("EOVERFLOW", `git output exceeded ${opts.maxBytes} bytes`));
+        if (cause === "ETIMEOUT") return reject(new GitRunError("ETIMEOUT", `git call timed out after ${opts.timeoutMs} ms`));
+        if (code === 0) return resolve(Buffer.concat(out).toString("utf8"));
+        reject(new GitRunError("EGIT", `git call failed (exit ${typeof code === "number" ? code : "unknown"})`));
+      }),
+    );
     if (opts.signal?.aborted) onAbort();
     else opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-// Everything one resolution needs: the injected runner, the bounds and the signal, bound once per call.
+// Everything one resolution needs: the injected runner, the bounds and the signal, bound once per call. `signal` is the
+// caller's signal joined with the resolution deadline; `bytesLeft` is the stdout budget the remaining calls share.
 interface Ctx {
   run: GitRunner;
   mirror: string;
   repo: string;
   timeoutMs: number;
-  signal?: AbortSignal;
+  signal: AbortSignal;
+  deadline: AbortSignal;
+  deadlineMs: number;
+  maxBytes: number;
+  bytesLeft: number;
 }
 
-const readOpts = (c: Ctx, maxBytes = MAX_BUFFER) => ({ maxBytes, timeoutMs: c.timeoutMs, ...(c.signal && { signal: c.signal }) });
+// Every git call goes through here, so the whole-resolution bounds hold for all of them. The call's output cap is the smaller of
+// its own and what the budget has left; its stdout is charged to the budget once it returns.
+async function call(c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<string> {
+  const budgeted = Math.min(maxBytes, c.bytesLeft);
+  const overDeadline = () =>
+    new GitRunError(
+      "ETIMEOUT",
+      `publish resolution exceeded its ${c.deadlineMs} ms deadline; retry the publish, or publish a smaller range (fewer commits not yet on the remote)`,
+    );
+  if (c.deadline.aborted) throw overDeadline();
+  let out: string;
+  try {
+    out = await c.run(args, { maxBytes: budgeted, timeoutMs: c.timeoutMs, signal: c.signal });
+  } catch (e) {
+    if (e instanceof GitRunError && e.code === "EABORT" && c.deadline.aborted) throw overDeadline();
+    if (e instanceof GitRunError && e.code === "EOVERFLOW" && budgeted < maxBytes)
+      throw new PublishPinError(`git output of this resolution exceeds its ${c.maxBytes}-byte budget; publish a smaller range (push fewer commits at a time)`);
+    throw e;
+  }
+  c.bytesLeft -= Buffer.byteLength(out);
+  return out;
+}
 
 // A git read against the mirror (`--git-dir`), buffered up to maxBytes.
-const git = (c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<string> => c.run(["--git-dir", c.mirror, ...args], readOpts(c, maxBytes));
+const git = (c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<string> => call(c, ["--git-dir", c.mirror, ...args], maxBytes);
 
 // One read for the content scan. Output too large to buffer fails closed as a refusal (403), never skipped.
 async function scanRead(c: Ctx, args: string[], maxBytes: number): Promise<string> {
   try {
-    return await c.run(["--git-dir", c.mirror, ...args], readOpts(c, maxBytes));
+    return await git(c, args, maxBytes);
   } catch (e) {
     if (e instanceof GitRunError && e.code === "EOVERFLOW")
       throw new PublishPinError(`content scan: the pushed range's git output exceeds ${maxBytes} bytes and cannot be scanned`);
@@ -166,7 +243,7 @@ async function remoteTip(c: Ctx, target: string): Promise<string | undefined> {
   if (slash <= 0) return undefined;
   let tip: string;
   try {
-    tip = (await c.run(["-C", c.repo, "rev-parse", "--verify", `refs/remotes/${target}^{commit}`], readOpts(c))).trim();
+    tip = (await call(c, ["-C", c.repo, "rev-parse", "--verify", `refs/remotes/${target}^{commit}`])).trim();
   } catch (e) {
     if (e instanceof GitRunError && e.code !== "EGIT") throw e;
     return undefined;
@@ -188,14 +265,39 @@ async function rangePaths(c: Ctx, sha: string, exclude: string | undefined): Pro
   return { paths: touched, commits };
 }
 
+// The review boundary as the push consumes it: the checked remote tip (a full commit id) or nothing.
+function exclusion(tip: string | undefined): string[] {
+  if (tip === undefined) return [];
+  if (!FULL_ID.test(tip)) throw new PublishPinError("the remote tip is not a full commit id; fetch the remote and request the publish again");
+  return [tip];
+}
+
 export function createPublishResolver(o: PublishResolverOptions): (agent: string, branch: string, target: string, signal?: AbortSignal) => Promise<PublishPin> {
   // A configured bound must be a positive integer of milliseconds: Node treats 0 (and NaN, Infinity, fractions) as no
   // timeout or an invalid one, so an unbounded git call would be accepted silently. Rejected here, before any spawn.
   if (o.gitTimeoutMs !== undefined && !(Number.isSafeInteger(o.gitTimeoutMs) && o.gitTimeoutMs > 0))
     throw new Error(`publish resolver gitTimeoutMs must be a positive safe integer of milliseconds, got ${String(o.gitTimeoutMs)}`);
   const timeoutMs = Math.min(o.gitTimeoutMs ?? GIT_TIMEOUT_MS, GIT_TIMEOUT_CAP_MS);
+  for (const [name, v] of [
+    ["resolveTimeoutMs", o.resolveTimeoutMs],
+    ["resolveMaxBytes", o.resolveMaxBytes],
+  ] as const)
+    if (v !== undefined && !(Number.isSafeInteger(v) && v > 0)) throw new Error(`publish resolver ${name} must be a positive safe integer, got ${String(v)}`);
+  const deadlineMs = o.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS;
+  const maxBytes = o.resolveMaxBytes ?? RESOLVE_MAX_BYTES;
   return async (agent, branch, target, signal) => {
-    const c: Ctx = { run: o.runGit ?? execGit, mirror: o.mirrorDir, repo: o.repoDir, timeoutMs, ...(signal && { signal }) };
+    const deadline = AbortSignal.timeout(deadlineMs);
+    const c: Ctx = {
+      run: o.runGit ?? execGit,
+      mirror: o.mirrorDir,
+      repo: o.repoDir,
+      timeoutMs,
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      deadline,
+      deadlineMs,
+      maxBytes,
+      bytesLeft: maxBytes,
+    };
     // Only a policy refusal (a PublishPinError: a finding, the scan size cap) is a 403 at the daemon. Plain git/IO failures
     // (a missing default branch, a failed scan read, a timeout, an abort) propagate unchanged: the daemon maps them to 409,
     // and they still fail closed, since a throw never yields a publishable pin.
@@ -221,7 +323,7 @@ export function createPublishResolver(o: PublishResolverOptions): (agent: string
       const range = await rangePaths(c, sha, tip);
       if (o.contentScan !== false) await assertNoSecrets(c, sha, tip, o.scanMaxBytes ?? SCAN_MAX_BYTES);
       const summary = range.commits > 1 ? `${range.commits} commits: ${stat || "no changes"}` : stat || "no changes";
-      return { sha, summary, paths: [...new Set([...net, ...range.paths])].sort() };
+      return { sha, summary, paths: [...new Set([...net, ...range.paths])].sort(), exclude: exclusion(tip) };
     }
     const r = agentPin;
     // resolve() diffs merge-base(HEAD, commit)..commit (net paths only); widen to every commit not on the remote
@@ -233,6 +335,7 @@ export function createPublishResolver(o: PublishResolverOptions): (agent: string
       sha: r.commit,
       summary: r.diffstat || r.subject || "no changes vs target",
       paths: [...new Set([...r.paths, ...range.paths])].sort(),
+      exclude: exclusion(exclude),
     };
   };
 }

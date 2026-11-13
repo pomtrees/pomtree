@@ -21,7 +21,7 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { AgentId, ForcedRefUpdate, IngestFailCode, IngestResult, PruneResult, Workspace, WorkspaceId } from "@pomtree/core";
+import type { AgentId, ForcedRefUpdate, IngestFailCode, IngestResult, PruneResult, PublishReview, Workspace, WorkspaceId } from "@pomtree/core";
 import { parseBundleHead, MAX_BUNDLE_HEADER_BYTES } from "./bundle.ts";
 import { fileSource, scanPack } from "./pack-scan.ts";
 import { evaluateGitVersion } from "./git-env.ts";
@@ -64,12 +64,6 @@ export interface GitWorkspaceOptions {
   // Lets publish push to an absolute local path (a bare repo on this host). Off by default: a local path
   // publishes nothing off the machine and bypasses the remote's own access control; tests and an operator's local mirror opt in.
   allowLocalPublishRemotes?: boolean;
-}
-
-// What the publish pin reviewed: every commit reachable from the pinned sha except those reachable from `exclude`
-// (full commit ids; empty = the whole reachable history was reviewed).
-export interface PublishReview {
-  exclude: string[];
 }
 
 // A publish refused by policy (the pushed range or the remote's report did not match the review); nothing was pushed
@@ -991,11 +985,20 @@ export class GitWorkspace implements Workspace {
   // deleted or rewound since the review, would otherwise send unreviewed history. The push is one explicit
   // `<sha>:refs/heads/<target>` refspec with no `+`: never forced, no tags (push.followTags is overridden), no submodules, no
   // other ref; the porcelain report must show exactly that one ref, created, fast-forwarded or already up to date.
+  // `reviewed` is the pin's boundary and is required here: a push without it is refused (PublishRefusedError), never checked against
+  // a default, so a caller cannot skip the review by omitting it. `{ exclude: [] }` says the whole reachable history was reviewed.
+  // The check is inherently racy: the remote can move between the `ls-remote` below and the push. The push itself is explicit
+  // and never forced, so a remote branch that moved to a commit the pushed history does not contain is rejected non-fast-forward
+  // (nothing delivered), and one that moved along the pushed history only shrinks what is delivered. What it cannot catch is the
+  // remote losing history in that window (a branch deleted or rewound): git then packs against the remote's new refs and delivers
+  // commits outside the reviewed range. The window is one round trip; TODO(publish-pin): pin the push to the advertised value
+  // (git push --force-with-lease=<ref>:<advertised oid>) to close it. Current behavior: unpinned.
   async publish(agent: AgentId, push: { commit: string; remote: string; target: string; reviewed?: PublishReview }): Promise<void> {
     this.checkAgent(agent);
     if (!HEX40.test(push.commit)) throw new Error("publish needs a full commit id");
     if (!validBranchName(push.target)) throw new Error(`invalid publish target ${JSON.stringify(push.target)}`);
-    if (push.reviewed && !push.reviewed.exclude.every((e) => HEX40.test(e))) throw new Error("publish review boundary must be full commit ids");
+    if (push.reviewed && !(Array.isArray(push.reviewed.exclude) && push.reviewed.exclude.every((e) => typeof e === "string" && HEX40.test(e))))
+      throw new Error("publish review boundary must be an exclude list of full commit ids; pass the publish pin's reviewed boundary unchanged");
     const url = await this.remoteUrl(push.remote);
     const holders = await this.mg(["for-each-ref", "--contains", push.commit, "--format=%(refname)", agentHeadsPrefix(agent)]).catch(() => "");
     // Also the mirror's default branch: the top-level agent publishes the main the merge engine advanced.
@@ -1017,7 +1020,11 @@ export class GitWorkspace implements Workspace {
     };
     const redact = (err: unknown): Error => new Error(this.scrub((err instanceof Error ? err.message : String(err)).split(url).join("<remote>")));
     // A boundary the mirror does not hold excludes nothing from the pinned commit's history, so it is dropped (not a git error).
-    const exclude = push.reviewed ? await this.heldCommits(push.reviewed.exclude) : await this.trackedTip(push.remote, push.target);
+    if (!push.reviewed)
+      throw new PublishRefusedError(
+        "no reviewed boundary was passed, so the push cannot be checked against the review; pass the publish pin's reviewed boundary; use { exclude: [] } when the whole history was reviewed",
+      );
+    const exclude = await this.heldCommits(push.reviewed.exclude);
     const advertised = await this.text(["--git-dir", this.mirror, "ls-remote", "--", url], { ...remoteOpts, maxOutput: 64 * 1024 * 1024 }).catch((err) => {
       throw redact(err);
     });
@@ -1042,17 +1049,6 @@ export class GitWorkspace implements Workspace {
       throw new PublishRefusedError(
         `the remote reported an unexpected ref update (${this.scrub(lines.join("; ").split(url).join("<remote>")) || "none"}); inspect the remote before publishing again`,
       );
-  }
-
-  // The review boundary pomtreed's pin uses today (publish-pin.ts remoteTip): the operator repo's remote-tracking ref for
-  // `<remote>/<target>`, when the mirror holds it; none means the whole reachable history was reviewed.
-  // TODO(publish-pin): pomtreed should pass `reviewed.exclude` from the pin itself so this default (a second copy of that rule) goes.
-  private async trackedTip(remote: string, target: string): Promise<string[]> {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) return [];
-    const tip = await this.text(["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${target}^{commit}`], { cwd: this.repo, okCodes: [1] }).catch(
-      () => "",
-    );
-    return HEX40.test(tip) && (await this.heldCommits([tip])).length === 1 ? [tip] : [];
   }
 
   // The subset of `oids` the mirror holds as commits (what git push can use to trim the pack).

@@ -556,7 +556,11 @@ test("stub: an aborted call propagates the caller's signal to the runner and fai
     ]),
   );
   await assert.rejects(stubResolve(g.run)("a", "main", "origin/main", ac.signal), (e: unknown) => e instanceof GitRunError && e.code === "EABORT");
-  assert.ok(g.calls.some((c) => c.opts.signal === ac.signal));
+  // the runner gets a signal derived from the caller's (joined with the resolution deadline): it is live now and follows the caller's abort
+  const seen = g.calls.map((c) => c.opts.signal);
+  assert.ok(seen.length > 0 && seen.every((x) => x !== undefined && !x.aborted));
+  ac.abort();
+  assert.ok(seen.every((x) => x?.aborted));
 });
 
 test("stub: an over-cap scan output is a refusal (403), never a pass", async () => {
@@ -658,6 +662,12 @@ if (mode === "ignore-term") {
   process.on("SIGTERM", () => {});
   write(process.env.FAKE_GIT_READY, "1");
   setInterval(() => {}, 1000);
+} else if (mode === "grandchild") {
+  // git's own child (pack-objects, a hook, a remote helper): same process group, so only a group kill reaches it
+  const gc = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  write(process.env.FAKE_GIT_CHILD, String(gc.pid));
+  write(process.env.FAKE_GIT_READY, "1");
+  setInterval(() => {}, 1000);
 } else if (mode === "silent") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
@@ -683,12 +693,13 @@ function installFake(mode: string) {
   const dir = mkdtempSync(join(tmpdir(), "pomtree-fakegit-"));
   writeFileSync(join(dir, "git"), FAKE_GIT);
   chmodSync(join(dir, "git"), 0o755);
-  const keys = ["PATH", "FAKE_GIT_MODE", "FAKE_GIT_READY", "FAKE_GIT_PID"] as const;
+  const keys = ["PATH", "FAKE_GIT_MODE", "FAKE_GIT_READY", "FAKE_GIT_PID", "FAKE_GIT_CHILD"] as const;
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   process.env.PATH = `${dir}:${saved.PATH ?? ""}`;
   process.env.FAKE_GIT_MODE = mode;
   process.env.FAKE_GIT_READY = join(dir, "ready");
   process.env.FAKE_GIT_PID = join(dir, "pid");
+  process.env.FAKE_GIT_CHILD = join(dir, "child");
   const restore = () => {
     for (const k of keys) {
       if (saved[k] === undefined) delete process.env[k];
@@ -696,7 +707,7 @@ function installFake(mode: string) {
     }
     rmSync(dir, { recursive: true, force: true });
   };
-  return { ready: join(dir, "ready"), pidFile: join(dir, "pid"), restore };
+  return { ready: join(dir, "ready"), pidFile: join(dir, "pid"), childFile: join(dir, "child"), restore };
 }
 
 // Resolves the call's outcome, or undefined if it has not settled within `ms`. Never rejects.
@@ -728,6 +739,7 @@ interface FakeRun {
   readyError?: Error; // set when readiness failed (missing ready file, or the fake exited before reporting)
   pid?: number; // the fake's PID as it recorded it
   leaked: boolean; // the recorded PID was still alive after the call settled (it has been killed here)
+  grandchildLeaked?: boolean; // the fake's own child (grandchild mode) was still alive a second after the call settled (killed here)
 }
 
 // Starts one real execGit call against the fake. If `abortAfterReady`, the call is aborted once the fake is ready;
@@ -768,8 +780,17 @@ async function fakeGit(mode: string, timeoutMs: number, abortAfterReady: boolean
     const pid = readPid(fake.pidFile);
     const leaked = pid !== undefined && alive(pid);
     if (leaked) process.kill(pid, "SIGKILL");
+    const gc = readPid(fake.childFile);
+    let grandchildLeaked: boolean | undefined;
+    if (gc !== undefined) {
+      // a killed process stays visible to kill(pid, 0) until its parent or init reaps it, so poll briefly
+      for (let i = 0; i < 100 && alive(gc); i++) await new Promise((r) => setTimeout(r, 10));
+      grandchildLeaked = alive(gc);
+      if (grandchildLeaked) process.kill(gc, "SIGKILL");
+    }
     fake.restore();
-    if (settled !== undefined) result = { settled, pid, leaked, ...(readyError && { readyError }) };
+    if (settled !== undefined)
+      result = { settled, pid, leaked, ...(grandchildLeaked !== undefined && { grandchildLeaked }), ...(readyError && { readyError }) };
   }
   if (result === undefined) throw new Error("the git call did not settle within the cleanup bound");
   return result;
@@ -826,6 +847,20 @@ test("execGit (real process): a SIGTERM-ignoring git is SIGKILLed by an abort af
   assert.equal(process.env.PATH, before, "PATH restored");
 });
 
+test("execGit (real process): a timeout kills git's own child too (process group), not just the direct child", TEST_TIMEOUT, async () => {
+  const r = await fakeGit("grandchild", CHILD_TIMEOUT_MS, false);
+  assert.equal(r.readyError, undefined, "readiness succeeded before the timeout");
+  assert.ok(r.settled && !r.settled.ok && r.settled.e instanceof GitRunError && r.settled.e.code === "ETIMEOUT", "ETIMEOUT");
+  assert.equal(r.grandchildLeaked, false, "git's child was gone after the call settled");
+});
+
+test("execGit (real process): an abort kills git's own child too (process group)", TEST_TIMEOUT, async () => {
+  const r = await fakeGit("grandchild", CHILD_TIMEOUT_MS, true);
+  assert.equal(r.readyError, undefined, "readiness succeeded before the abort");
+  assert.ok(r.settled && !r.settled.ok && r.settled.e instanceof GitRunError && r.settled.e.code === "EABORT", "EABORT");
+  assert.equal(r.grandchildLeaked, false, "git's child was gone after the call settled");
+});
+
 test(
   "execGit (real process): a git that never reports ready fails readiness cleanly; cleanup aborts, reaps the child and restores PATH",
   TEST_TIMEOUT,
@@ -869,4 +904,90 @@ test("execGit (real process): a missing git executable is a sanitized EGIT (spaw
     else process.env.PATH = oldPath;
     rmSync(empty, { recursive: true, force: true });
   }
+});
+
+// Bounds on a whole resolution (all its git calls together), against a stub runner so they run without a repository.
+test("stub: the whole-resolution deadline fails closed as a plain error naming the action, though every call is within its own bound", async () => {
+  const g = stubGit(healthy());
+  // each call takes 40 ms against a 100 ms deadline; the resolution makes more than three calls
+  const slow = async (args: string[], opts: GitRunOptions) => {
+    await new Promise((r) => setTimeout(r, 40));
+    return g.run(args, opts);
+  };
+  await assert.rejects(stubResolve(slow, { resolveTimeoutMs: 100 })("a", "main", "origin/main"), (e: unknown) => {
+    assert.ok(e instanceof GitRunError && e.code === "ETIMEOUT", "plain error, so the daemon keeps its 409");
+    assert.ok(!(e instanceof PublishPinError));
+    assert.match((e as Error).message, /resolution exceeded its 100 ms deadline.*publish a smaller range/);
+    return true;
+  });
+  const pin = await stubResolve(slow, { resolveTimeoutMs: 60_000 })("a", "main", "origin/main");
+  assert.equal(pin.sha, SHA, "negative control: the same runner passes under a generous deadline");
+});
+
+test("stub: the deadline aborts the in-flight call's signal, and a caller abort is still EABORT", async () => {
+  let seen: AbortSignal | undefined;
+  const hang = (_a: string[], opts: GitRunOptions) =>
+    new Promise<string>((_r, rej) => {
+      seen = opts.signal;
+      opts.signal?.addEventListener("abort", () => rej(new GitRunError("EABORT", "git call aborted")), { once: true });
+    });
+  await assert.rejects(stubResolve(hang, { resolveTimeoutMs: 30 })("a", "main", "origin/main"), /deadline/);
+  assert.equal(seen?.aborted, true);
+  const ac = new AbortController();
+  const p = stubResolve(hang, { resolveTimeoutMs: 60_000 })("a", "main", "origin/main", ac.signal);
+  setTimeout(() => ac.abort(), 20);
+  await assert.rejects(p, (e: unknown) => e instanceof GitRunError && e.code === "EABORT");
+});
+
+test("stub: the whole-resolution output budget is a refusal (403) that names the action; each call is charged and capped by what is left", async () => {
+  const g = stubGit(healthy());
+  // every call is under its own cap and returns at least 100 bytes; together they pass a 250-byte budget
+  const hundred = async (args: string[], opts: GitRunOptions) => {
+    if (opts.maxBytes < 100) throw new GitRunError("EOVERFLOW", "git output exceeded");
+    return (await g.run(args, opts)).padEnd(100, "\n");
+  };
+  await assert.rejects(stubResolve(hundred, { resolveMaxBytes: 250 })("a", "main", "origin/main"), (e: unknown) => {
+    assert.ok(e instanceof PublishPinError, "a size refusal is a 403");
+    assert.match((e as Error).message, /250-byte budget.*publish a smaller range/);
+    return true;
+  });
+  const roomy = await stubResolve(hundred, { resolveMaxBytes: 1_000_000 })("a", "main", "origin/main");
+  assert.equal(roomy.sha, SHA, "negative control: the same runner passes under a generous budget");
+  const caps = stubGit(healthy());
+  await stubResolve(caps.run, { resolveMaxBytes: 1_000_000 })("a", "main", "origin/main");
+  assert.ok(
+    caps.calls.every((c) => c.opts.maxBytes > 0 && c.opts.maxBytes <= 1_000_000),
+    "a call's cap never exceeds the budget left",
+  );
+});
+
+test("stub: resolveTimeoutMs and resolveMaxBytes must be positive safe integers", () => {
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])
+    for (const key of ["resolveTimeoutMs", "resolveMaxBytes"] as const)
+      assert.throws(() => stubResolve(async () => "", { [key]: bad }), new RegExp(`${key} must be a positive safe integer`), `${key}=${bad}`);
+});
+
+test("stub: the pin's exclude is the remote tip as a full id when known, on both the default-branch and agent-branch paths, else empty", async () => {
+  const TIP = "c".repeat(40);
+  const isTipRead = (a: string[]) => a.includes("rev-parse") && a.some((x) => x.startsWith("refs/remotes/"));
+  const known = (tip: string): Handler[] => [
+    [isTipRead, () => `${tip}\n`],
+    [(a) => a.includes("cat-file"), () => ""],
+    [(a) => a.includes("merge-base"), () => "a".repeat(40)],
+    ...healthy(),
+  ];
+  const agentBranch = async () => ({ commit: SHA, diffstat: "1 file changed", subject: "s", paths: ["x.txt"] });
+  assert.deepEqual((await stubResolve(stubGit(known(TIP)).run)("a", "main", "origin/main")).exclude, [TIP], "default branch, known tip");
+  assert.deepEqual(
+    (await stubResolve(stubGit(known(TIP)).run, { resolveAgentBranch: agentBranch })("a", "agent/a", "origin/main")).exclude,
+    [TIP],
+    "agent branch, known tip",
+  );
+  assert.deepEqual((await stubResolve(stubGit(healthy()).run)("a", "main", "origin/main")).exclude, [], "default branch, no tip");
+  assert.deepEqual(
+    (await stubResolve(stubGit(healthy()).run, { resolveAgentBranch: agentBranch })("a", "agent/a", "origin/main")).exclude,
+    [],
+    "agent branch, no tip",
+  );
+  await assert.rejects(stubResolve(stubGit(known("main")).run)("a", "main", "origin/main"), /not a full commit id/);
 });

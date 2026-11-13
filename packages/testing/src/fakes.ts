@@ -190,7 +190,17 @@ import {
   verifyGatewayCredential,
   waitChildIds,
 } from "@pomtree/core";
-import type { AgentLedger, CredentialCheck, LedgerNode, ModelCallMeta, QuotaCounters, RequestReservation, ReserveResult, SettleResult } from "@pomtree/core";
+import type {
+  AgentLedger,
+  CredentialCheck,
+  LedgerNode,
+  ModelCallMeta,
+  PublishReview,
+  QuotaCounters,
+  RequestReservation,
+  ReserveResult,
+  SettleResult,
+} from "@pomtree/core";
 import { FakeCaptureIndex, FakeCaptureParser } from "./capture-fakes.ts";
 import { FaultPlan, preemptedError } from "./sandbox-faults.ts";
 import type { FaultOp } from "./sandbox-faults.ts";
@@ -2046,7 +2056,7 @@ export class FakeWorkspace implements Workspace {
   ancestors = new Map<string, Set<string>>(); // commit -> its ancestors, learned from fakeBundle `parent` fields
   defaultRef = "refs/heads/main"; // set `refs` at this name to give publish a default-branch commit
   ingestResults: IngestResult[] = []; // scripted, consumed in order
-  published: { agent: AgentId; commit: string; remote: string; target: string }[] = [];
+  published: { agent: AgentId; commit: string; remote: string; target: string; reviewed?: PublishReview }[] = [];
   // Scriptable: agent ids whose ref tips are considered merged into the root (prunable).
   merged = new Set<AgentId>();
   private n = 0;
@@ -2159,7 +2169,7 @@ export class FakeWorkspace implements Workspace {
     if (!commit) throw new Error(`unknown ref ${ref} for ${agent}`);
     return { commit, diffstat: "", subject: `fake ${commit}`, paths: [] };
   }
-  async publish(agent: AgentId, push: { commit: string; remote: string; target: string }) {
+  async publish(agent: AgentId, push: { commit: string; remote: string; target: string; reviewed?: PublishReview }) {
     this.check(agent);
     const def = this.refs.get(this.defaultRef);
     const reachable =
@@ -4227,7 +4237,7 @@ export async function workspaceContractBody(w: WorkspaceContractWorld): Promise<
   assert.equal(pinned.commit, one.commit);
   await assert.rejects(ws.resolve("b", r1.refs[0]!.ref)); // another agent's ref
   await assert.rejects(ws.publish("a", { commit: "0".repeat(40), remote: w.remote, target: "main" })); // unreachable
-  await ws.publish("a", { commit: pinned.commit, remote: w.remote, target: "out" });
+  await ws.publish("a", { commit: pinned.commit, remote: w.remote, target: "out", reviewed: { exclude: [] } });
 
   assert.equal(await ws.prune("a", { mergedInto: "b" }), "refused"); // not merged: nothing lost
 
@@ -4273,7 +4283,7 @@ export async function workspaceContractBody(w: WorkspaceContractWorld): Promise<
   const forcedRes = await ws.ingest("b", stream(stale.bytes), { maxBytes: 1 << 20, force: true });
   assert.deepEqual([forcedRes.ok, forcedRes.ok && forcedRes.forced, (await ws.ingested("b"))?.commit], [true, true, stale.commit]);
   // publish also accepts a commit on the default branch, and still refuses one reachable from neither
-  await ws.publish("b", { commit: w.mainCommit(), remote: w.remote, target: "from-main" });
+  await ws.publish("b", { commit: w.mainCommit(), remote: w.remote, target: "from-main", reviewed: { exclude: [] } });
   await assert.rejects(ws.publish("b", { commit: "1".repeat(40), remote: w.remote, target: "nope" }));
   await ws.evict("b");
 }

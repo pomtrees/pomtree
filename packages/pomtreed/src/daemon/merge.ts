@@ -77,7 +77,7 @@ export class Merge {
     // Pin the tip: the approver sees (and the approval id binds) the exact sha + diffstat, and the push publishes that
     // sha, so a commit landing after approval cannot ride along.
     if (typeof pub.resolve !== "function") throw new LifecycleError(503, "publish is not configured with a pinning resolver; refusing an unpinned push");
-    let pin: { sha: string; summary: string; paths: string[] };
+    let pin: { sha: string; summary: string; paths: string[]; exclude: string[] };
     try {
       pin = await pub.resolve(agent, req.branch, req.target);
     } catch (e) {
@@ -92,6 +92,12 @@ export class Merge {
     // Fail closed (runtime guard for untyped callers; `paths` is required by the type): a pin without `paths` cannot be checked against the denylist or the credential flag.
     if (!Array.isArray(pin.paths)) throw new LifecycleError(409, "publish refused: the pin carries no changed-path list to check against the denylist");
     const paths = pin.paths;
+    // Fail closed likewise: without the pin's review boundary the push cannot check it delivers only what the pin reviewed.
+    if (!Array.isArray(pin.exclude) || !pin.exclude.every((e) => typeof e === "string"))
+      throw new LifecycleError(
+        409,
+        "publish refused: the pin carries no review boundary (exclude) for the push to check; restart pomtreed on a matching build and request the publish again",
+      );
     // Fail closed: a change under a denied path prefix is refused before it can reach the approver.
     const deniedPaths = pub.deniedPaths ?? DEFAULT_DENIED_PATHS;
     for (const p of paths) {
@@ -108,7 +114,7 @@ export class Merge {
     // TODO(publish-errors): trace errors. Current behavior: a crash after this push leaves no record; a retry re-pushes.
     // The issue also lists two untraced claims: the approver sees the agent-authored commit subject,
     // and an approval pending across the upgrade is orphaned.
-    await pub.push(agent, req.branch, req.target, pin.sha);
+    await pub.push(agent, req.branch, req.target, pin.sha, { exclude: pin.exclude });
     await this.ctx.record(a, { kind: PUBLISHED_KIND, key, branch: req.branch, target: req.target }, `${key}:published`);
     return { branch: req.branch, target: req.target };
   }

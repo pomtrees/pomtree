@@ -83,7 +83,7 @@ test("publish is approval-gated end to end: 409 pending, one push after a chat a
       approvalTimeoutMs: 60_000,
       publisher: {
         allowedTargets: ["origin/main"],
-        resolve: async () => ({ sha: "a".repeat(40), summary: "1 file changed", paths: [] }),
+        resolve: async () => ({ sha: "a".repeat(40), summary: "1 file changed", paths: [], exclude: [] }),
         push: async (_a, b, t, sha) => void pushed.push(`${b}->${t}@${sha}`),
       },
     },
