@@ -93,15 +93,14 @@ export function parseRecord(raw: unknown): LoopbackRecord {
   return o as LoopbackRecord;
 }
 
-// TODO(loopback-stamp-mirror): this mirrors core's stamp-reading rule inline because the example must stay import-free; the two can drift.
-// Current behavior: no test compares them.
-// A record as the port's listing. Host and generation are the stamp the create body carried, read back by the rule core's readOwnerStamp applies (kept inline: this file imports nothing at runtime): an empty host or a generation that is not a non-negative integer reads null.
+// A record as the port's listing. Host and generation are the stamp the create body carried, read back by the rule core's readOwnerStamp applies (kept inline: this file imports nothing at runtime): an empty host or one with a control character, or a generation that is not a non-negative safe integer, reads null.
+// The inline copy is held to core's rule by packages/testing/src/loopback-stamp-mirror.test.ts (this file and its copy under packages/testing/src/sandbox-loopback-broken).
 export function toListing(r: LoopbackRecord): SandboxListing {
   return {
     id: r.name,
     agent: r.agent,
     backend: "loopback",
-    host: r.host === "" ? null : r.host,
+    host: r.host === "" || [...r.host].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f) ? null : r.host,
     generation: Number.isSafeInteger(r.generation) && r.generation >= 0 ? r.generation : null,
     state: r.state === "preempted" ? "unknown" : r.state,
     ...(Object.keys(r.labels).length > 0 && { labels: r.labels }),
