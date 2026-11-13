@@ -70,5 +70,10 @@ leak_container() { # leak_container <container>
   echo "logs $("$ENGINE" logs "$c" 2>&1 | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
   echo "fs $("$ENGINE" export "$c" 2>>"$R/grep.err" | tar -xO 2>/dev/null | grep -c -F -f "$KEYFILE" 2>>"$R/grep.err")"
 }
+# Running containers the live drivers leak-grep: the workers (label pomtree=1) and the egress sidecars (label pomtree.egress=1). A
+# sidecar never carries a model key, so a match there is a leak; sort -u keeps a container with both labels once.
+leak_targets() {
+  { "$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}'; "$ENGINE" ps --filter label=pomtree.egress=1 --format '{{.Names}}'; } | sort -u
+}
 leak_dir() { grep -r -l -F -f "$KEYFILE" "$1" > "$R/leak-files.$2" 2>>"$R/grep.err"; echo "files-$2 $(wc -l < "$R/leak-files.$2")"; }
 key_ok() { echo "emptylines $(grep -c '^$' "$KEYFILE" 2>>"$R/grep.err")"; }

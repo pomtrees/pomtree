@@ -21,7 +21,7 @@ for i in $(seq 1 60); do
   [ -n "$C" ] && break; sleep 0.5
 done
 sleep 2
-for c in $("$ENGINE" ps --filter label=pomtree=1 --format '{{.Names}}'); do echo "container $c"; leak_container "$c"; done
+for c in $(leak_targets); do echo "container $c"; leak_container "$c"; done
 pomtree wait "$ID" --timeout 240000 > "$R/wait.txt" 2>&1; rc=$?; echo "wait rc=$rc"
 # 2 and 9 mean a pre-start refusal to gate-series.sh (spend 0, a paid retry allowed), but `pomtree wait` uses 2 for usage and
 # daemon-400 errors that happen after the stack is up, when money may already be spent. Remap so the two cannot be confused.
