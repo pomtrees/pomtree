@@ -5,7 +5,7 @@
 // its cap stays inside a 64M cgroup, so it cannot hurt the host.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -97,6 +97,57 @@ test("a SIGTERM sent to timeout before the time limit is a cap kill (137), not a
   assert.equal(r.rc, 137);
   assert.doesNotMatch(r.err, /TIMEOUT/);
   assert.ok(r.ms < 10_000, `took ${r.ms}ms`);
+});
+
+// A fake cgroup hierarchy and /proc/self/cgroup, fed to the script through POMTREE_CGROUP_ROOT and POMTREE_CGROUP_PROC. Each entry of
+// `limits` is a path under the root and the content of its limit file; `proc` is the content of the fake /proc/self/cgroup.
+const UNLIMITED_V1 = "9223372036854771712";
+const fakeCgroup = (limits: Record<string, string>, proc: string): Record<string, string> => {
+  const root = tmp("cgroup");
+  for (const [path, content] of Object.entries(limits)) {
+    mkdirSync(join(root, path.slice(0, path.lastIndexOf("/"))), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  const procFile = join(tmp("cgroup-proc"), "cgroup");
+  writeFileSync(procFile, proc);
+  return { POMTREE_CGROUP_ROOT: root, POMTREE_CGROUP_PROC: procFile };
+};
+const ENCLOSING = /enclosing cgroup already limits memory to (\d+)M/;
+
+test("cgroup v1: the memory limit along the path is inherited, so no new scope is made", OPTS, () => {
+  const env = fakeCgroup(
+    { "memory/a/memory.limit_in_bytes": "67108864\n", "memory/a/b/memory.limit_in_bytes": `${UNLIMITED_V1}\n` },
+    "4:cpu,cpuacct:/x\n3:memory:/a/b\n",
+  );
+  const r = run(["--mem", "2G", "--", "true"], env);
+  assert.equal(r.rc, 0);
+  assert.equal(r.err.match(ENCLOSING)?.[1], "64", "the tighter ancestor limit wins over the unlimited leaf");
+});
+
+test("cgroup v1: a controller list that includes memory is read, and the minimum along the path is taken", OPTS, () => {
+  const env = fakeCgroup({ "memory/a/memory.limit_in_bytes": "134217728\n", "memory/a/b/memory.limit_in_bytes": "33554432\n" }, "2:cpu,memory,pids:/a/b\n");
+  assert.equal(run(["--mem", "2G", "--", "true"], env).err.match(ENCLOSING)?.[1], "32");
+});
+
+test("cgroup v1 negative controls: no inherited limit when unlimited, above the requested cap, or on another controller", OPTS, () => {
+  const unlimited = fakeCgroup({ "memory/a/memory.limit_in_bytes": `${UNLIMITED_V1}\n` }, "3:memory:/a\n");
+  assert.doesNotMatch(run(["--mem", "2G", "--", "true"], unlimited).err, /enclosing cgroup/);
+  const roomy = fakeCgroup({ "memory/a/memory.limit_in_bytes": "4294967296\n" }, "3:memory:/a\n");
+  assert.doesNotMatch(run(["--mem", "2G", "--", "true"], roomy).err, /enclosing cgroup/, "a 4G outer limit does not stand in for a 2G request");
+  const other = fakeCgroup({ "memory/a/memory.limit_in_bytes": "67108864\n" }, "3:cpu:/a\n");
+  assert.doesNotMatch(run(["--mem", "2G", "--", "true"], other).err, /enclosing cgroup/, "only the memory controller line counts");
+});
+
+test("cgroup v2 via the fake hierarchy still wins when both are present", OPTS, () => {
+  const env = fakeCgroup({ "u/memory.max": "67108864\n", "memory/a/memory.limit_in_bytes": "134217728\n" }, "3:memory:/a\n0::/u\n");
+  assert.equal(run(["--mem", "2G", "--", "true"], env).err.match(ENCLOSING)?.[1], "64");
+});
+
+test("a missing /proc/self/cgroup (macOS) is no inherited limit and prints no error", OPTS, () => {
+  const env = { POMTREE_CGROUP_ROOT: tmp("cgroup"), POMTREE_CGROUP_PROC: join(tmp("cgroup-proc"), "absent") };
+  const r = run(["--mem", "2G", "--", "true"], env);
+  assert.equal(r.rc, 0);
+  assert.doesNotMatch(r.err, /No such file|enclosing cgroup/);
 });
 
 test("POMTREE_RUN_UNCAPPED=1 runs the command and prints a notice", OPTS, () => {

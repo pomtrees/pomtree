@@ -17,7 +17,7 @@
 #
 # Nesting: the tighter cap wins. A `systemd-run --user` scope is created under the user manager, not under the caller's
 # cgroup, so a nested scope would ESCAPE a tighter outer cap. The script therefore reads the memory.max already in force
-# (the minimum along its cgroup path) and, when that is at most the requested cap, keeps the command in the current
+# (the minimum along its cgroup path, v2 or v1) and, when that is at most the requested cap, keeps the command in the current
 # cgroup and prints a notice; otherwise it creates its own, tighter scope. The time limit is always applied. stdin of the
 # command is /dev/null.
 set -u
@@ -72,21 +72,38 @@ LIMIT_S=$(secs "$LIMIT") || die "invalid --timeout '$LIMIT'; use seconds or a nu
 
 TIMEOUT=$(command -v timeout || command -v gtimeout) || die "neither timeout nor gtimeout is installed, so the time limit cannot be enforced; install coreutils or set POMTREE_RUN_UNCAPPED=1 to run uncapped"
 
-# Memory limit in force for this process, in KiB: the smallest numeric memory.max from its cgroup up to the root (cgroup v2).
-inherited_kib() {
-  local path dir m best=""
-  path=$(sed -n 's/^0:://p' /proc/self/cgroup 2> /dev/null) || return 1
-  [ -n "$path" ] || return 1
-  dir=/sys/fs/cgroup$path
-  while [ -n "$dir" ] && [ "$dir" != /sys/fs/cgroup ] && [ "$dir" != /sys/fs ]; do
-    m=$(cat "$dir/memory.max" 2> /dev/null) || m=""
+# Smallest numeric limit in FILE (bytes) from DIR up to, but not including, STOP, in KiB; empty when none is set. "max" (v2) and
+# the near-2^63 "unlimited" value of v1 are not limits.
+min_limit_kib() {
+  local dir=$1 stop=$2 file=$3 m best=""
+  while [ -n "$dir" ] && [ "$dir" != "$stop" ] && [ "$dir" != "${stop%/*}" ]; do
+    m=$(cat "$dir/$file" 2> /dev/null) || m=""
     case $m in
       "" | max | *[!0-9]*) ;;
-      *) m=$((m / 1024)); if [ -z "$best" ] || [ "$m" -lt "$best" ]; then best=$m; fi ;;
+      *) if [ "${#m}" -lt 19 ] || { [ "${#m}" -eq 19 ] && [ "$m" -lt 4611686018427387904 ]; }; then m=$((m / 1024)); if [ -z "$best" ] || [ "$m" -lt "$best" ]; then best=$m; fi; fi ;;
     esac
     dir=${dir%/*}
   done
   [ -n "$best" ] && echo "$best"
+}
+
+# Memory limit in force for this process, in KiB: the smallest numeric limit from its cgroup up to the root. Cgroup v2 reads
+# memory.max along the `0::` path; on a host without it (cgroup v1, non-systemd) the `memory` controller line of
+# /proc/self/cgroup names the path under $CGROUP_ROOT/memory and the limit is memory.limit_in_bytes. POMTREE_CGROUP_ROOT and
+# POMTREE_CGROUP_PROC point the lookup at a fake hierarchy (used by the tests); they default to the real files.
+CGROUP_ROOT=${POMTREE_CGROUP_ROOT:-/sys/fs/cgroup}
+CGROUP_PROC=${POMTREE_CGROUP_PROC:-/proc/self/cgroup}
+inherited_kib() {
+  local path ctrl line kib
+  [ -r "$CGROUP_PROC" ] || return 1
+  path=$(sed -n 's/^0:://p' "$CGROUP_PROC" 2> /dev/null) || path=""
+  if [ -n "$path" ] && kib=$(min_limit_kib "$CGROUP_ROOT$path" "$CGROUP_ROOT" memory.max) && [ -n "$kib" ]; then echo "$kib"; return 0; fi
+  while IFS=: read -r _ ctrl line; do
+    case ",$ctrl," in
+      *,memory,*) [ -n "$line" ] && min_limit_kib "$CGROUP_ROOT/memory$line" "$CGROUP_ROOT/memory" memory.limit_in_bytes && return 0 ;;
+    esac
+  done < "$CGROUP_PROC" 2> /dev/null
+  return 1
 }
 
 WRAP=()
