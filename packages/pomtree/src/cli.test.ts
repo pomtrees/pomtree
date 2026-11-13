@@ -1462,6 +1462,19 @@ test("doctor prints ok, or FAIL with the reason and exits 1", async () => {
   assert.equal(bad.out[0]!.split("\n")[0], "FAIL: sandbox unavailable; journal writes failing");
 });
 
+test("doctor reports held agents with the reason and the action, and prints nothing for none", async () => {
+  const base = { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 };
+  const held = harness(route({ "/v1/doctor": { ...base, heldAgents: ["a-1", "a-2"] } }));
+  assert.equal(await run(["doctor"], held.io), EXIT.ok, "a hold alone does not fail doctor (readiness is unchanged)");
+  const o = held.out[0]!;
+  assert.equal(o.split("\n")[0], "ok");
+  assert.match(o, /held: {7}a-1, a-2 \(sandbox on a backend that is not the selected one/);
+  assert.match(o, /next: held agents: select the sandbox backend they were started on again \(sandbox\.backend\).*pomtree abandon a-1, pomtree abandon a-2/);
+  const none = harness(route({ "/v1/doctor": base }));
+  await run(["doctor"], none.io);
+  assert.doesNotMatch(none.out[0]!, /held/);
+});
+
 test("doctor names the resolved backend and where the engine socket came from, and prints no backend line without one", async () => {
   const base = { ok: true, host: "h", agents: {}, sandboxes: 0, live: 0 };
   const cfg = harness(

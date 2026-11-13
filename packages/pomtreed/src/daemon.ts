@@ -1219,9 +1219,7 @@ export class Daemon implements Driver {
       revisionMismatch: rev.mismatch,
       ...(this.deps.maxSessions && { maxSessions: this.deps.maxSessions }),
       ...(this.deps.backend && { backend: this.deps.backend }),
-      // Agents held for an unreachable sandbox backend (ids only); absent when none. `pomtree abandon <agent>` resolves each.
-      // TODO(held-agent-visibility): agents held for an unreachable backend appear only as `heldAgents` in this payload; current behavior: no CLI code
-      // reads the field and evaluateReadiness (health.ts) does not consult it, so an operator sees a hold only in the raw payload.
+      // Agents held for an unreachable sandbox backend (ids only); absent when none. `pomtree doctor` lists them with the action; `pomtree abandon <agent>` resolves each.
       ...(this.reconciler.held().length > 0 && { heldAgents: this.reconciler.held() }),
       ...(agentEndpoint !== undefined && { agentEndpoint }),
     };
