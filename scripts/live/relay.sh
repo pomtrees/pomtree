@@ -37,6 +37,13 @@ while [ $((SECONDS - T0)) -lt 900 ]; do
       [ "$(echo "$out" | awk '$2 != "0"' | wc -l)" = 0 ] || leaked=1
     done
   fi
+  # The egress sidecars once each too (they are not counted toward K + 1: only workers are).
+  for c in $("$ENGINE" ps --filter label=pomtree.egress=1 --format '{{.Names}}'); do
+    grep -qx "$c" "$R/grepped.txt" 2>/dev/null && continue
+    echo "$c" >> "$R/grepped.txt"
+    out=$(leak_container "$c"); echo "sidecar $c: $(echo $out)" | tee -a "$R/leak-containers.txt"
+    [ "$(echo "$out" | awk '$2 != "0"' | wc -l)" = 0 ] || leaked=1
+  done
   [ "$leaked" = 1 ] && { echo "STOP: nonzero leak count"; break; }
   pomtree --json ps > "$R/ps.json" 2>/dev/null
   if [ "$MODE" = cus1 ] && [ -z "$killed" ]; then
