@@ -129,7 +129,7 @@ export function createExecStream(
         } else await new Promise<void>((r) => (wake = r));
       }
     },
-    // TODO(loopback-exec-orphan): close() ends only the attach socket; the bridge process exits when it sees stdin EOF, so a container-side peer that ignores the half-close can leave the node bridge running in the container until the container stops.
+    // close() ends the attach socket, which ends the bridge's stdin; the bridge then exits after a short grace period even when the container-side peer ignores the half-close (BRIDGE_STDIN_END_GRACE_MS in agent-image loopback-bridge-core.ts). The host cannot end the exec itself: the exec API has no kill.
     close() {
       if (ended) return;
       finish({ reason: "local" });
