@@ -16,7 +16,7 @@ test("publish route: agent-only, own agent, validated, pushes", async () => {
     publisher: {
       allowedTargets: ["origin/main"],
       requireApproval: false,
-      resolve: async () => ({ sha: "abc123", summary: "s", paths: [] }),
+      resolve: async () => ({ sha: "abc123", summary: "s", paths: [], exclude: [] }),
       push: async (_a, b, tg) => void pushed.push(`${b}->${tg}`),
     },
   });

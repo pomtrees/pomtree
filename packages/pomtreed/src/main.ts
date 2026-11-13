@@ -39,6 +39,7 @@ import { wireLocalHost } from "./local-host.ts";
 import { GitRepoStore, GitWorkspace, checkGitVersion } from "@pomtree/workspace-git";
 import { emptyManifest } from "@pomtree/agent-image";
 import { parseFreshnessRules, RootWithdrawalError, SandboxUnavailableError } from "@pomtree/core";
+import type { PublishReview } from "@pomtree/core";
 import { DirReportStore } from "@pomtree/report-dir";
 import { DirTemplateStore } from "@pomtree/template-dir";
 import { PI_AUTH_PATH, PI_SINK_FILE, PI_TTY_ENV, createPiHarness, fileTailSource } from "@pomtree/harness-pi";
@@ -594,10 +595,10 @@ const publishResolve = createPublishResolver({
   contentScan: cfg["publish.scan"],
   resolveAgentBranch: (agent, branch) => workspace.resolve(agent, `refs/agents/${agent}/heads/${branch}`),
 });
-const publishPush = async (agent: string, _branch: string, target: string, sha: string): Promise<void> => {
+const publishPush = async (agent: string, _branch: string, target: string, sha: string, reviewed: PublishReview): Promise<void> => {
   const slash = target.indexOf("/");
   if (slash <= 0) throw new Error(`bad publish target ${target}; expected remote/branch`);
-  await workspace.publish(agent, { commit: sha, remote: target.slice(0, slash), target: target.slice(slash + 1) });
+  await workspace.publish(agent, { commit: sha, remote: target.slice(0, slash), target: target.slice(slash + 1), reviewed });
 };
 
 let daemon!: Daemon;

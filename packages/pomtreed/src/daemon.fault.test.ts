@@ -125,7 +125,7 @@ test("publish pins the approved sha: the approval names it and push receives tha
     publisher: {
       allowedTargets: ["origin/main"],
       requireApproval: true,
-      resolve: async () => ({ sha: "a".repeat(40), summary: "2 files changed", paths: [] }),
+      resolve: async () => ({ sha: "a".repeat(40), summary: "2 files changed", paths: [], exclude: [] }),
       push: async (_agent: string, b: string, tg: string, sha: string) => void pushed.push([b, tg, sha]),
     },
   });
