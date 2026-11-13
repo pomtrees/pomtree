@@ -73,6 +73,9 @@ export const jobNames = (yml: string): string[] => [...yml.slice(yml.indexOf("\n
 const stepWith = (job: string, needle: string) => steps(job).find((x) => x.includes(needle)) ?? "";
 
 const TEST_RUN = 'pnpm test:docker:"$DOCKER_GROUP" 2>&1 | tee test-docker.log';
+// The groups the `podman` job serves; every other group is a docker matrix entry.
+const PODMAN_GROUPS = ["podman"];
+const PODMAN_RUN = "pnpm test:docker:podman 2>&1 | tee test-podman.log";
 
 test("the CI image job builds and caches the image, and each docker group loads it and runs its script with the variables the Docker gates read", () => {
   const yml = readFileSync(WORKFLOW, "utf8");
@@ -102,7 +105,11 @@ test("the CI image job builds and caches the image, and each docker group loads 
     .exec(docker)?.[1]
     ?.split(",")
     .map((g) => g.trim());
-  assert.deepEqual(groups, Object.keys(dockerGroups()), "the docker matrix lists every group in scripts/ci/docker-groups.json, in order");
+  assert.deepEqual(
+    groups,
+    Object.keys(dockerGroups()).filter((g) => !PODMAN_GROUPS.includes(g)),
+    "the docker matrix lists every group in scripts/ci/docker-groups.json that the podman job does not serve, in order",
+  );
   assert.match(docker, /^ {6}fail-fast: false$/m, "one failing group does not cancel the others");
   assert.match(yamlValue(stepWith(docker, TEST_RUN), "DOCKER_GROUP") ?? "", /^\$\{\{ matrix\.group \}\}$/);
   const guard = stepWith(docker, "python3 scripts/ci/skip-guard.py");
@@ -132,18 +139,79 @@ test("the CI image job builds and caches the image, and each docker group loads 
   assert.ok(!yml.includes("pnpm test:full"), "CI runs the groups, not test:full, so test-lite's suites do not run twice");
 });
 
-test("the CI jobs run in parallel except the docker groups, which need only the image job, and cleanup after them (negative variants included)", () => {
+test("the CI jobs run in parallel except the docker groups and the podman job, which need only the image job, and cleanup after them (negative variants included)", () => {
   const yml = readFileSync(WORKFLOW, "utf8");
-  assert.deepEqual(jobNames(yml), ["format", "lint", "typecheck", "test-lite", "image", "docker", "cleanup"]);
+  assert.deepEqual(jobNames(yml), ["format", "lint", "typecheck", "test-lite", "image", "docker", "podman", "cleanup"]);
   for (const name of ["format", "lint", "typecheck", "test-lite", "image"]) {
     assert.ok(!/^ {4}needs:/m.test(jobBlock(yml, name)), `${name} must not declare needs; serialising jobs puts the Docker jobs after the cheap ones`);
   }
   assert.deepEqual(/^ {4}needs: (.*)$/m.exec(jobBlock(yml, "docker"))?.[1], "[image]", "the docker groups wait only for the image they test");
-  assert.deepEqual(/^ {4}needs: (.*)$/m.exec(jobBlock(yml, "cleanup"))?.[1], "[docker]", "cleanup waits for every docker group");
+  assert.deepEqual(/^ {4}needs: (.*)$/m.exec(jobBlock(yml, "podman"))?.[1], "[image]", "the podman job waits only for the image it tests");
+  assert.deepEqual(/^ {4}needs: (.*)$/m.exec(jobBlock(yml, "cleanup"))?.[1], "[docker, podman]", "cleanup waits for every docker group and the podman job");
+  assert.ok(
+    !/^ {4}continue-on-error:/m.test(jobBlock(yml, "podman")),
+    "the podman job is non-blocking by not being a required check, not by continue-on-error",
+  );
   // Negative controls: the matcher fires on a serialised job, and the docker check sees a different edge.
   assert.ok(/^ {4}needs:/m.test(jobBlock("\n  a:\n    needs: [b]\n    runs-on: x\n", "a")));
   assert.notEqual(/^ {4}needs: (.*)$/m.exec(jobBlock("\n  docker:\n    needs: [image, lint]\n", "docker"))?.[1], "[image]");
   assert.deepEqual(jobNames("on: x\njobs:\n  a:\n    steps:\n  b:\n"), ["a", "b"]);
+});
+
+// The podman job restores the same image tarball the docker groups use, loads it into Podman's own store, runs the Podman group's script
+// with the variables the gate reads, and guards that group's log; the group must exist in the manifest and be absent from the docker matrix.
+test("the podman job restores and loads the image, runs its group's script with the Podman gate variables, and guards its log (negative variants included)", () => {
+  const yml = readFileSync(WORKFLOW, "utf8");
+  const image = jobBlock(yml, "image");
+  const podman = jobBlock(yml, "podman");
+  const restore = stepWith(podman, "actions/cache/restore@");
+  const savedKey = yamlValue(stepWith(image, "actions/cache/save@"), "key");
+  assert.ok(savedKey, "the image job saves a cache entry");
+  assert.equal(yamlValue(restore, "key"), savedKey, "it restores the entry the image job saves");
+  assert.equal(yamlValue(restore, "path"), yamlValue(stepWith(image, "actions/cache/save@"), "path"));
+  assert.equal(yamlValue(restore, "fail-on-cache-miss"), "true");
+  const tag = yamlValue(image, "AGENT_IMAGE_TAG");
+  const load = podman.indexOf("| podman load");
+  const run = podman.indexOf(PODMAN_RUN);
+  const probe = podman.indexOf("podman run --rm --network none --entrypoint node");
+  const service = podman.indexOf("podman system service");
+  assert.ok(
+    podman.indexOf("actions/cache/restore@") < load && load < probe && probe < service && service < run,
+    "restore, load, run probe and API service come before the tests, whose output is teed to the log the guard reads",
+  );
+  assert.ok(
+    podman.includes(`podman run --rm --network none --entrypoint node ${tag} --version`),
+    "the probe runs the image CI built with its entrypoint overridden",
+  );
+  assert.ok(podman.includes('echo "CONTAINER_HOST=unix://$sock" >> "$GITHUB_ENV"'), "the API socket is exported as CONTAINER_HOST for the tests");
+  const test = stepWith(podman, PODMAN_RUN);
+  assert.ok(test.includes("set -o pipefail"), "a failing test step is not hidden by tee");
+  assert.equal(yamlValue(test, "PTREE_SANDBOX_BACKEND"), "podman");
+  assert.equal(
+    yamlValue(podman, "PTREE_AGENT_TEST_IMAGE") ?? "pomtree/agent:dev",
+    tag,
+    "the gate tests the image CI built (docker-gate.ts default unless set)",
+  );
+  assert.ok(!/fetch-depth|ref:/.test(podman), "the checkout stays at GITHUB_SHA");
+  // engineGate (what network-podman.test.ts uses) neither reads PTREE_AGENT_TEST_REVISION nor checks untracked files, so the job sets no revision.
+  assert.ok(!podman.includes("PTREE_AGENT_TEST_REVISION"), "no podman step claims a revision comparison the gate does not make");
+  const diagnostics = podman.indexOf("- name: Diagnostics on failure");
+  assert.ok(diagnostics > podman.indexOf("python3 scripts/ci/skip-guard.py"), "diagnostics come after the guard, so a guard-only failure gets them too");
+  assert.match(stepWith(podman, "- name: Diagnostics on failure"), /^ {8}if: failure\(\) \|\| cancelled\(\)$/m);
+  const guard = stepWith(podman, "python3 scripts/ci/skip-guard.py");
+  assert.ok(podman.indexOf("python3 scripts/ci/skip-guard.py") > run, "the skip guard runs after the tests");
+  assert.match(guard, /skip-guard\.py --group podman test-podman\.log(?:\n|$)/, "the guard checks the podman group against the log the test step writes");
+  assert.match(guard, /^ {8}if: \$\{\{ !cancelled\(\) \}\}$/m, "the guard also runs after a failed test step");
+  assert.ok(!podman.includes("sudo -u") && !podman.includes("useradd"), "the tests run as the runner user, with no uid-1000 account");
+  // The group the job serves is in the manifest, and the docker matrix does not run it.
+  for (const g of PODMAN_GROUPS) assert.ok(g in dockerGroups(), `${g} is a group in scripts/ci/docker-groups.json`);
+  const docker = jobBlock(yml, "docker");
+  const matrix = /^ {8}group: \[([^\]]*)\]$/m.exec(docker)?.[1] ?? "";
+  assert.ok(!matrix.split(",").some((g) => PODMAN_GROUPS.includes(g.trim())), "the docker matrix does not run a podman group");
+  // Negative controls: the matchers see a Podman log renamed, a missing cache-miss failure and a docker-matrix podman entry.
+  assert.ok(!podman.replaceAll("test-podman.log", "test.log").includes(PODMAN_RUN));
+  assert.notEqual(yamlValue(restore.replace("fail-on-cache-miss: true", "fail-on-cache-miss: false"), "fail-on-cache-miss"), "true");
+  assert.ok("sandbox, podman".split(",").some((g) => PODMAN_GROUPS.includes(g.trim())));
 });
 
 // `ubuntu-latest` resolves to a different Ubuntu release part way through GitHub's migration, so the gate would run on whichever

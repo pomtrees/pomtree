@@ -287,15 +287,141 @@ jobs:
         env:
           DOCKER_GROUP: ${{ matrix.group }}
 
+  # The rootless-Podman egress suite (packages/sandbox-docker/src/network-podman.test.ts), on the same image the docker groups test.
+  # Not a required status check (the repo's main ruleset is in evaluate mode): this job is a trial on a new runner environment, so it
+  # is not made required until it has run reliably. Rootless Podman runs as the runner user (uid 1001); the adapter's keep-id mapping gives
+  # the containers uid 1000, so this job needs no uid-1000 account, docker group or sudo for the tests.
+  podman:
+    needs: [image]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/agent-image.tar.zst
+          key: agent-image-tar-${{ github.sha }}-${{ github.run_id }}
+          fail-on-cache-miss: true
+      # Podman keeps its runtime state under XDG_RUNTIME_DIR, which a runner without a login session may not have: use /run/user/<uid>
+      # when it exists and is writable, else a private directory under RUNNER_TEMP. Exported for every later step.
+      - name: Prepare the Podman runtime directory
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          dir="/run/user/$(id -u)"
+          if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+            dir="$RUNNER_TEMP/xdg-runtime"
+            mkdir -p "$dir"
+            chmod 700 "$dir"
+          fi
+          echo "XDG_RUNTIME_DIR=$dir" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$dir"
+      # Facts for diagnosing a runner-image change; prints only and never fails (a missing pasta is installed, the one allowed package step).
+      - name: Runner facts
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          podman --version || true
+          if ! command -v pasta >/dev/null 2>&1; then
+            echo "pasta is not installed; installing passt"
+            sudo apt-get install -y passt || true
+          fi
+          pasta --version || true
+          id || true
+          uname -r || true
+          for f in /proc/sys/kernel/apparmor_restrict_unprivileged_userns /proc/sys/user/max_user_namespaces; do
+            if [ -e "$f" ]; then echo "$f=$(cat "$f")"; fi
+          done
+          user=$(id -un)
+          echo "subuid: $(grep "^$user:" /etc/subuid || echo none)"
+          echo "subgid: $(grep "^$user:" /etc/subgid || echo none)"
+          controllers="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"
+          if [ -e "$controllers" ]; then echo "delegated controllers: $(cat "$controllers")"; else echo "no $controllers"; fi
+          cat /proc/self/cgroup || true
+          podman info || true
+      # The suite's gate (engineGate) looks the image up by pomtree/agent:dev; if Podman stored the archive's name in another form,
+      # tag the loaded image so that lookup finds it. The revision label is printed for the log only: no gate here compares it, and
+      # the image is the one this run's image job built (the cache key is scoped to this run).
+      - name: Load the agent image
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          out=$(zstd -dc "$RUNNER_TEMP/agent-image.tar.zst" | podman load)
+          printf '%s\n' "$out"
+          if ! podman image inspect pomtree/agent:dev >/dev/null 2>&1; then
+            loaded=$(printf '%s\n' "$out" | sed -n 's/^Loaded image[^:]*: //p' | tail -n 1)
+            podman tag "$loaded" pomtree/agent:dev
+          fi
+          podman image inspect pomtree/agent:dev --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+      # The image's ENTRYPOINT is the egress worker, which would take `true` as an argument and fail without its socket, so the entrypoint
+      # is overridden. The second run prints the identity keep-id gives the container (the adapter maps the runner user to 1000:1000).
+      - name: Probe that rootless Podman can run a container
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          if ! podman run --rm --network none --entrypoint node pomtree/agent:dev --version; then
+            echo "::error::a rootless Podman container did not start on this runner (user namespaces, subuid/subgid, cgroup delegation or the image store; see Runner facts); the Podman suite cannot run here" >&2
+            exit 1
+          fi
+          podman run --rm --network none --userns=keep-id:uid=1000,gid=1000 --entrypoint id pomtree/agent:dev || echo "the keep-id probe failed (informational here; the suite exercises this mapping)"
+      # No systemd user session is assumed: start the API service by hand, detached, and wait (bounded) for it to answer.
+      - name: Start the Podman API service
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          sock="$XDG_RUNTIME_DIR/podman.sock"
+          setsid nohup podman system service --time=0 "unix://$sock" > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
+          for _ in $(seq 1 30); do
+            if podman --url "unix://$sock" info >/dev/null 2>&1; then
+              echo "CONTAINER_HOST=unix://$sock" >> "$GITHUB_ENV"
+              echo "the Podman API answers at unix://$sock"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the Podman API service did not answer at unix://$sock within 30 seconds; its log follows (the service must start for the Podman suite to run)" >&2
+          cat "$RUNNER_TEMP/podman-service.log" >&2 || true
+          exit 1
+      - name: Test (Podman egress suite)
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test:docker:podman 2>&1 | tee test-podman.log
+        timeout-minutes: 20
+        env:
+          PTREE_SANDBOX_BACKEND: podman
+          POMTREE_TEST_TIMEOUT_SCALE: "3"
+      # Skip guard: the Podman group's required tests (scripts/ci/docker-groups.json) must run and pass; a skip fails the job.
+      - name: Guard against skipped Podman tests
+        # Also after a failed test step, so the log says which required tests did not pass; not after a cancel.
+        if: ${{ !cancelled() }}
+        timeout-minutes: 2
+        run: python3 scripts/ci/skip-guard.py --group podman test-podman.log
+      - name: Diagnostics on failure
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        run: |
+          podman ps -a --format '{{.Names}} {{.Status}}' || true
+          podman network ls || true
+          tail -n 60 "$RUNNER_TEMP/podman-service.log" || true
+          tail -n 60 test-podman.log || true
+
   # The image tarball is needed only within this run, and at 1 GB or more per run it would push the buildx and pnpm caches out
-  # of the repository's 10 GB cache limit, so it is deleted once every docker group is done, whatever their outcome. The only
+  # of the repository's 10 GB cache limit, so it is deleted once every docker group and the podman job are done, whatever their outcome. The only
   # job with write access to the Actions API, and only to it (GitHub's own gh CLI and GITHUB_TOKEN, nothing new pinned).
   # Skipped on a pull request from a fork: there GITHUB_TOKEN is read-only whatever this job's `permissions` ask for, while the
   # image job's cache save still succeeds (a fork's cache is scoped to the merge ref), so the entry exists, `gh cache list`
   # finds it and `gh cache delete` fails the job. Nothing durable leaks: a merge-ref cache expires on its own. Not
   # `pull_request_target`, which would run this workflow with a writable token against unreviewed code.
   cleanup:
-    needs: [docker]
+    needs: [docker, podman]
     if: always() && github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-26.04
     timeout-minutes: 5
