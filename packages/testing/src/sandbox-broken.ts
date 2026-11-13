@@ -431,7 +431,7 @@ export const BREAK_MODES = {
   },
   "idempotent-start": {
     name: "forget-key",
-    collateral: ["unknown-outcome-retry"],
+    collateral: ["unknown-outcome-retry", "idempotency-conflict"], // a backend that forgets its keys cannot conflict a reused one either
     fails: /a repeated key must return the same sandbox/,
     // The second use of a key is sent under a fresh key, so a repeated start creates another sandbox.
     wrap: (inner) => {

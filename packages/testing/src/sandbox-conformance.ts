@@ -432,8 +432,7 @@ export const SANDBOX_CONFORMANCE_CLAUSES = [
     needs: [],
     targets: ["start", "list"],
     fix: "throw IdempotencyConflictError when a start key is reused for a different spec, and create nothing",
-    // TODO(conformance-start-conflict): neither the shared fake nor the Docker adapter conflicts a reused start key yet, so only descriptors
-    // that set startConflict run this clause; current behavior: skipped with this reason on the fake.
+    // Only descriptors that set startConflict run this clause: the shared fake sets it, the Docker adapter does not conflict a reused start key.
     skip: (sut) => (sut.startConflict === true ? null : "descriptor sets no startConflict (the adapter does not conflict a reused start key)"),
     async check(ctx) {
       const agent = ctx.agent("conflict");
@@ -1059,6 +1058,7 @@ export interface FakeUnderTestOptions {
   // Decorates the fake (a deliberately broken sandbox in tests); the hooks keep driving the undecorated fake's fault plan.
   wrap?(fake: FakeSandbox): Sandbox;
   engineApiVersion?: string;
+  // Default true: the shared fake conflicts a reused start key with another spec. false = a descriptor that skips the clause.
   startConflict?: boolean;
   deadlineMs?: number;
   // Hooks merged over the fake's own (add foreignRecord or engine here; the fake has neither).
@@ -1080,7 +1080,7 @@ export function fakeSandboxUnderTest(o: FakeUnderTestOptions = {}): SandboxUnder
     capabilities: new FakeSandbox([], "graceful", options(new FaultPlan())).declaration,
     ...(o.deadlineMs !== undefined && { deadlineMs: o.deadlineMs }),
     ...(o.engineApiVersion !== undefined && { engineApiVersion: o.engineApiVersion }),
-    ...(o.startConflict !== undefined && { startConflict: o.startConflict }),
+    startConflict: o.startConflict ?? true,
     ...(o.requireCapabilities && { requireCapabilities: o.requireCapabilities }),
     async make() {
       const plan = new FaultPlan();
