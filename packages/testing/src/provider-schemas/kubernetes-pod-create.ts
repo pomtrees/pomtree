@@ -1,8 +1,9 @@
 import type { Schema } from "../schema-check.ts";
 
-// TODO(provider-schemas-unverified): written from memory; check against the official Kubernetes and E2B references.
-// Provenance: inferred. Request-body subset for POST /api/v1/namespaces/{namespace}/pods (core/v1 Pod), written from memory; not fetched and not verified against the official reference.
-// Source to check against: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/
+// Provenance: checked against the Kubernetes API reference on 2026-11-13, not against a live cluster. Request-body subset for POST /api/v1/namespaces/{namespace}/pods (core/v1 Pod):
+// https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/ (Pod, PodSpec: restartPolicy Always|OnFailure|Never, activeDeadlineSeconds, containers; Container: name, image, command, args, workingDir, env; EnvVar: name, value)
+// and https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/object-meta/ (name, namespace, labels, annotations).
+// Deliberately stricter than the reference where we author the body: `image` is optional there (workload controllers default it) and `metadata.name` may be replaced by `generateName`, but a Pod we create names both; EnvVar `valueFrom` is not authored, so it is not listed.
 // Strict (additionalProperties:false) because this is a REQUEST body we author: an unknown field is likely our bug, so check the official reference, then add the field here if it is real.
 export const kubernetesPodCreate: Schema = {
   type: "object",
