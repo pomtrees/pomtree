@@ -385,7 +385,9 @@ export class SailSandbox implements Sandbox {
 }
 
 // What inspect reports when the sandbox is gone and its provider record cannot be read.
-// TODO(sail-inspect-terminated-test): the inspect branch for an adapter-terminated sandbox (NO_STAMP) is reached by no test; current behavior: untested.
+// TODO(sail-inspect-terminated-test): the NO_STAMP branch of inspect (an adapter-terminated sandbox that #resolve cannot find) is reached by no
+// test and, as written, by no input: terminate adds to #terminated only after #resolve cached the sailbox in #sailboxOf, which is never
+// cleared, so #resolve always finds it. Current behavior: dead code; delete the branch or clear #sailboxOf on terminate, then test it.
 const NO_STAMP = { host: null, generation: null } as const;
 
 const tagOf = (d: Decoded, key: string): string | undefined =>
