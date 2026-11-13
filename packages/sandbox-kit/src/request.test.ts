@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
+import { DEFAULT_FETCH_USER_AGENT, type SandboxRequestFn, type SandboxRequester } from "@pomtree/core";
 import { DEFAULT_USER_AGENT, type KitResponse, type RequestInit, buildHttpOptions, createRequest, openWebSocket } from "./request.ts";
 import { redactError } from "./redact.ts";
 
@@ -269,4 +270,17 @@ test("request: the bound openWebSocket carries the shared User-Agent and a calle
   }
   createRequest({ userAgent: "shared-ua" }).openWebSocket("wss://x.example/", { headers: { "User-Agent": "own" }, WebSocketImpl: Fake as never });
   assert.deepEqual(args[1], { headers: { "user-agent": "shared-ua" } });
+});
+
+test("request: the kit's default User-Agent is core's workflow.fetch.userAgent default, not a string of its own", () => {
+  assert.equal(DEFAULT_USER_AGENT, DEFAULT_FETCH_USER_AGENT);
+});
+
+// Compile-time only (checked by tsc): the kit's request function and opener stay assignable to core's adapter-facing types, so
+// a change to either side that breaks the other fails the typecheck.
+const _requesterIsSandboxRequester: SandboxRequester = createRequest();
+const _requestFnIsSandboxRequestFn: SandboxRequestFn = createRequest();
+test("request: createRequest is assignable to core's SandboxRequester and SandboxRequestFn", () => {
+  assert.equal(typeof _requesterIsSandboxRequester.openWebSocket, "function");
+  assert.equal(typeof _requestFnIsSandboxRequestFn, "function");
 });
