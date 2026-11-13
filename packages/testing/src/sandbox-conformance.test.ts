@@ -65,7 +65,6 @@ test("registry: every final clause id is registered once, with a rule and a fix"
 // hook skips all carry the one stable prefix.
 const CHECKS = SANDBOX_CONFORMANCE_CLAUSES.length + 2;
 const FAKE_SKIP_REASONS: Record<string, RegExp> = {
-  "idempotency-conflict": /startConflict/,
   "foreign-backend-record": /^conformance not declared: descriptor provides no foreignRecord hook/,
   "api-version-pin": /engineApiVersion/,
   "user-agent-stamped": /^conformance not declared: descriptor provides no requests hook/,
@@ -168,23 +167,29 @@ test("mutation: api-version-pin runs when engineApiVersion is set, passes on a p
   assert.match(failure(wrongPin, "api-version-pin"), /pin the declared engine API version/);
 });
 
-test("mutation: idempotency-conflict passes on a keyed-fingerprint start and fails on the plain fake", async () => {
-  const conflicting = (fake: FakeSandbox) => {
-    const seen = new Map<string, string>();
+test("mutation: idempotency-conflict passes on the plain shared fake and fails on a start that replays the first sandbox", async () => {
+  const green = await evaluateSandboxConformance(fakeSandboxUnderTest(), { clauses: only("idempotency-conflict") });
+  assert.equal(status(green, "idempotency-conflict"), "passed", failure(green, "idempotency-conflict"));
+  const swallowing = (fake: FakeSandbox) => {
+    const first = new Map<string, Awaited<ReturnType<FakeSandbox["start"]>>>();
     return {
       start: async (spec: SandboxSpec, key: string) => {
-        const fp = JSON.stringify(spec);
-        const prior = seen.get(key);
-        if (prior !== undefined && prior !== fp) throw new IdempotencyConflictError("sandbox.start", key);
-        seen.set(key, fp);
-        return fake.start(spec, key);
+        try {
+          const h = await fake.start(spec, key);
+          if (!first.has(key)) first.set(key, h);
+          return h;
+        } catch (e) {
+          const prior = first.get(key);
+          if (e instanceof IdempotencyConflictError && prior !== undefined) return prior;
+          throw e;
+        }
       },
     };
   };
-  const green = await evaluateSandboxConformance(brokenFake(conflicting, { startConflict: true }), { clauses: only("idempotency-conflict") });
-  assert.equal(status(green, "idempotency-conflict"), "passed", failure(green, "idempotency-conflict"));
-  const red = await evaluateSandboxConformance(fakeSandboxUnderTest({ startConflict: true }), { clauses: only("idempotency-conflict") });
+  const red = await evaluateSandboxConformance(brokenFake(swallowing, { startConflict: true }), { clauses: only("idempotency-conflict") });
   assert.equal(status(red, "idempotency-conflict"), "failed");
+  const skipped = await evaluateSandboxConformance(fakeSandboxUnderTest({ startConflict: false }), { clauses: only("idempotency-conflict") });
+  assert.equal(status(skipped, "idempotency-conflict"), "skipped");
 });
 
 test("mutation: foreign-backend-record passes when attach names both backends and fails when it reports the sandbox gone", async () => {

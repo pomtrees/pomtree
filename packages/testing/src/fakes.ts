@@ -1638,6 +1638,7 @@ export class FakeSandbox implements Sandbox {
   echoNextLoopback = false;
   private n = 0;
   private startKeys = new Map<string, SandboxHandle>();
+  private startFingerprints = new Map<string, string>(); // start key -> fingerprint of the spec it first started
   // The ordered one-shot fault plan; empty unless options.faults was given or a test adds to it.
   readonly faults: FaultPlan;
   // Every fault-injectable operation call in order, recorded before its fault (if any) takes effect.
@@ -1741,8 +1742,12 @@ export class FakeSandbox implements Sandbox {
     return this.startKeys.get(idempotencyKey)?.id ?? (this.derivedIds ? sandboxIdForKey(idempotencyKey) : `sbx-${this.n + 1}`);
   }
   private create(spec: SandboxSpec, idempotencyKey: string): SandboxHandle {
+    const fingerprint = JSON.stringify(canonical(spec));
     const prior = this.startKeys.get(idempotencyKey);
-    if (prior) return prior;
+    if (prior) {
+      if (this.startFingerprints.get(idempotencyKey) !== fingerprint) throw new IdempotencyConflictError("sandbox.start", idempotencyKey);
+      return prior;
+    }
     for (const k of Object.keys(spec.labels ?? {}))
       if (!/^[A-Za-z0-9_.-]+$/.test(k) || k.startsWith("pomtree")) throw new Error(`invalid sandbox label name: ${k}`);
     ownerStampTags(spec); // a host or generation no real adapter could stamp is refused here too, before anything is created
@@ -1779,6 +1784,7 @@ export class FakeSandbox implements Sandbox {
       wait: () => this.waitFor(id, done),
     };
     this.startKeys.set(idempotencyKey, handle);
+    this.startFingerprints.set(idempotencyKey, fingerprint);
     return handle;
   }
   // Re-adopt an existing live container after a daemon restart; unavailable when not running.
