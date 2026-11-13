@@ -195,7 +195,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
   const MAX_AGENT_ITEMS = 200;
   const COMPACT_AT = 6;
   const FAIL_OFFLINE_AT = 3;
-  // TODO(omnibar-open-key-untested): the omnibar opens on Alt+Shift+P, matched on the physical key code (isOpenShortcut); unverified on other OSes and browsers. Trigger: the key collides with a browser or OS shortcut.
+  // TODO(omnibar-open-key-untested): isOpenShortcut is unit-tested on event shapes (any layout, AltGr, modifiers) and the key works on macOS, but it is unverified on Windows and Linux in a real browser, where Alt+Shift may switch the keyboard layout or reach a window manager first. Trigger: the key collides with a browser or OS shortcut.
   const OPEN_SHORTCUT = "Alt+Shift+P";
   const MAX_ROWS = 1000;
   const clip = (s, n) => (s.length > n ? s.slice(0, n) : s);

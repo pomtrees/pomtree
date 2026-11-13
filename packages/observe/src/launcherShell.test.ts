@@ -302,6 +302,22 @@ test("a list cut at the agent cap says how many entries are not listed; a narrow
   assert.equal(h.list.children.length, 1);
 });
 
+test("the launcher key follows the physical key on another layout and leaves AltGr alone", async () => {
+  const h = await up();
+  const term = new Node_("div");
+  const odd = h.doc.dispatch(term, "keydown", { altKey: true, shiftKey: true, code: "KeyP", key: "l" });
+  assert.equal(h.launcher.hidden, false, "Dvorak: the P position types an l");
+  assert.equal(odd.defaultPrevented, true);
+  const h2 = await up();
+  const term2 = new Node_("div");
+  let keys = 0;
+  term2.addEventListener("keydown", () => keys++);
+  const altgr = h2.doc.dispatch(term2, "keydown", { altKey: true, shiftKey: true, ctrlKey: true, code: "KeyP", key: "P" });
+  assert.equal(h2.launcher.hidden, true, "Ctrl+Alt is how AltGr arrives on Windows and Linux");
+  assert.equal(altgr.defaultPrevented, false);
+  assert.equal(keys, 1, "the page still gets the key");
+});
+
 test("typing filters the list through the model; no match shows a message and no activedescendant", async () => {
   const h = await up();
   openStart(h);
