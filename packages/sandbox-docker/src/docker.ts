@@ -936,7 +936,9 @@ export class DockerSandbox implements Sandbox {
       const exitCode = Number(await this.exec(["wait", name(id)]));
       // The container has exited; read OOMKilled before anything removes it. If a concurrent
       // finish() already reaped it, the cache it populated holds the captured flag.
-      // TODO(oom-flag-race): Docker can record a real OOM kill as OOMKilled=false with exit 137 (issue #532); then oomKilled is omitted here.
+      // oomKilled is advisory: it is set only from the engine's OOMKilled flag and is never inferred from exit 137, because an external SIGKILL
+      // also exits 137 and would be mislabelled as an OOM kill. Docker can record a real OOM kill as OOMKilled=false (issue #532, an engine race
+      // under CPU contention), and then oomKilled is omitted here by decision.
       const oomKilled = (await this.readState(id))?.oomKilled ?? this.exited.get(id)?.oomKilled ?? false;
       return { exitCode, ...(oomKilled ? { oomKilled: true } : {}) };
     } catch (e) {

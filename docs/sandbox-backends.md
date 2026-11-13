@@ -21,6 +21,7 @@ A backend's `create(deps)` returns an object implementing `Sandbox` (`packages/c
 | `attach(id, agent)` | Re-adopt a running sandbox after a daemon restart, creating nothing. Throws `SandboxUnavailableError` for an unknown or stopped one. |
 | `stop(id, graceMs, key)`, `kill(id, key)` | End a sandbox. An already-gone sandbox is success. A killed sandbox exits 137. |
 | `inspect(id)` | `{ running, exitCode, status? }`, or `null` for an unknown id. Must agree with `wait()`. |
+| `wait()` (on the handle) | `{ exitCode, oomKilled? }`. `oomKilled` is advisory: set it only when the engine reports an out-of-memory kill, and never infer it from exit 137, because an external `SIGKILL` also exits 137. The Docker backend therefore omits it when Docker records a real OOM kill as `OOMKilled=false` (an engine race seen under CPU contention). |
 | `list(owner)` | Every sandbox this owner's daemon may have created (section 8). |
 | `reclaim(owner)` | Remove provider-side leftovers this owner owns that no live sandbox uses; return the ids reclaimed. |
 | `imageIdentity(ref)` | Resolve an image reference to a stable identity. |
