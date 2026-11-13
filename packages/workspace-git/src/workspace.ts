@@ -985,8 +985,8 @@ export class GitWorkspace implements Workspace {
   // deleted or rewound since the review, would otherwise send unreviewed history. The push is one explicit
   // `<sha>:refs/heads/<target>` refspec with no `+`: never forced, no tags (push.followTags is overridden), no submodules, no
   // other ref; the porcelain report must show exactly that one ref, created, fast-forwarded or already up to date.
-  // An absent `reviewed` is checked as an empty `exclude` (the whole reachable history counts as reviewed): the boundary is the
-  // pin's, and pomtreed always passes it; there is no second copy of the rule here.
+  // `reviewed` is the pin's boundary and is required here: a push without it is refused (PublishRefusedError), never checked against
+  // a default, so a caller cannot skip the review by omitting it. `{ exclude: [] }` says the whole reachable history was reviewed.
   // The check is inherently racy: the remote can move between the `ls-remote` below and the push. The push itself is explicit
   // and never forced, so a remote branch that moved to a commit the pushed history does not contain is rejected non-fast-forward
   // (nothing delivered), and one that moved along the pushed history only shrinks what is delivered. What it cannot catch is the
@@ -1019,7 +1019,11 @@ export class GitWorkspace implements Workspace {
     };
     const redact = (err: unknown): Error => new Error(this.scrub((err instanceof Error ? err.message : String(err)).split(url).join("<remote>")));
     // A boundary the mirror does not hold excludes nothing from the pinned commit's history, so it is dropped (not a git error).
-    const exclude = await this.heldCommits(push.reviewed?.exclude ?? []);
+    if (!push.reviewed)
+      throw new PublishRefusedError(
+        "no reviewed boundary was passed, so the push cannot be checked against the review; pass the publish pin's reviewed boundary; use { exclude: [] } when the whole history was reviewed",
+      );
+    const exclude = await this.heldCommits(push.reviewed.exclude);
     const advertised = await this.text(["--git-dir", this.mirror, "ls-remote", "--", url], { ...remoteOpts, maxOutput: 64 * 1024 * 1024 }).catch((err) => {
       throw redact(err);
     });

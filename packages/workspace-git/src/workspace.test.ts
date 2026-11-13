@@ -944,7 +944,7 @@ test("resolve pins an ingested ref; publish pushes exactly the pinned commit and
   await assert.rejects(env.ws.publish("p1", { commit: a.commit, remote: "--upload-pack=x", target: "x" }));
   await assert.rejects(env.ws.publish("p1", { commit: a.commit, remote, target: "a..b" }));
   assert.equal(existsSync(join(remote, "refs", "heads")) ? readdirSync(join(remote, "refs", "heads")).length : 0, 0);
-  await env.ws.publish("p1", { commit: a.commit, remote, target: "feature/x" });
+  await env.ws.publish("p1", { commit: a.commit, remote, target: "feature/x", reviewed: { exclude: [] } });
   assert.equal(git(remote, "rev-parse", "refs/heads/feature/x"), a.commit);
 });
 
@@ -1346,7 +1346,7 @@ test("publish resolves a remote NAME from the operator repo only; unknown or uns
   git(env.repo, "remote", "add", "evil", "ext::sh -c touch% /tmp/pwned");
   const a = work(env, "agent/n1", { "n.txt": "n" });
   await env.ws.ingest("n1", stream(a.bytes), { maxBytes: 1 << 20 });
-  await env.ws.publish("n1", { commit: a.commit, remote: "origin", target: "main" });
+  await env.ws.publish("n1", { commit: a.commit, remote: "origin", target: "main", reviewed: { exclude: [] } });
   assert.equal(git(remote, "rev-parse", "refs/heads/main"), a.commit);
   await assert.rejects(env.ws.publish("n1", { commit: a.commit, remote: "nonesuch", target: "x" }), /unknown publish remote/);
   await assert.rejects(env.ws.publish("n1", { commit: a.commit, remote: "evil", target: "x" }), /invalid publish remote/);
