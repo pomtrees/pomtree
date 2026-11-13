@@ -74,7 +74,7 @@ const OOM_ATTEMPTS = 5;
 test("Docker wait captures OOM state before cleanup", { skip, timeout: 150000 }, async (t) => {
   // Docker can record a real OOM kill as State.OOMKilled=false with exit 137 under CPU contention (issue #532).
   // Retrying only that exact result lowers the failure rate (about 0.1% per run at a 25% loss rate) but does not remove it,
-  // and the product still reports such a kill without oomKilled.
+  // and the product still reports such a kill without oomKilled by decision: oomKilled is advisory and is never inferred from exit 137.
   for (let attempt = 1; attempt <= OOM_ATTEMPTS; attempt++) {
     const f = fixture();
     const h = await f.sb.start(
