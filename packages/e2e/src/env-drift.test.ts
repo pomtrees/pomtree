@@ -23,8 +23,17 @@ const GAPS: Record<string, string> = {
   PTREE_CAPTURE_JOB: "capture-broker",
 };
 
-// POMTREE_* names that are operator or test seams, not daemon-injected: a documenting comment is enough (POMTREE_LIVE_* are the scripts/live operator overrides, documented in stack.sh; POMTREE_RUN_* are the scripts/run-capped.sh cap overrides, documented in its header and CONTRIBUTING.md).
-const SEAMS = new Set(["POMTREE_REVISION_FILE", "POMTREE_LIVE_MODEL", "POMTREE_LIVE_REPO", "POMTREE_LIVE_TMP", "POMTREE_RUN_MEM", "POMTREE_RUN_TIMEOUT"]);
+// POMTREE_* names that are operator or test seams, not daemon-injected: a documenting comment is enough (POMTREE_LIVE_* are the scripts/live operator overrides, documented in stack.sh; POMTREE_RUN_* are the scripts/run-capped.sh cap overrides, documented in its header and CONTRIBUTING.md; POMTREE_CGROUP_ROOT and POMTREE_CGROUP_PROC are its cgroup lookup test hooks, documented in the same places).
+const SEAMS = new Set([
+  "POMTREE_REVISION_FILE",
+  "POMTREE_LIVE_MODEL",
+  "POMTREE_LIVE_REPO",
+  "POMTREE_LIVE_TMP",
+  "POMTREE_RUN_MEM",
+  "POMTREE_RUN_TIMEOUT",
+  "POMTREE_CGROUP_ROOT",
+  "POMTREE_CGROUP_PROC",
+]);
 
 test("classify: assignments and env-literal keys are set sites, everything else is a read (negative variants included)", () => {
   assert.equal(classify("process.env.POMTREE_X = 'a';", "POMTREE_X"), "set");
