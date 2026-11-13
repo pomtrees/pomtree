@@ -118,12 +118,29 @@ test("a store that fails for one pass then recovers: one refused spawn window, t
   for (let i = 0; i < 3; i++) await r.spawn(`x${i}`).catch(() => void refused++);
   assert.equal(refused, 3, "every spawn between the failure and the probe is refused");
   const before = r.s.passes;
-  await r.t.daemon.probeStore(); // clears and fires one pass (async)
-  await sleep(30);
+  await r.t.daemon.probeStore(); // clears and fires one pass
   assert.equal(r.peek.degraded, false);
   assert.equal(r.s.passes - before, 1, "exactly one post-recovery pass");
   await r.t.daemon.probeStore(); // not latched: a no-op, no write
   assert.equal(r.s.passes - before, 1);
+});
+
+test("probeStore resolves only after the post-recovery pass has ended", async () => {
+  const r = rig();
+  await r.init();
+  r.s.failing = true;
+  await r.t.daemon.reconcile(); // latches degraded
+  r.s.failing = false;
+  const rec = r.peek.reconciler;
+  const inner = rec.reconcileNow.bind(rec);
+  let ended = false;
+  rec.reconcileNow = async (boot) => {
+    await sleep(20); // a pass that outlives the probe's own write
+    await inner(boot);
+    ended = true;
+  };
+  await r.t.daemon.probeStore();
+  assert.equal(ended, true, "the pass ended before probeStore resolved");
 });
 
 test("a new spawn while latched is refused outright (503), not queued", async () => {
@@ -153,9 +170,7 @@ test("with the backoff disabled (storeRecoveryBackoffMs=0) a store that fails EV
   const h0 = await hostHealth(r.t);
   let relatched = 0;
   for (let i = 0; i < cycles; i++) {
-    await r.t.daemon.probeStore(); // journal write succeeds (the probe does not touch the failing registry.list): clears + fires a pass
-    assert.equal(r.peek.degraded, false, "probe clears: it only tests the journal write");
-    await sleep(15); // the post-recovery pass fails again and relatches
+    await r.t.daemon.probeStore(); // journal write succeeds (the probe does not touch the failing registry.list): clears + runs a pass that relatches
     if (r.peek.degraded) relatched++;
   }
   assert.equal(relatched, cycles, "relatched after every recovery: degraded flaps");
@@ -175,7 +190,6 @@ test("a recovery pass that re-latches does not trigger another recovery pass on 
   const p0 = r.s.passes;
   for (let i = 0; i < 5; i++) {
     await r.t.daemon.probeStore();
-    await sleep(15);
   }
   assert.equal(r.s.passes - p0, 1, "exactly one recovery pass while the same failure persists");
 });
@@ -190,7 +204,6 @@ test("backoff doubles per consecutive re-latch (capped) and resets after a recov
     if (!r.peek.degraded) await r.t.daemon.reconcile(); // a skipped recovery pass left it unlatched: the periodic pass relatches
     const p = r.s.passes;
     await r.t.daemon.probeStore();
-    await sleep(15);
     return r.s.passes - p;
   };
   assert.equal(await probe(), 1, "first recovery pass fires immediately"); // relatch 1: wait 200ms
@@ -220,20 +233,17 @@ test("N consecutive re-latches raise exactly one deduplicated error entry per ep
   for (let i = 0; i < 8; i++) {
     clock += 100;
     await r.t.daemon.probeStore();
-    await sleep(15);
   }
   const errs = (await errorEntries(r.t)).filter((e) => /re-latched/.test(String((e.payload as { message?: string }).message)));
   assert.equal(errs.length, 1, "one alert for the whole episode");
   r.s.failing = false; // episode ends with a clean recovery pass
   clock += 100;
   await r.t.daemon.probeStore();
-  await sleep(15);
   r.s.failing = true;
   await r.t.daemon.reconcile();
   for (let i = 0; i < 4; i++) {
     clock += 100;
     await r.t.daemon.probeStore();
-    await sleep(15);
   }
   const all = (await errorEntries(r.t)).filter((e) => /re-latched/.test(String((e.payload as { message?: string }).message)));
   assert.equal(all.length, 2, "a new episode alerts once more");
