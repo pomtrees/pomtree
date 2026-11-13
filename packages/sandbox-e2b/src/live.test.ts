@@ -3,9 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import test from "node:test";
 import { sandboxCredentialEnv, sandboxEnvPrefix } from "@pomtree/core";
 import { createRequest } from "@pomtree/sandbox-kit";
-// TODO(e2b-live-gate-import): the live gate lives in @pomtree/e2e, which is not a dependency of this package; current behavior:
-// imported by path, as e2e itself imports other packages' sources.
-import { liveSkip } from "../../e2e/src/live-gate.ts";
+import { liveSkip } from "@pomtree/testing";
 import { API_KEY_CREDENTIAL } from "./api.ts";
 import { e2bProvider } from "./provider.ts";
 

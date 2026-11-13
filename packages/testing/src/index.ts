@@ -27,3 +27,4 @@ export * from "./provider-stub/fixture-loader.ts";
 export * from "./provider-stub/identity.ts";
 export * from "./provider-stub/server.ts";
 export * from "./provider-stub/kubernetes-shaper.ts";
+export * from "./live-gate.ts";
