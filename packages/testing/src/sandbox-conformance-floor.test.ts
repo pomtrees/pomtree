@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { SANDBOX_CAPABILITIES } from "@pomtree/core";
 import type { SandboxCapability } from "@pomtree/core";
 import {
+  MAX_DEFERRED_CAPABILITIES,
   SANDBOX_CAPABILITY_COVERAGE,
   coverageCounts,
   coverageTableFindings,
@@ -45,6 +46,7 @@ test("every deferral gives its own reason, and the deferred count stays at or be
     assert.ok("deferred" in row && /would need|tracked as/.test(row.deferred), `${c} states what clause would cover it`);
   }
   assert.deepEqual(deferralCeilingFindings(table), []);
+  assert.equal(MAX_DEFERRED_CAPABILITIES, deferred.length, "lower MAX_DEFERRED_CAPABILITIES to the deferred count when a clause lands");
   assert.match(deferralCeilingFindings(table, deferred.length - 1).join("\n"), /above the ceiling/);
 });
 
