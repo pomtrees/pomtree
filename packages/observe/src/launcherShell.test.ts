@@ -289,6 +289,19 @@ test("Alt+Shift+P opens the launcher even while a terminal-like element has focu
   assert.equal(keys2, 1);
 });
 
+test("a list cut at the agent cap says how many entries are not listed; a narrowing query clears the note", async () => {
+  const h = await up();
+  h.net.set(LAUNCHER_PATHS.agents, { status: 200, body: Array.from({ length: 250 }, (_, i) => ({ id: `a${i}`, name: `n${i}`, state: "running" })) });
+  await h.tick();
+  openStart(h);
+  const note = h.launcher.byClass("lb-empty")[0]!;
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /\b\d+ more agent entries are not listed.*type a name or id/i);
+  h.type("n249");
+  assert.equal(note.hidden, true, "a query that reaches every match shows no note");
+  assert.equal(h.list.children.length, 1);
+});
+
 test("typing filters the list through the model; no match shows a message and no activedescendant", async () => {
   const h = await up();
   openStart(h);

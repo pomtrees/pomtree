@@ -18,7 +18,8 @@
 //   already shows that subject (the window-list entry covers it). Only browsing views not yet shown are view-type entries.
 // - buildItems returns every agent entry; rank cuts the result list to MAX_AGENT_ITEMS agent entries per
 //   multi-instance view type, after matching. So the unfiltered list is capped, while an agent beyond the cap is
-//   still found by a name, prefix or id query.
+//   still found by a name, prefix or id query. rankCut also returns the number of entries cut, which the launcher
+//   shows under the list as a note.
 // - One window-list entry per tile (a layout holds at most 16), in reading order, scrolling sideways; above 6
 //   entries the list is compact (shorter labels).
 
@@ -178,6 +179,7 @@ export interface LauncherKitApi {
   buildItems(ctx: BuildCtx): OmniItem[]; // open windows, then new windows, then actions
   parseQuery(text: string): { actionsOnly: boolean; tokens: string[] };
   rank(items: OmniItem[], text: string): OmniItem[]; // empty query: all items in build order
+  rankCut(items: OmniItem[], text: string): { shown: OmniItem[]; omitted: number }; // rank, plus how many agent entries the cap cut
   isOpenShortcut(ev: { altKey?: boolean; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; code?: string }): boolean;
   omniInitial(): OmniState;
   omniStep(state: OmniState, ev: OmniEvent, shown: OmniItem[]): OmniStep;
@@ -190,7 +192,6 @@ export interface LauncherKitApi {
 export const LAUNCHER_LOGIC_JS = `
 const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
   "use strict";
-  // TODO(omnibar-agent-cap): the unfiltered omnibar list is cut to MAX_AGENT_ITEMS entries per item view type, so past 200 agents some are not listed; exact, prefix and id queries still reach every one. Trigger: a fleet routinely exceeds 200 agents per view type.
   const MAX_AGENT_ITEMS = 200;
   const COMPACT_AT = 6;
   const FAIL_OFFLINE_AT = 3;
@@ -413,7 +414,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     if (extra.indexOf(tok) >= 0) return 10;
     return 0;
   }
-  function rank(items, text) {
+  function rankCut(items, text) {
     const q = parseQuery(text);
     const scored = [];
     items.forEach((it, idx) => {
@@ -432,15 +433,19 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
     // the cap applies after ranking, per multi-instance view type
     const derived = {};
     const out = [];
+    let omitted = 0;
     for (const s of scored) {
       const r = s.it.run;
       if (r.type === "open" && isStr(r.agent)) {
         derived[r.view] = (derived[r.view] || 0) + 1;
-        if (derived[r.view] > MAX_AGENT_ITEMS) continue;
+        if (derived[r.view] > MAX_AGENT_ITEMS) { omitted++; continue; }
       }
       out.push(s.it);
     }
-    return out;
+    return { shown: out, omitted };
+  }
+  function rank(items, text) {
+    return rankCut(items, text).shown;
   }
   function isOpenShortcut(ev) {
     return ev.altKey === true && ev.shiftKey === true && ev.ctrlKey !== true && ev.metaKey !== true && ev.code === "KeyP";
@@ -528,7 +533,7 @@ const LauncherKit = globalThis.LauncherKit || (globalThis.LauncherKit = (() => {
   return {
     MAX_AGENT_ITEMS, COMPACT_AT, FAIL_OFFLINE_AT, OPEN_SHORTCUT,
     normalizeAgents, normalizeReports, agentDot, summarizePoll, connNext, connView, inboxBadge,
-    windowLabel, windowList, buildItems, parseQuery, rank, isOpenShortcut,
+    windowLabel, windowList, buildItems, parseQuery, rank, rankCut, isOpenShortcut,
     omniInitial, omniStep, menuEntries, menuInitial, menuStep,
   };
 })());
