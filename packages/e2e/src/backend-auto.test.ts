@@ -359,12 +359,12 @@ test("auto: a remote DOCKER_HOST with no other engine -> exit 1 naming the varia
 test("auto: a remote DOCKER_HOST while Podman answers -> Podman is chosen only with the docker refusal printed as a finding", async () => {
   await withScratch(true, async (s) => {
     await startEngine(s, "podman");
-    const r = await runDaemon(s, engineEnv(REMOTE, unix(s.podmanSock)), reachedCli);
-    assert.equal(r.satisfied, true, `the daemon must get as far as its first engine call:\n${r.out}`);
-    assert.ok(
-      r.out.includes(`pomtreed: skipped docker: DOCKER_HOST for the docker engine is "${REMOTE}", which is not a local unix socket`),
-      `the refusal auto swallowed must reach the operator:\n${r.out}`,
-    );
+    // The findings are printed after the Podman egress probe (the first CLI call), so the case waits for the finding as well as the CLI call;
+    // stopping at the CLI call alone kills the daemon before the finding is written.
+    const finding = `pomtreed: skipped docker: DOCKER_HOST for the docker engine is "${REMOTE}", which is not a local unix socket`;
+    const r = await runDaemon(s, engineEnv(REMOTE, unix(s.podmanSock)), (x) => reachedCli(x) && x.out.includes(finding));
+    assert.equal(r.satisfied, true, `the daemon must get as far as its first engine call and print the refusal finding:\n${r.out}`);
+    assert.ok(r.out.includes(finding), `the refusal auto swallowed must reach the operator:\n${r.out}`);
     assert.ok(ranCli(r, "podman").length > 0, `the podman CLI is the one run:\n${r.cli.join("\n")}`);
     assert.deepEqual(ranCli(r, "docker"), [], "the remote docker is never contacted or run");
   });
