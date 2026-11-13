@@ -738,6 +738,7 @@ async function contentRun(ctx: Ctx & { input: ContentInput }, verifier: ArticleV
     if (signals.length > 0) await ctx.ops.ack(signals, `${a.runId}:approval-ack:${hash(signals.sort().join(","))}`);
   }
   if (approval.state === "denied") throw new Error("publication denied or timed out; no report/outbox/seen");
+  // TODO(hn-digest-gate-settle): expiry is decided here from Date.now() alone; current behavior: the run fails closed (no publication) while the stored approval row stays pending until a daemon approval sweep or settle flips it to denied, so a terminal run can briefly coexist with a pending gate (#686).
   if (approval.state === "pending" && approval.deadlineAt <= Date.now()) throw new Error("publication approval deadline elapsed; no publication");
   if (approval.state === "pending")
     return ctx.ops.suspend(

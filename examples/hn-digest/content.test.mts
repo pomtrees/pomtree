@@ -114,7 +114,13 @@ for (const failure of ["deny", "cancel", "timeout", "allUnusable"] as const)
           const r = await e.rt.daemon.get(e.id);
           return r && ["exited", "reaped"].includes(r.state) && r;
         }, "denied/cancelled terminal");
-        if (failure === "timeout") assert.equal((await e.rt.stores.approvals.get(approval.id))?.state, "denied", "an expired gate fails closed");
+        // The workflow fails the run on its own wall-clock check of the gate deadline (content-workflow.mts, "deadline elapsed"), which can
+        // pass just after the daemon last read the gate as pending. The row only flips to denied when an approval sweep or settle runs, and
+        // no reconcile timer runs in this harness, so a terminal run does not imply it has flipped: sweep once (the deadline has passed), then assert.
+        if (failure === "timeout") {
+          await e.rt.daemon.sweepApprovals();
+          assert.equal((await e.rt.stores.approvals.get(approval.id))?.state, "denied", "an expired gate fails closed");
+        }
       }
       const rows = await e.rt.stores.journal.read({ agent: e.rt.root.id, limit: 5000 });
       assert.ok(!rows.some((r) => r.payload.kind === "message_sent"));
