@@ -1296,7 +1296,15 @@ export class Lifecycle {
           release();
           throw new LifecycleError(409, `agent ${id} is deterministic; it has no sandbox to adopt`);
         }
-        return this.adoptContainer(id, sandboxId, gen, reported, reserved);
+        // A throw from admission frees the reservation like the registry-read failure does, or the live entry would block the agent.
+        try {
+          // No agent record means the sandbox cannot be admitted: fail closed and stop it.
+          const unadmitted = rec ? (this.ctx.deps.admitSpec?.(containerSpec(rec)) ?? []) : [`no agent record exists for sandbox ${sandboxId}`];
+          return this.adoptContainer(id, sandboxId, gen, reported, reserved, unadmitted.length > 0 ? unadmitted.join("; ") : undefined);
+        } catch (e) {
+          release();
+          throw e;
+        }
       },
       (e) => {
         release();
@@ -1305,10 +1313,9 @@ export class Lifecycle {
     );
   }
 
-  // TODO(adopt-template-admission): admit the adopted agent's spec against the backend declaration. Current behavior: adopting a running
-  // sandbox after a daemon restart does not call admitSpec, so an agent started unadmitted before the check existed (an egress template on
-  // Podman) keeps running until its next yield or resume. Trigger: act when Podman is documented as supported, or when a restart shows an
-  // unadmitted adopted sandbox.
+  // Adoption admits the agent's persisted spec against the backend declaration, as a start or resume does. A spec that fails (an egress
+  // template started before the check existed, on a backend that cannot enforce it) has its sandbox killed and the refusal journaled with
+  // cause and action; the run then ends as cancelled through the normal exit path.
   // `entry` is the reservation adoptRunning installed before its registry read: it is reused, never replaced, so a stop or deadline
   // that landed during that read (cancelled, killTimer, timedOut) still governs this run.
   private adoptContainer(
@@ -1317,6 +1324,7 @@ export class Lifecycle {
     gen: number,
     reported: { status: "succeeded" | "failed"; result: unknown; wrapupDeadlineAt: number } | undefined,
     entry: Live,
+    admissionRefusal?: string,
   ): Promise<void> {
     const d = this.ctx.deps;
     const adoptDeadline = this.budget.deadlines.get(id);
@@ -1342,9 +1350,38 @@ export class Lifecycle {
           throw e;
         }
         entry.sandbox = handle;
+        if (admissionRefusal !== undefined) {
+          entry.cancelled = true;
+          // Kill first; journal "stopped" only once the kill succeeded. A sandbox that cannot be stopped is reported with the cause and
+          // the operator action, and the agent ends failed rather than staying adopted as if healthy.
+          let killError: unknown;
+          try {
+            await d.sandbox.kill(sandboxId, sandboxOpKey("kill", sandboxId));
+          } catch (e) {
+            killError = e;
+          }
+          const a = await this.ctx.deps.registry.get(id);
+          // The selected engine's CLI when the daemon knows it; otherwise engine-neutral wording that still names the sandbox id.
+          const engine = d.backend?.engine?.binary;
+          const removeCommand = engine ? `\`${engine} rm -f ${sandboxId}\`` : `your sandbox backend's remove command on sandbox ${sandboxId}`;
+          const message =
+            killError === undefined
+              ? `stopped adopted sandbox ${sandboxId}: its spec fails template admission on this backend (${admissionRefusal}); change the template or the backend and spawn the agent again`
+              : `could not stop adopted sandbox ${sandboxId}, whose spec fails template admission on this backend (${admissionRefusal}): ${String(killError instanceof Error ? killError.message : killError)}; it may still be running, so remove it by hand with ${removeCommand}, then change the template or the backend and spawn the agent again`;
+          if (!a) console.error(`pomtreed: ${message}`);
+          else if (a.generation === gen)
+            await this.ctx.record(a, { kind: "error", message }, `${id}:${gen}:adopt-unadmitted`).catch(journalFailed(this.ctx.record, a, "adopt-unadmitted"));
+          if (killError !== undefined) {
+            await d.registry.setSandbox(id, gen, null, `${id}:${gen}:adopt-clear`).catch(() => {});
+            if (await this.teardownExit(id, gen, entry)) await this.finish(id, "failed", undefined, undefined).catch(() => {});
+            return;
+          }
+        }
         // A cancel or deadline that landed before the sandbox was attached: its kill timer may have fired with no sandbox to kill, so
         // re-arm it unconditionally now. A deadline sets cancelled too. The timer reads entry.sandbox when it fires.
         if (entry.cancelled) this.armKill(entry, d.graceMs);
+        // TODO(adopt-unadmitted-reported-result): a result the agent reported before the restart is kept even though its spec now fails
+        // admission; current behavior: the exit settles with that result, not cancelled. Maintainer call (#711).
         if (reported) {
           entry.result = reported;
           this.armResultWindow(entry, reported.wrapupDeadlineAt);
