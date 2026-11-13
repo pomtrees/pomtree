@@ -6,12 +6,13 @@
 // self-rescheduling reconcile timer stays in `Daemon.startWatchers` and calls the `Daemon.reconcile` delegate.
 
 import { SandboxBackendMismatchError, SandboxUnavailableError, sandboxIdForKey } from "@pomtree/core";
-import type { AgentId, AgentRecord, Sandbox } from "@pomtree/core";
+import type { AgentId, AgentRecord, AgentState, Sandbox } from "@pomtree/core";
 import type { Live } from "../daemon-types.ts";
 import { isStoreDown, journalFailed, spawnedPayload } from "../daemon-util.ts";
 import { isDone } from "../lifecycle.ts";
 import { DEADLINE_KIND, QUARANTINED_KIND } from "../watchdog.ts";
 import type { Budget } from "./budget.ts";
+import { ownedByUs } from "./reconcile-remote.ts";
 import { sandboxOpKey, sandboxOwner } from "./sandbox-ops.ts";
 import type { DaemonCtx } from "./ctx.ts";
 import type { Escalation } from "./escalation.ts";
@@ -607,52 +608,63 @@ export class Reconcile {
   // consecutive passes before the single alert; the memory is in-process and forgets a container the moment it is not a
   // stray. The alert is keyed by sandbox id, so a daemon restart or a replay does not repeat it. Skipped (memory cleared)
   // while the host is down, since nothing listed then can be trusted.
-  // TODO(multi-backend-strays): strays are listed on the selected backend only (`d.sandbox` is not backend-aware); current behavior: a stray on another
-  // active backend is never reported. Same for reclaimEgressOrphans below.
+  // Listed across the active set (activeBackends): the selected backend by `ownsSandbox`, any other by the stricter `provablyOurs`.
+  // A backend that cannot be reached or listed is skipped here (reconcileSandboxes holds or reports it); its strays are not seen.
   private async phaseStrays(): Promise<void> {
     const d = this.ctx.deps;
     if (!this.ctx.hub.store.hostUp()) {
       this.strays.clear();
       return;
     }
-    let listed: Awaited<ReturnType<Sandbox["list"]>>;
-    try {
-      listed = await d.sandbox.list(sandboxOwner(d, this.epoch));
-    } catch (e) {
-      if (e instanceof SandboxUnavailableError) {
-        this.strays.clear();
-        await this.ctx.hub.store.markSandboxDown();
-        return;
+    const selected = d.sandbox.declaration.backend;
+    const { targets } = await this.activeBackends(["running", "yielded"]);
+    const found: { key: string; id: string; agent: AgentId; why: string }[] = [];
+    const done = new Set<Sandbox>();
+    for (const [backend, sb] of targets) {
+      if (done.has(sb)) continue;
+      done.add(sb);
+      const isSelected = backend === selected;
+      let listed: Awaited<ReturnType<Sandbox["list"]>>;
+      try {
+        listed = await sb.list(sandboxOwner(d, this.epoch));
+      } catch (e) {
+        if (e instanceof SandboxUnavailableError) {
+          if (!isSelected) continue;
+          this.strays.clear();
+          await this.ctx.hub.store.markSandboxDown();
+          return;
+        }
+        throw e;
       }
-      throw e;
+      for (const s of listed.filter((x) => (isSelected ? this.ownsSandbox(x.labels) : this.provablyOurs(x)))) {
+        if (this.live.has(s.agent)) continue;
+        const r = await d.registry.get(s.agent);
+        let why = "";
+        if (!r) why = "no agent record";
+        else if (r.sandbox === s.id && (r.sandboxBackend ?? selected) === backend && r.state === "running" && r.host === d.hostId) continue;
+        else why = r.sandbox === s.id ? `agent is ${r.state} on host ${r.host}` : "agent's current sandbox is another container";
+        // `list` includes exited containers (no --rm); only a running one is a stray worth reporting.
+        if (!(await sb.inspect(s.id))?.running) continue;
+        // The selected backend keeps its original key; another backend's ids are qualified so two backends never share one.
+        const key = isSelected ? s.id : `${backend}:${s.id}`;
+        found.push({ key, id: s.id, agent: s.agent, why });
+      }
     }
-    const found: { id: string; agent: AgentId; why: string }[] = [];
-    for (const s of listed.filter((x) => this.ownsSandbox(x.labels))) {
-      if (this.live.has(s.agent)) continue;
-      const r = await d.registry.get(s.agent);
-      let why = "";
-      if (!r) why = "no agent record";
-      else if (r.sandbox === s.id && r.state === "running" && r.host === d.hostId) continue;
-      else why = r.sandbox === s.id ? `agent is ${r.state} on host ${r.host}` : "agent's current sandbox is another container";
-      // `list` includes exited containers (no --rm); only a running one is a stray worth reporting.
-      if (!(await d.sandbox.inspect(s.id))?.running) continue;
-      found.push({ id: s.id, agent: s.agent, why });
-    }
-    const now = new Set(found.map((f) => f.id));
+    const now = new Set(found.map((f) => f.key));
     for (const id of [...this.strays.keys()]) if (!now.has(id)) this.strays.delete(id);
     const root = await this.ctx.hub.root.root();
     for (const f of found) {
-      const seenBefore = this.strays.get(f.id);
+      const seenBefore = this.strays.get(f.key);
       if (seenBefore === undefined) {
-        this.strays.set(f.id, false);
+        this.strays.set(f.key, false);
         continue;
       }
       if (seenBefore) continue;
       const message = `stray container ${f.id} (labelled for agent ${f.agent}): ${f.why}; not reaped until restart`;
-      const key = `${root.id}:${root.generation}:stray:${f.id}`;
+      const key = `${root.id}:${root.generation}:stray:${f.key}`;
       await this.ctx.record(root, { kind: "error", message }, key);
       await this.ctx.hub.user.sendToUser(root, "alert", message, `${key}:alert`);
-      this.strays.set(f.id, true);
+      this.strays.set(f.key, true);
     }
   }
 
@@ -671,24 +683,9 @@ export class Reconcile {
     // names no backend cannot be matched to any backend: refused.
     const d = this.ctx.deps;
     const selected = d.sandbox.declaration.backend;
-    const holders = new Map<string, AgentRecord[]>();
     this.heldAgents.clear();
-    for (const r of await d.registry.list({ excludeState: "reaped" })) {
-      if (r.sandbox === null || r.host !== d.hostId || isDone(r)) continue;
-      if (r.sandboxBackend === null) {
-        throw new Error(
-          `agent ${r.id} holds sandbox ${r.sandbox} but its record names no sandbox backend (written by a build before the field existed, or damaged), so the sandbox cannot be matched to a backend; move the database file aside and restart to re-initialize`,
-        );
-      }
-      if (r.sandboxBackend === selected) continue;
-      holders.set(r.sandboxBackend, [...(holders.get(r.sandboxBackend) ?? []), r]);
-    }
-    const targets: [string, Sandbox][] = [[selected, d.sandbox]];
-    for (const [id, agents] of holders) {
-      const sb = d.sandboxFor?.(id);
-      if (sb) targets.push([id, sb]);
-      else await this.hold(id, selected, agents);
-    }
+    const { targets, unreachable } = await this.activeBackends();
+    for (const [id, agents] of unreachable) await this.hold(id, selected, agents);
     // One backend failing never skips the others: each runs, the first unexpected error is rethrown afterwards.
     const done = new Set<Sandbox>(); // the same sandbox reached under two ids is reclaimed once
     let failure: { error: unknown } | null = null;
@@ -702,6 +699,35 @@ export class Reconcile {
       }
     }
     if (failure) throw failure.error;
+  }
+
+  // The active set of backends: the selected one plus every backend named by a non-terminal record of this host that holds a
+  // sandbox. `targets` are the reachable ones (the selected backend first); `unreachable` maps each backend this build cannot
+  // reach to the records that name it. A record that holds a sandbox but names no backend cannot be matched: refused.
+  private async activeBackends(states?: readonly AgentState[]): Promise<{ targets: [string, Sandbox][]; unreachable: Map<string, AgentRecord[]> }> {
+    const d = this.ctx.deps;
+    const selected = d.sandbox.declaration.backend;
+    const holders = new Map<string, AgentRecord[]>();
+    // The periodic strays phase passes `states` so it reads only the live rows, never the reaped history.
+    const rows = states ? (await Promise.all(states.map((state) => d.registry.list({ state })))).flat() : await d.registry.list({ excludeState: "reaped" });
+    for (const r of rows) {
+      if (r.sandbox === null || r.host !== d.hostId || isDone(r)) continue;
+      if (r.sandboxBackend === null) {
+        throw new Error(
+          `agent ${r.id} holds sandbox ${r.sandbox} but its record names no sandbox backend (written by a build before the field existed, or damaged), so the sandbox cannot be matched to a backend; move the database file aside and restart to re-initialize`,
+        );
+      }
+      if (r.sandboxBackend === selected) continue;
+      holders.set(r.sandboxBackend, [...(holders.get(r.sandboxBackend) ?? []), r]);
+    }
+    const targets: [string, Sandbox][] = [[selected, d.sandbox]];
+    const unreachable = new Map<string, AgentRecord[]>();
+    for (const [id, agents] of holders) {
+      const sb = d.sandboxFor?.(id);
+      if (sb) targets.push([id, sb]);
+      else unreachable.set(id, agents);
+    }
+    return { targets, unreachable };
   }
 
   // The agents currently held for an unreachable backend (ids only), for operator surfaces.
@@ -818,19 +844,9 @@ export class Reconcile {
 
   // Positive ownership for a backend that may be a shared hosted account (every backend but the selected one): a peer daemon's
   // sandbox there can carry no store_id or a store_id this daemon has never heard of, so absence is not evidence of ownership.
-  // Mirrors `ownedByUs` in reconcile-remote.ts; TODO(unify-ownership-predicate): unify the two predicates; current behavior: this one is local.
+  // The one predicate shared with the remote reconcile planner: `ownedByUs` (reconcile-remote.ts).
   private provablyOurs(s: Awaited<ReturnType<Sandbox["list"]>>[number]): boolean {
-    const d = this.ctx.deps;
-    const epoch = s.labels?.daemon_epoch;
-    return (
-      d.storeId !== undefined &&
-      s.labels?.store_id === d.storeId &&
-      epoch !== undefined &&
-      /^\d+$/.test(epoch) &&
-      Number(epoch) <= Number(this.epoch) &&
-      s.host === d.hostId &&
-      s.generation !== null
-    );
+    return ownedByUs(s, sandboxOwner(this.ctx.deps, this.epoch)).owned;
   }
 
   private ownsSandbox(labels?: Record<string, string>): boolean {
@@ -842,13 +858,26 @@ export class Reconcile {
   }
 
   // Remove egress sets (network + proxy) whose sandbox is gone; only safe before any spawn starts. Runs once.
-  // TODO(multi-backend-strays): lists the selected backend only; see phaseStrays.
+  // Reclaimed on every reachable backend of the active set (activeBackends); one backend failing never skips the others.
   async reclaimEgressOrphans(): Promise<void> {
     if (this.egressReclaimed) return;
     this.egressReclaimed = true;
-    await this.ctx.deps.sandbox
-      .reclaim(sandboxOwner(this.ctx.deps, this.epoch))
-      .catch((e) => console.error(`pomtreed: egress orphan reclaim failed: ${e instanceof Error ? e.message : String(e)}`));
+    const fail = (backend: string) => (e: unknown) =>
+      console.error(`pomtreed: egress orphan reclaim failed on ${backend}: ${e instanceof Error ? e.message : String(e)}`);
+    let targets: [string, Sandbox][];
+    try {
+      ({ targets } = await this.activeBackends());
+    } catch (e) {
+      // A record naming no backend is refused by reconcileSandboxes right after; here only the selected backend is reclaimed.
+      console.error(`pomtreed: egress orphan reclaim limited to the selected backend: ${e instanceof Error ? e.message : String(e)}`);
+      targets = [[this.ctx.deps.sandbox.declaration.backend, this.ctx.deps.sandbox]];
+    }
+    const done = new Set<Sandbox>();
+    for (const [backend, sb] of targets) {
+      if (done.has(sb)) continue;
+      done.add(sb);
+      await sb.reclaim(sandboxOwner(this.ctx.deps, this.epoch)).catch(fail(backend));
+    }
   }
 
   // Unknown containers/worktrees may be reclaimed only when the registry knows some agent besides the root, or the
