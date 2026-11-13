@@ -4237,7 +4237,7 @@ export async function workspaceContractBody(w: WorkspaceContractWorld): Promise<
   assert.equal(pinned.commit, one.commit);
   await assert.rejects(ws.resolve("b", r1.refs[0]!.ref)); // another agent's ref
   await assert.rejects(ws.publish("a", { commit: "0".repeat(40), remote: w.remote, target: "main" })); // unreachable
-  await ws.publish("a", { commit: pinned.commit, remote: w.remote, target: "out" });
+  await ws.publish("a", { commit: pinned.commit, remote: w.remote, target: "out", reviewed: { exclude: [] } });
 
   assert.equal(await ws.prune("a", { mergedInto: "b" }), "refused"); // not merged: nothing lost
 
@@ -4283,7 +4283,7 @@ export async function workspaceContractBody(w: WorkspaceContractWorld): Promise<
   const forcedRes = await ws.ingest("b", stream(stale.bytes), { maxBytes: 1 << 20, force: true });
   assert.deepEqual([forcedRes.ok, forcedRes.ok && forcedRes.forced, (await ws.ingested("b"))?.commit], [true, true, stale.commit]);
   // publish also accepts a commit on the default branch, and still refuses one reachable from neither
-  await ws.publish("b", { commit: w.mainCommit(), remote: w.remote, target: "from-main" });
+  await ws.publish("b", { commit: w.mainCommit(), remote: w.remote, target: "from-main", reviewed: { exclude: [] } });
   await assert.rejects(ws.publish("b", { commit: "1".repeat(40), remote: w.remote, target: "nope" }));
   await ws.evict("b");
 }
