@@ -21,7 +21,7 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { AgentId, ForcedRefUpdate, IngestFailCode, IngestResult, PruneResult, Workspace, WorkspaceId } from "@pomtree/core";
+import type { AgentId, ForcedRefUpdate, IngestFailCode, IngestResult, PruneResult, PublishReview, Workspace, WorkspaceId } from "@pomtree/core";
 import { parseBundleHead, MAX_BUNDLE_HEADER_BYTES } from "./bundle.ts";
 import { fileSource, scanPack } from "./pack-scan.ts";
 import { evaluateGitVersion } from "./git-env.ts";
@@ -64,12 +64,6 @@ export interface GitWorkspaceOptions {
   // Lets publish push to an absolute local path (a bare repo on this host). Off by default: a local path
   // publishes nothing off the machine and bypasses the remote's own access control; tests and an operator's local mirror opt in.
   allowLocalPublishRemotes?: boolean;
-}
-
-// What the publish pin reviewed: every commit reachable from the pinned sha except those reachable from `exclude`
-// (full commit ids; empty = the whole reachable history was reviewed).
-export interface PublishReview {
-  exclude: string[];
 }
 
 // A publish refused by policy (the pushed range or the remote's report did not match the review); nothing was pushed

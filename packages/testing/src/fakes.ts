@@ -190,7 +190,17 @@ import {
   verifyGatewayCredential,
   waitChildIds,
 } from "@pomtree/core";
-import type { AgentLedger, CredentialCheck, LedgerNode, ModelCallMeta, QuotaCounters, RequestReservation, ReserveResult, SettleResult } from "@pomtree/core";
+import type {
+  AgentLedger,
+  CredentialCheck,
+  LedgerNode,
+  ModelCallMeta,
+  PublishReview,
+  QuotaCounters,
+  RequestReservation,
+  ReserveResult,
+  SettleResult,
+} from "@pomtree/core";
 import { FakeCaptureIndex, FakeCaptureParser } from "./capture-fakes.ts";
 import { FaultPlan, preemptedError } from "./sandbox-faults.ts";
 import type { FaultOp } from "./sandbox-faults.ts";
@@ -2046,7 +2056,7 @@ export class FakeWorkspace implements Workspace {
   ancestors = new Map<string, Set<string>>(); // commit -> its ancestors, learned from fakeBundle `parent` fields
   defaultRef = "refs/heads/main"; // set `refs` at this name to give publish a default-branch commit
   ingestResults: IngestResult[] = []; // scripted, consumed in order
-  published: { agent: AgentId; commit: string; remote: string; target: string }[] = [];
+  published: { agent: AgentId; commit: string; remote: string; target: string; reviewed?: PublishReview }[] = [];
   // Scriptable: agent ids whose ref tips are considered merged into the root (prunable).
   merged = new Set<AgentId>();
   private n = 0;
@@ -2159,7 +2169,7 @@ export class FakeWorkspace implements Workspace {
     if (!commit) throw new Error(`unknown ref ${ref} for ${agent}`);
     return { commit, diffstat: "", subject: `fake ${commit}`, paths: [] };
   }
-  async publish(agent: AgentId, push: { commit: string; remote: string; target: string }) {
+  async publish(agent: AgentId, push: { commit: string; remote: string; target: string; reviewed?: PublishReview }) {
     this.check(agent);
     const def = this.refs.get(this.defaultRef);
     const reachable =
