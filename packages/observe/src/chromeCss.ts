@@ -7,7 +7,7 @@
 // the search stays and shrinks. While a menu is open its tile stops clipping so a long panel is not cut off (the tile is absolutely
 // positioned, so z-index applies; it must beat the unconditional .tile rule in layoutCss.ts, which is composed before this sheet).
 // Tile width below which the menu bar collapses to the overflow button (docs/ui-vision.md).
-// TODO(chrome-browser-check): the window chrome, the launcher bar and opening an item window have only static and unit checks, plus one ad hoc headless Chrome render of the panes with stubbed data (wide, narrow, four tiles) that is not repeatable (no harness or screenshots were kept). Not verified in a browser: an open menu escaping its tile (the :has() rule), container queries, keyboard use, live data and other browsers. Trigger: before any release or demo.
+// TODO(chrome-browser-check): `pnpm --filter @pomtree/observe check:chrome` checks the chrome, the launcher bar, opening an item window, the :has() rule, the container query and menu keys in a local headless Chrome against stubbed data (scripts/chromeCheck.ts). Not verified: a live daemon, touch, and browsers other than Chrome (Firefox, Safari). Trigger: before any release or demo.
 export const OVERFLOW_WIDTH_PX = 420;
 export const CHROME_CSS = `
 .tile { container-type: inline-size; container-name: tile; }
