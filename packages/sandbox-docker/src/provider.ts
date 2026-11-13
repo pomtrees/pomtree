@@ -31,9 +31,8 @@ export interface LocalBackendProvider extends SandboxBackendProvider {
 // withholds both on anything else and the daemon then refuses an egress template with the probe's cause and action (fail closed).
 // Everything else is the shared argv floor (terminal, host mounts, image pull and digest identity, tag listing, host alias, resource
 // limits, seccomp, ipv6 sysctl); resources.limits is narrowed at runtime by the engine probe on a rootless host without cgroup v2 delegation.
-// TODO(podman-inferred-details): the Podman error patterns, info and gateway-inspect formats, network inspect and engine identity are recorded from a real rootless Podman 5.7.0.
-// Reproduced there since: the permission-denied tail of the socket-permission line (`podman --remote ps` against a root-owned socket prints `... dial unix <socket>: connect: permission denied`, matching the pattern),
-// and the registry refusal wording, which is `reading manifest <tag> in <registry>/<repo>: denied` (or `: unauthorized`), not "requested access to the resource is denied"; the Podman imageUnavailable pattern matches neither, so a denied private pull is not classified (a pattern and fixture change in engine-dialect.ts, not made here).
+// TODO(podman-inferred-details): the Podman error patterns, info and gateway-inspect formats, network inspect and engine identity are recorded from a real rootless Podman 5.7.0,
+// including the permission-denied tail of the socket-permission line (a root-owned socket) and the refused-private-pull wording (`reading manifest <tag> in <registry>/<repo>: denied` or `: unauthorized`; fixtures/engine/podman/image-denied.json).
 // Still inferred: the removal-race wording (36 concurrent `rm -f` of a stopping container all exit 0; a concurrent plain `rm` prints `cannot remove container <id> as it is stopping - running or paused containers cannot be removed without force: container state improper`, which is a different class).
 // Rootless Podman has no host-side gateway; `firewallHint` and the onboarding steps stay Docker-only and the doctor payload carries no engine id.
 // The adapter does not re-check the probe: daemon admission (pomtreed sandbox-backends.ts) is the gate, and it fails closed when no probe result is given.
