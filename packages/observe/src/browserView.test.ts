@@ -713,6 +713,17 @@ test("a page title from the stream titles the tile as text; none keeps the id ti
   assert.equal(t.titles.at(-1), "Browser · agent-12");
 });
 
+test("a long page title is capped in the tile title, with an ellipsis; a short one is untouched", () => {
+  const t = setup();
+  const ws = t.sockets[0]!;
+  ws.open();
+  ws.text({ ...live, title: "T".repeat(500) });
+  const named = t.titles.at(-1)!;
+  assert.equal(named, "Browser \u00b7 " + "T".repeat(79) + "\u2026", "capped at 80 characters of title, last one an ellipsis");
+  ws.text({ ...live, title: "T".repeat(80) });
+  assert.equal(t.titles.at(-1), "Browser \u00b7 " + "T".repeat(80), "exactly at the cap is not truncated");
+});
+
 test("an agent that no longer exists keeps the last frame under a danger overlay and stops reconnecting", async () => {
   const gone = setup({ responses: { "/v1/agents/agent-1": { status: 404, body: {} } } });
   const ws = gone.sockets[0]!;

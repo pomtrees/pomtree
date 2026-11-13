@@ -24,6 +24,7 @@ const BrowserKit = globalThis.BrowserKit || (globalThis.BrowserKit = (() => {
   const REASONS = ["ended", "local", "error"];
   const MAX_TEXT = 4096; // the daemon never sends more
   const MAX_FIELD = 512;
+  const MAX_TILE_TITLE = 80; // the tile header is narrow; the footer and the relay keep the full text
   const MAX_DIM = 16384;
   const clean = (s) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, MAX_FIELD);
 
@@ -100,7 +101,10 @@ const BrowserKit = globalThis.BrowserKit || (globalThis.BrowserKit = (() => {
     return rect ? { canvasW: boxW, canvasH: boxH, rect } : null;
   };
 
-  return { STATES, REASONS, parseServerText, fitRect, drawPlan, frameGate, stateLabel, closedLabel, stopLabel };
+  // Page title -> the text that names the tile: at most MAX_TILE_TITLE characters, the last an ellipsis when cut.
+  const tileTitle = (title) => title.length > MAX_TILE_TITLE ? title.slice(0, MAX_TILE_TITLE - 1) + "\u2026" : title;
+
+  return { STATES, REASONS, parseServerText, tileTitle, fitRect, drawPlan, frameGate, stateLabel, closedLabel, stopLabel };
 })());
 `;
 
@@ -313,8 +317,7 @@ const mountBrowserInstance = (root, params, hostApi) => {
         setState(BrowserKit.stateLabel(m.state), m.state === "live" ? "s-running" : "s-pending");
         setPage(m.url || "");
         // The title is agent-controlled text: it names the tile through the host (textContent there); absent keeps the last.
-        // TODO(browser-title-cap): the tile title from the agent-controlled page title has no length cap (textContent only).
-        if (m.title) hostApi.setTitle("Browser \u00b7 " + m.title);
+        if (m.title) hostApi.setTitle("Browser \u00b7 " + BrowserKit.tileTitle(m.title));
         else if (m.state === "no-browser") hostApi.setTitle(defaultTitle);
         if (m.state === "live") ov.set("none", "");
         else if (m.state === "no-browser") { gate.reset(); epoch++; ov.set("dead", "No browser running"); }
