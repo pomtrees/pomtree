@@ -4,7 +4,7 @@ import { eachTrackedFile } from "./env-scan.ts";
 
 // docs/economy.md: "mint" names nothing. Credential issuance is "issue" (`issueKey`, `issueToken`,
 // `issueUiCookie`); money added to the root is a "top-up". This lite test keeps the word out of packages/ and examples/
-// so the pre-release rename is not undone by a new identifier, comment or error message. The same holds repo-wide for the
+// (every tracked file there) and out of tracked Markdown anywhere else (docs/, the root documents), so the pre-release rename is not undone by a new identifier, comment or error message. The same holds repo-wide for the
 // project's old name: `oldNameHits` fails any tracked line that still says it, bar the allowlist below.
 
 const SELF = "packages/e2e/src/vocabulary.test.ts";
@@ -20,10 +20,30 @@ test("mintWords flags words starting with mint and ignores words that only conta
   assert.deepEqual(mintWords("this.armInterrupt(agent); issueKey(a); the key-issuing proxy"), []);
 });
 
-test("no tracked file in packages/ or examples/ uses the word mint (credential issuance is issue)", () => {
+// Markdown outside packages/ and examples/ that states the rule itself and so must spell the word.
+const MINT_DOC_ALLOWED = new Set(["CLAUDE.md"]);
+
+// Whether the word is banned in this tracked file: all of packages/ and examples/, plus Markdown elsewhere, bar this file and the allowlist.
+export function mintScoped(path: string): boolean {
+  if (path === SELF || MINT_DOC_ALLOWED.has(path)) return false;
+  return /^(packages|examples)\//.test(path) || /\.md$/.test(path);
+}
+
+test("mintScoped covers packages/, examples/ and Markdown elsewhere, bar this file and the rule's own statement", () => {
+  assert.equal(mintScoped("packages/core/src/x.ts"), true);
+  assert.equal(mintScoped("examples/hn-digest/README.md"), true);
+  assert.equal(mintScoped("docs/economy.md"), true);
+  assert.equal(mintScoped("README.md"), true);
+  assert.equal(mintScoped("CLAUDE.md"), false);
+  assert.equal(mintScoped(SELF), false);
+  assert.equal(mintScoped("scripts/run-capped.sh"), false, "non-Markdown outside packages/ and examples/ is not scanned");
+  assert.equal(mintScoped("docs/sub/CLAUDE.md"), true, "the allowlist is the root file only");
+});
+
+test("no tracked file in packages/ or examples/, and no tracked Markdown, uses the word mint (credential issuance is issue)", () => {
   const hits: string[] = [];
   eachTrackedFile((path, text) => {
-    if (path === SELF || !/^(packages|examples)\//.test(path)) return;
+    if (!mintScoped(path)) return;
     const words = mintWords(text);
     if (words.length) hits.push(`${path}: ${[...new Set(words)].join(", ")}`);
   });
