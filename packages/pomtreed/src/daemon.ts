@@ -54,6 +54,7 @@ import type {
 
 import { PRIORITY } from "@pomtree/sched";
 import { parseTranscript } from "./transcript.ts";
+import { findJournalTail } from "./builtin/uiDrive.ts";
 import { gateReason, pendingReasons, PENDING_REASON_KIND } from "./auto-sessions.ts";
 import { ProviderBreaker } from "./provider-breaker.ts";
 import { DEFAULT_LIMITS, LifecycleError, isResourceError } from "./lifecycle.ts";
@@ -141,6 +142,9 @@ export type { MergeOutcome, ReapOutcome } from "./daemon/lifecycle.ts";
 import type { ReapOutcome } from "./daemon/lifecycle.ts";
 
 export { credentialPath } from "./daemon-util.ts";
+
+const SANDBOX_STATE_WINDOW = 1000; // journal seqs per backward window when reloading the sandbox flag
+const SANDBOX_STATE_WINDOWS = 4;
 
 export class Daemon implements Driver {
   private live = new Map<AgentId, Live>();
@@ -1262,7 +1266,7 @@ export class Daemon implements Driver {
     this.sandboxUp = false;
     try {
       const root = await this.root();
-      await this.persistSandboxState(root, false).catch(() => {});
+      await this.persistSandboxState(root, false).catch((e) => this.logSandboxStateFailure(false, e));
       await this.record(root, { kind: "host_error", component: "sandbox", message: "sandbox unavailable" }, `host:sandbox:down`);
     } catch {
       // the journal may be down too; the runtime flag still holds admission
@@ -1272,7 +1276,9 @@ export class Daemon implements Driver {
   private async markSandboxUp(): Promise<void> {
     this.sandboxUp = true;
     // A failed write leaves the stored state down, which is the safe side: the next boot starts down and its first probe clears it.
-    await this.persistSandboxState(await this.root(), true).catch(() => {});
+    await this.root()
+      .then((r) => this.persistSandboxState(r, true))
+      .catch((e) => this.logSandboxStateFailure(true, e));
     await this.reconcileSandboxes();
   }
 
@@ -1287,20 +1293,43 @@ export class Daemon implements Driver {
   }
 
   // Reload the flag from the newest `sandboxUp` host-health entry on the root (none, or no root yet: up, as on a first boot).
+  // Bounded: the root journal is never pruned, so find the journal's tail (findJournalTail, logarithmic) and scan backwards in
+  // windows of SANDBOX_STATE_WINDOW seqs, at most SANDBOX_STATE_WINDOWS of them, stopping at the first window holding one. Every
+  // host-health heartbeat carries the flag too (record()), so the newest entry is normally in the first window; an entry older
+  // than the cap is not read and the daemon boots up, as before this state was stored, and its first probe corrects that.
+  // The entry's generation is not compared: the flag describes the host's sandbox, not an agent run.
   private async restoreSandboxState(): Promise<void> {
     const root = await this.deps.registry.get(this.rootIdHint ?? rootAgentIdFor(this.deps.hostId));
     if (!root) return;
-    let up: boolean | null = null;
-    for (let from = 0; ; ) {
-      const page = await this.deps.journal.read({ from, agent: root.id, limit: 500 });
-      for (const e of page) {
-        const p = e.payload as { kind: string; sandboxUp?: unknown };
-        if (p.kind === HOST_HEALTH_KIND && typeof p.sandboxUp === "boolean") up = p.sandboxUp;
+    const tail = await findJournalTail((o) => this.deps.journal.read(o));
+    if (tail === null) return;
+    for (let w = 0; w < SANDBOX_STATE_WINDOWS; w++) {
+      const end = tail - w * SANDBOX_STATE_WINDOW;
+      if (end < 0) return;
+      const start = Math.max(0, end - SANDBOX_STATE_WINDOW + 1);
+      let up: boolean | null = null;
+      for (let from = start; from <= end; ) {
+        const page = await this.deps.journal.read({ from, agent: root.id, limit: 500 });
+        for (const e of page) {
+          if (e.seq > end) break;
+          const p = e.payload as { kind: string; sandboxUp?: unknown };
+          if (p.kind === HOST_HEALTH_KIND && typeof p.sandboxUp === "boolean") up = p.sandboxUp;
+        }
+        if (page.length < 500) break;
+        from = page[page.length - 1]!.seq + 1;
       }
-      if (page.length < 500) break;
-      from = page[page.length - 1]!.seq + 1;
+      if (up !== null) {
+        if (up === false) this.sandboxUp = false;
+        return;
+      }
+      if (start === 0) return;
     }
-    if (up === false) this.sandboxUp = false;
+  }
+
+  private logSandboxStateFailure(up: boolean, e: unknown): void {
+    console.error(
+      `pomtreed: could not store the sandbox ${up ? "up" : "down"} state (${e instanceof Error ? e.message : String(e)}); a restart before the next successful write will assume the sandbox is ${up ? "down until a probe succeeds" : "up until a probe fails"}; check free disk space and the store errors above in pomtreed.log`,
+    );
   }
 
   private markJournalFailed(e: unknown): void {
@@ -1705,6 +1734,8 @@ export class Daemon implements Driver {
   // Returns the journal append promise unchanged (so the caller's await is not shifted an extra
   // microtask); the side `.catch` flips journalFailed on a resource error without wrapping the result.
   private record(r: AgentRecord, payload: JournalPayload, idempotencyKey: string): Promise<JournalEntry> {
+    // Every host-health heartbeat carries the sandbox flag, so the newest one is a current copy of the stored state (restoreSandboxState).
+    if (payload.kind === HOST_HEALTH_KIND && !("sandboxUp" in payload)) payload = { ...payload, sandboxUp: this.sandboxUp } as JournalPayload;
     // The one place free-text from exceptions reaches the journal: host paths are redacted here (journal rows name ids, never host paths).
     const p = this.deps.journal.append({
       agent: r.id,
