@@ -16,6 +16,8 @@ import {
   promptFor,
   runBrowserLive,
 } from "./browser-live-run.ts";
+import { engineProfile } from "@pomtree/sandbox-docker";
+import { gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
 
 // The upstream key reaches the run as pomtreed's does: a mode-0600 file named by POMTREED_MODEL_UPSTREAM_KEY_FILE, inside the test's scratch dir.
@@ -39,6 +41,28 @@ test("parseArgs: defaults, refusals and the budget cap", () => {
   assert.ok(!("refusal" in parseArgs([...big, "--i-know-the-cap"])));
   assert.equal((parseArgs([...base, "--budget-micros", String(BUDGET_REFUSE_ABOVE)]) as { budgetMicros: number }).budgetMicros, BUDGET_REFUSE_ABOVE);
   assert.match((parseArgs([...base, "--budget-micros", "0"]) as { refusal: string }).refusal, /positive/);
+});
+
+// Offline: the run refuses before starting anything, and the refusal shows which engine it was about to drive.
+test("runBrowserLive: the engine option, not a hard-coded docker, runs the image check; an unsupported backend is refused with its fix", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "bi-engine-test-"));
+  try {
+    const args = { mode: "capture" as const, url: "https://example.com/a", image: "img:t", out: join(scratch, "out"), budgetMicros: 1, model: "m" };
+    const env = { POMTREED_MODEL_BASE_URL: "http://127.0.0.1:1/api/v1", ...sentinelKeyFile(scratch) };
+    const missing = await runBrowserLive({
+      ...args,
+      env,
+      engine: { profile: { ...engineProfile("podman"), binary: "pomtree-no-such-engine" } },
+      log: () => {},
+    });
+    assert.equal(missing.exitCode, 2);
+    assert.match(missing.message, /pomtree-no-such-engine unreachable or not built/);
+    const auto = await runBrowserLive({ ...args, env: { ...env, POMTREED_SANDBOX_BACKEND: "auto" }, log: () => {} });
+    assert.equal(auto.exitCode, 2);
+    assert.match(auto.message, /POMTREED_SANDBOX_BACKEND=auto is not supported by the live runs: set it to docker or podman/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("exitForThrow: 2 only before the sandbox started, 3 after", () => {
@@ -91,19 +115,28 @@ const sh = (cmd: string, args: string[]) => {
     return undefined;
   }
 };
+// The engine CLI against the gate's engine (docker or podman, per PTREE_SANDBOX_BACKEND); undefined on failure.
+const eng = (args: string[]) => {
+  try {
+    return gateExecFileSync(args, { timeout: 20_000 }).trim();
+  } catch {
+    return undefined;
+  }
+};
 function dockerSkip(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (!image) return "PTREE_E2E_IMAGE unset";
   if (process.getuid?.() === 0) return "audited-public requires unprivileged host uid";
-  if (sh("docker", ["info"]) === undefined) return "docker daemon unreachable";
-  if (sh("docker", ["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
+  if (eng(["info"]) === undefined) return "docker daemon unreachable";
+  if (eng(["image", "inspect", image]) === undefined) return `${image} unavailable (this test never pulls or builds)`;
   const revision = process.env.PTREE_AGENT_TEST_REVISION ?? sh("git", ["rev-parse", "--short", "HEAD"]);
   const paths = [":(top)packages/agent-image", ":(top)packages/sandbox-docker"];
   const dirty =
     sh("git", ["diff", "HEAD", "--stat", "--", ...paths]) !== "" || sh("git", ["ls-files", "--others", "--exclude-standard", "--", ...paths]) !== "";
   return imageRevisionSkip(
     image,
-    sh("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
+    eng(["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]),
     revision,
     dirty,
   );
@@ -157,8 +190,8 @@ test("browser-live harness end to end with a stub model and a public article: in
   const cname = `bi-catalog-${process.pid}`;
   let upstream: ReturnType<typeof createServer> | undefined;
   try {
-    execFileSync("docker", ["create", "--name", cname, image!], { stdio: "ignore", timeout: 30_000 });
-    execFileSync("docker", ["cp", `${cname}:${PI_DATA}`, join(scratch, "catalog")], { stdio: "ignore", timeout: 30_000 });
+    gateExecFileSync(["create", "--name", cname, image!], { stdio: "ignore", timeout: 30_000 });
+    gateExecFileSync(["cp", `${cname}:${PI_DATA}`, join(scratch, "catalog")], { stdio: "ignore", timeout: 30_000 });
     let turns = 0;
     let firstUser = "";
     // One scripted step per assistant turn so far; the quoted sentence is lifted from the navigate result's snapshot text.
@@ -201,6 +234,7 @@ test("browser-live harness end to end with a stub model and a public article: in
     await new Promise<void>((resolve) => upstream!.listen(0, "127.0.0.1", resolve));
     const out = join(scratch, "out");
     const r = await runBrowserLive({
+      engine: gateSandboxDeps(),
       mode: "interactive",
       url: PUBLIC_ARTICLE,
       image: image!,
@@ -245,7 +279,7 @@ test("browser-live harness end to end with a stub model and a public article: in
     upstream?.closeAllConnections();
     upstream?.close();
     try {
-      execFileSync("docker", ["rm", "-f", cname], { stdio: "ignore", timeout: 20_000 });
+      gateExecFileSync(["rm", "-f", cname], { stdio: "ignore", timeout: 20_000 });
     } catch {}
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -257,8 +291,8 @@ async function runHarness(variant: { url: string; localArticleHtml?: string; exp
   let upstream: ReturnType<typeof createServer> | undefined;
   try {
     // Pi's own price catalog from the image (read only), so the proxy prices stub usage exactly as Pi does.
-    execFileSync("docker", ["create", "--name", cname, image!], { stdio: "ignore", timeout: 30_000 });
-    execFileSync("docker", ["cp", `${cname}:${PI_DATA}`, join(scratch, "catalog")], { stdio: "ignore", timeout: 30_000 });
+    gateExecFileSync(["create", "--name", cname, image!], { stdio: "ignore", timeout: 30_000 });
+    gateExecFileSync(["cp", `${cname}:${PI_DATA}`, join(scratch, "catalog")], { stdio: "ignore", timeout: 30_000 });
     let turns = 0;
     upstream = createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -295,6 +329,7 @@ async function runHarness(variant: { url: string; localArticleHtml?: string; exp
     await new Promise<void>((resolve) => upstream!.listen(0, "127.0.0.1", resolve));
     const out = join(scratch, "out");
     const r = await runBrowserLive({
+      engine: gateSandboxDeps(),
       mode: "capture",
       url: variant.url,
       image: image!,
@@ -361,7 +396,7 @@ async function runHarness(variant: { url: string; localArticleHtml?: string; exp
     upstream?.closeAllConnections();
     upstream?.close();
     try {
-      execFileSync("docker", ["rm", "-f", cname], { stdio: "ignore", timeout: 20_000 });
+      gateExecFileSync(["rm", "-f", cname], { stdio: "ignore", timeout: 20_000 });
     } catch {}
     rmSync(scratch, { recursive: true, force: true });
   }

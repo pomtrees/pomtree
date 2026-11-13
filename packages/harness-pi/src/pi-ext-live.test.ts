@@ -19,6 +19,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { gateCommand, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { PI_EXT_LOADOUT } from "./index.ts";
 
 const IMAGE = process.env.PTREE_E2E_IMAGE;
@@ -26,28 +27,31 @@ const MODELS = join(homedir(), ".pi", "agent", "models-store.json");
 const PROVIDER = process.env.POMTREED_PI_PROVIDER;
 const MODEL = process.env.PTREE_LIVE_MODEL ?? "deepseek-flash";
 
-const ok = (cmd: string, args: string[]): boolean => {
+// Runs the gate's engine CLI (docker or podman, per PTREE_SANDBOX_BACKEND) against the engine's verified socket.
+const ok = (args: string[]): boolean => {
   try {
-    const { status } = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
-    return status === 0;
+    const c = gateCommand(args, { stdio: "ignore" as const, timeout: 10_000 });
+    return spawnSync(c.file, c.args, c.options).status === 0;
   } catch {
     return false;
   }
 };
 
 function skipReason(): string | false {
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   const missing: string[] = [];
   if (!IMAGE) {
     missing.push("PTREE_E2E_IMAGE unset");
   } else {
-    if (!ok("docker", ["info"])) missing.push("docker daemon unreachable");
-    if (!ok("docker", ["image", "inspect", IMAGE])) missing.push(`image ${IMAGE} not present`);
+    if (!ok(["info"])) missing.push("container engine unreachable");
+    if (!ok(["image", "inspect", IMAGE])) missing.push(`image ${IMAGE} not present`);
   }
   if (!PROVIDER) missing.push("POMTREED_PI_PROVIDER unset (the provider the throwaway credential is written for)");
   return missing.length ? missing.join("; ") : false;
 }
 
-// Streams `docker run --rm <image> pi ... -- "<prompt>"` and resolves with the toolsAdded names from the
+// Streams `<engine> run --rm <image> pi ... -- "<prompt>"` and resolves with the toolsAdded names from the
 // first system message_end; the child is then stopped (no model call). Returns null when the process
 // exits before a system message (e.g. provider auth failure), so the caller reports a clear reason.
 // The credential is a throwaway placeholder written to a temp dir (the operator's Pi login is never mounted); the run stops
@@ -82,7 +86,8 @@ function registeredTools(timeoutMs: number, auth: string): Promise<{ tools: stri
     "Reply with the single word: ok",
   ];
   return new Promise((resolve) => {
-    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const c = gateCommand(args, {});
+    const child = spawn(c.file, c.args, { ...c.options, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let buf = "";
     let settled = false;

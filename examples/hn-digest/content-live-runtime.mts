@@ -59,7 +59,14 @@ import { listen, listenAgents, listenHost } from "../../packages/pomtreed/src/se
 import type { WorkflowCapabilityServices } from "../../packages/pomtreed/src/workflow-capabilities.ts";
 import { raceUntil, sleepTick, WorkflowHost } from "../../packages/pomtreed/src/workflows.ts";
 import { DirReportStore } from "../../packages/report-dir/src/index.ts";
-import { DiskEgressAudit, DockerSandbox, type EgressAuditRecord } from "../../packages/sandbox-docker/src/index.ts";
+import {
+  cliSocketEnv,
+  DiskEgressAudit,
+  DockerSandbox,
+  DOCKER_PROFILE,
+  type EgressAuditRecord,
+  type EngineProfile,
+} from "../../packages/sandbox-docker/src/index.ts";
 import type { Store } from "../../packages/store-sqlite/src/index.ts";
 import { ScriptHarness } from "../../packages/testing/src/test-harness.ts";
 import { GitWorkspace } from "../../packages/workspace-git/src/index.ts";
@@ -464,7 +471,24 @@ export interface LiveWiring {
   onAdmit?: (f: (agent: AgentId, host: string) => void) => void; // HostPlacement admission hook; fakes have none
 }
 
-const dockerBridgeGateway = () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 }));
+// The engine the live run drives: its profile and, when it is not the profile's default, the socket. A gated test passes the engine the
+// gate verified (gateSandboxDeps()); the default is Docker on its default socket.
+export interface LiveEngine {
+  profile: EngineProfile;
+  socket?: string;
+}
+const engineBridgeGateway = (engine: LiveEngine) => () =>
+  detectBridgeGateway(
+    async (_binary, a) => {
+      // The engine's own socket variable wins, and a named Podman connection outranks it, so it is dropped (as docker-gate's gateCommand does).
+      const env =
+        engine.profile.id !== "docker" && engine.socket !== undefined ? { ...process.env, ...cliSocketEnv(engine.profile, engine.socket) } : undefined;
+      if (env) delete env.CONTAINER_CONNECTION;
+      return execFileSync(engine.profile.binary, a, { encoding: "utf8", timeout: 10_000, ...(env && { env }) });
+    },
+    false,
+    engine.profile,
+  );
 
 export interface LiveContentOptions {
   stateDir: string; // private per-run state: pomtreed.sqlite, reports/, sessions/, mirror.git, workspaces/, egress-audit/
@@ -484,7 +508,8 @@ export interface LiveContentOptions {
   wire?: (a: { hostId: string; store: Store; sessionRoot: string; image: string; egressAuditRoot: string }) => LiveWiring;
   egressReader?: EgressAuditReader;
   hostAuditLog?: string; // visible JSONL file; host audit records are appended as they occur so a crash keeps them
-  bridgeGateway?: () => Promise<string | undefined>; // test seam: the Linux docker bridge gateway to bind (default asks the Docker CLI); offline tests inject one so they need no Docker
+  engine?: LiveEngine; // the container engine to drive (default Docker on its default socket); a Podman run passes its profile and socket
+  bridgeGateway?: () => Promise<string | undefined>; // test seam: the Linux docker bridge gateway to bind (default asks the engine CLI); offline tests inject one so they need no Docker
   articleMethod?: ArticleMethod; // default static-http; browser routes article tasks to Pi with the capture-browser template
   // The resolved registry values (content-live.mts resolveLiveConfig); default the registry defaults. workflow.fetch.userAgent arrives
   // resolved (never blank; the capture broker refuses an invalid one at construction). The content bounds, the daemon's
@@ -532,6 +557,8 @@ export interface LiveContentRuntime {
 export async function openLiveContentRuntime(o: LiveContentOptions): Promise<LiveContentRuntime> {
   const log = o.log ?? ((line: string) => console.error(`live-content: ${line}`));
   const image = o.image ?? APPROVED_IMAGE;
+  const engine: LiveEngine = o.engine ?? { profile: DOCKER_PROFILE };
+  const engineDeps = { profile: engine.profile, ...(engine.socket !== undefined && { socket: engine.socket }) };
   const articleMethod: ArticleMethod = o.articleMethod ?? "static-http";
   const config = o.config ?? CONTENT_CONFIG_DEFAULTS;
   const bounds = contentBounds(config);
@@ -568,7 +595,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
       },
     });
     // One detection serves the model proxy and the agent endpoint (Linux only; elsewhere both bind loopback).
-    const bridge = process.platform === "linux" ? await (o.bridgeGateway ?? dockerBridgeGateway)() : undefined;
+    const bridge = process.platform === "linux" ? await (o.bridgeGateway ?? engineBridgeGateway(engine))() : undefined;
     const live = await startLiveModel({
       ...(bridge !== undefined && { gateway: bridge }),
       store,
@@ -577,6 +604,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
       provider: LIVE_PROVIDER,
       env: {
         ...modelCatalogEnv(process.env),
+        POMTREED_SANDBOX_BACKEND: engine.profile.id,
         POMTREED_MODEL_BASE_URL: o.upstreamBaseUrl,
         POMTREED_MODEL_PROXY_MAX_REQUEST_MICROS: String(o.caps.maxRequestMicros),
       },
@@ -659,7 +687,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
           sessionRoot,
           image,
           capacity: { maxSessions: 4 },
-          makeSandbox: (mounts) => new DockerSandbox({ mounts, egressAuditRoot }),
+          makeSandbox: (mounts) => new DockerSandbox({ mounts, egressAuditRoot, ...engineDeps }),
         });
         return { sandbox: w.sandbox, placement: w.placement, workspace, onAdmit: (f) => w.placement.onAdmit(f) };
       })();
@@ -758,7 +786,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
     await extensions.startAll();
 
     // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-    const plan = await agentBindPlan(process.platform, async () => bridge);
+    const plan = await agentBindPlan(process.platform, async () => bridge, engine.profile);
     const agents = await listenAgents(daemon, plan.host, 0);
     apiUrl = `http://host.docker.internal:${agents.port}`;
     teardown.push({ label: "agent server close", run: () => closeServer(agents.server) });
@@ -893,7 +921,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
               mounts: [{ kind: "workspace" as const, workspace: "route-probe", containerPath: "/work" }],
               egress,
             };
-            return await sandboxModelRouteProbe(new DockerSandbox({ mounts, egressAuditRoot }), spec)(url);
+            return await sandboxModelRouteProbe(new DockerSandbox({ mounts, egressAuditRoot, ...engineDeps }), spec)(url);
           } finally {
             rmSync(work, { recursive: true, force: true });
           }
@@ -916,7 +944,7 @@ export async function openLiveContentRuntime(o: LiveContentOptions): Promise<Liv
                   readOnly: false,
                 }),
               };
-              const sandbox = new DockerSandbox({ mounts, egressAuditRoot });
+              const sandbox = new DockerSandbox({ mounts, egressAuditRoot, ...engineDeps });
               const h = await sandbox.start(
                 {
                   host: "host-test",

@@ -6,12 +6,11 @@
 // mismatch instead of skipping. The suites named in the drift guard (docker-gate.test.ts) then run against that engine: they build DockerSandbox
 // with gateSandboxDeps() and run the engine CLI through gateExecFileSync / gateExecFile / gateSpawn / gateCommand, which use the verified
 // profile's binary and socket. docker-pi calls live-model.ts (startLiveModel), which takes its engine from POMTREED_SANDBOX_BACKEND.
-// TODO(gate-engine-threading): the gated suites outside this package still hard-code `docker` or build DockerSandbox without
-// gateSandboxDeps(). Current behavior: they always run the Docker defaults, so a Podman job can still run them on Docker. Remaining:
-// packages/e2e/src/browser-live-run.ts and browser-live-run.test.ts, docker-browse-smoke.test.ts (live-model.ts and the crash-recovery-live*.ts
-// drivers are threaded differently: they take the engine from POMTREED_SANDBOX_BACKEND, not from the gate);
-// packages/harness-pi/src/pi-ext-live.test.ts; packages/pomtreed/src/agent-net.docker.test.ts;
-// examples/hn-digest/content-live-smoke.test.mts, content-live-browser-smoke.test.mts, content-live-runtime.mts and model-runtime.mts.
+// The gated suites outside this package are threaded the same way: packages/e2e (browser-live-run.test.ts, docker-browse-smoke.test.ts),
+// harness-pi (pi-ext-live.test.ts), pomtreed (agent-net.docker.test.ts) and examples/hn-digest (content-live-smoke.test.mts,
+// content-live-browser-smoke.test.mts). Their drivers (browser-live-run.ts, content-live-runtime.mts, model-runtime.mts) take the engine as an
+// `engine: { profile, socket }` option, defaulting to POMTREED_SANDBOX_BACKEND (browser-live-run.ts) or Docker; the suites pass gateSandboxDeps().
+// live-model.ts and the crash-recovery-live*.ts drivers take the engine from POMTREED_SANDBOX_BACKEND instead, not from the gate.
 // Behavior change for the docker backend: the gate now runs detectLocalEngine in a child process first (the gates are synchronous) where it
 // used to run `docker info` directly. It throws, fail-closed by design, on a remote DOCKER_HOST (tcp://, ssh://), an unidentifiable engine, a
 // detector crash or the 30 s child timeout. An engine that is not installed or not running still skips.

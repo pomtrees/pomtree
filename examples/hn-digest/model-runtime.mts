@@ -29,7 +29,7 @@ import { listen, listenAgents, listenHost } from "../../packages/pomtreed/src/se
 import type { WorkflowCapabilityServices } from "../../packages/pomtreed/src/workflow-capabilities.ts";
 import { raceUntil, sleepTick, WorkflowHost } from "../../packages/pomtreed/src/workflows.ts";
 import { DirReportStore } from "../../packages/report-dir/src/index.ts";
-import { DockerSandbox } from "../../packages/sandbox-docker/src/index.ts";
+import { DockerSandbox, type EngineProfile } from "../../packages/sandbox-docker/src/index.ts";
 import type { Store } from "../../packages/store-sqlite/src/index.ts";
 import { GitWorkspace } from "../../packages/workspace-git/src/index.ts";
 import { boundedStep, type CloseLedger, redactMessage } from "./runtime.mts";
@@ -82,6 +82,8 @@ export interface ModelRuntimeOptions {
   upstreamKey: string; // DeepSeek key, held in memory only; the caller reads it. Never written, logged or given to an agent
   fetch: typeof globalThis.fetch; // caller-guarded transport; forwarded to the model proxy; no default raw fetch
   image?: string; // defaults to the approved digest
+  // The container engine to drive: its profile and socket, as a gated test gets them from gateSandboxDeps(). Default: the sandbox's own default (Docker).
+  engine?: { profile: EngineProfile; socket?: string };
   // Optional transport for workflow source GETs only (never the model upstream). Absent = explicit refusal, no ambient default.
   sourceFetch?: FetchFn;
   // The resolved workflow.fetch.userAgent for the capture broker. Never blank: config resolution maps unset or blank to the default, and an
@@ -251,6 +253,7 @@ export async function openModelRuntime(o: ModelRuntimeOptions): Promise<ModelRun
       provider: MODEL_PROVIDER,
       env: {
         ...modelCatalogEnv(process.env),
+        ...(o.engine && { POMTREED_SANDBOX_BACKEND: o.engine.profile.id }),
         POMTREED_MODEL_BASE_URL: MODEL_UPSTREAM,
         POMTREED_MODEL_PROXY_MAX_REQUEST_MICROS: "50000",
       },
@@ -323,7 +326,8 @@ export async function openModelRuntime(o: ModelRuntimeOptions): Promise<ModelRun
       sessionRoot,
       image,
       capacity: { maxSessions: 1 },
-      makeSandbox: (mounts) => new DockerSandbox({ mounts }),
+      makeSandbox: (mounts) =>
+        new DockerSandbox({ mounts, ...(o.engine && { profile: o.engine.profile, ...(o.engine.socket !== undefined && { socket: o.engine.socket }) }) }),
     });
     const orchestrator = new LocalOrchestrator();
     const deps: DaemonDeps = {

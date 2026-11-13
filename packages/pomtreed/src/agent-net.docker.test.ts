@@ -2,14 +2,15 @@
 // listener is unreachable from a container via host-gateway, while one bound to the bridge gateway IP is reachable.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
+import { gateEngine, gateExecFile, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { detectBridgeGateway, planAgentListen } from "./agent-net.ts";
 
 const run = (args: string[]) =>
-  new Promise<string>((res, rej) => execFile("docker", args, { timeout: 60_000 }, (e, out, err) => (e ? rej(new Error(err || e.message)) : res(out))));
-const dockerTests = process.env.PTREE_DOCKER_TESTS === "1";
+  new Promise<string>((res, rej) => gateExecFile(args, { timeout: 60_000 }, (e, out, err) => (e ? rej(new Error(err || e.message)) : res(out))));
+// The opt-in and the engine named by PTREE_SANDBOX_BACKEND (docker or podman): the CLI calls and the bridge-gateway lookup target that engine.
+const gateSkip = runtimeSkip();
 const linux = process.platform === "linux";
 const image = process.env.POMTREED_AGENT_IMAGE ?? "pomtree/agent:dev";
 
@@ -35,9 +36,15 @@ const fromContainer = (port: number) =>
   ]).then((o) => o.trim());
 
 test("container reaches a gateway-bound listener (fails on a host firewall that blocks docker0) but never a loopback-bound one", {
-  skip: !dockerTests ? "PTREE_DOCKER_TESTS not set" : !linux ? "not Linux (see the Docker Desktop test below)" : false,
+  skip:
+    gateSkip ||
+    (!linux
+      ? "not Linux (see the Docker Desktop test below)"
+      : gateEngine().profile.id !== "docker"
+        ? "the bridge-gateway bind is Docker-only; Podman binds loopback (planAgentListen)"
+        : false),
 }, async () => {
-  const gw = await detectBridgeGateway((_c, a) => run(a), true);
+  const gw = await detectBridgeGateway((_c, a) => run(a), true, gateEngine().profile);
   assert.ok(gw, "bridge gateway detected");
   const good = await listenOn(gw!);
   const bad = await listenOn("127.0.0.1");
@@ -70,9 +77,9 @@ test("container reaches a gateway-bound listener (fails on a host firewall that 
 // Non-Linux (Docker Desktop): verifies containerReachable's "non-Linux is always reachable" assumption against the
 // production plan — the listener planAgentListen binds (loopback) must be reachable from a container.
 test("container reaches the listener planAgentListen binds on a non-Linux host (Docker Desktop)", {
-  skip: !dockerTests ? "PTREE_DOCKER_TESTS not set" : linux ? "Linux (see the bridge-gateway test above)" : false,
+  skip: gateSkip || (linux ? "Linux (see the bridge-gateway test above)" : false),
 }, async () => {
-  const plan = planAgentListen({ listen: undefined, platform: process.platform, gateway: undefined });
+  const plan = planAgentListen({ listen: undefined, platform: process.platform, gateway: undefined, engine: gateEngine().profile });
   assert.notEqual(plan.mode, "off");
   const { server, port } = await listenOn(plan.host);
   try {
