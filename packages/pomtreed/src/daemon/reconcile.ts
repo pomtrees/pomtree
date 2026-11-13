@@ -617,9 +617,10 @@ export class Reconcile {
       return;
     }
     const selected = d.sandbox.declaration.backend;
-    const { targets } = await this.activeBackends(["running", "yielded"]);
+    const targets = await this.targetsOrSelected("stray listing", ["running", "yielded"]);
     const found: { key: string; id: string; agent: AgentId; why: string }[] = [];
     const done = new Set<Sandbox>();
+    const skipped = new Set<string>(); // non-selected backends that could not be listed this pass
     for (const [backend, sb] of targets) {
       if (done.has(sb)) continue;
       done.add(sb);
@@ -629,7 +630,10 @@ export class Reconcile {
         listed = await sb.list(sandboxOwner(d, this.epoch));
       } catch (e) {
         if (e instanceof SandboxUnavailableError) {
-          if (!isSelected) continue;
+          if (!isSelected) {
+            skipped.add(backend);
+            continue;
+          }
           this.strays.clear();
           await this.ctx.hub.store.markSandboxDown();
           return;
@@ -651,7 +655,8 @@ export class Reconcile {
       }
     }
     const now = new Set(found.map((f) => f.key));
-    for (const id of [...this.strays.keys()]) if (!now.has(id)) this.strays.delete(id);
+    // A skipped backend's keys stay (backend-qualified), so a flapping backend does not reset the two-pass memory.
+    for (const id of [...this.strays.keys()]) if (!now.has(id) && ![...skipped].some((b) => id.startsWith(`${b}:`))) this.strays.delete(id);
     const root = await this.ctx.hub.root.root();
     for (const f of found) {
       const seenBefore = this.strays.get(f.key);
@@ -728,6 +733,17 @@ export class Reconcile {
       else unreachable.set(id, agents);
     }
     return { targets, unreachable };
+  }
+
+  // The active set, or the selected backend alone when a record names no backend (reconcileSandboxes refuses that at boot, so a periodic
+  // pass reaching it is a record damaged since); the cause is logged, never thrown, so one bad record does not stop the pass.
+  private async targetsOrSelected(what: string, states?: readonly AgentState[]): Promise<[string, Sandbox][]> {
+    try {
+      return (await this.activeBackends(states)).targets;
+    } catch (e) {
+      console.error(`pomtreed: ${what} limited to the selected backend: ${e instanceof Error ? e.message : String(e)}`);
+      return [[this.ctx.deps.sandbox.declaration.backend, this.ctx.deps.sandbox]];
+    }
   }
 
   // The agents currently held for an unreachable backend (ids only), for operator surfaces.
@@ -864,14 +880,7 @@ export class Reconcile {
     this.egressReclaimed = true;
     const fail = (backend: string) => (e: unknown) =>
       console.error(`pomtreed: egress orphan reclaim failed on ${backend}: ${e instanceof Error ? e.message : String(e)}`);
-    let targets: [string, Sandbox][];
-    try {
-      ({ targets } = await this.activeBackends());
-    } catch (e) {
-      // A record naming no backend is refused by reconcileSandboxes right after; here only the selected backend is reclaimed.
-      console.error(`pomtreed: egress orphan reclaim limited to the selected backend: ${e instanceof Error ? e.message : String(e)}`);
-      targets = [[this.ctx.deps.sandbox.declaration.backend, this.ctx.deps.sandbox]];
-    }
+    const targets = await this.targetsOrSelected("egress orphan reclaim");
     const done = new Set<Sandbox>();
     for (const [backend, sb] of targets) {
       if (done.has(sb)) continue;

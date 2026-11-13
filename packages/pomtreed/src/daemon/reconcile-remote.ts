@@ -8,7 +8,8 @@
 // the confirmed ids as `confirmedAbsent`; only those appear in `lost`, the rest are `suspectedLost`. (2) The caller owns garbage
 // collection of the `alerted` map it persists (drop ids no longer listed). (3) `kill` receives a deterministic idempotency key
 // (`reconcileKillKey`), so a retried kill is a no-op on the provider. (4) `ownedByUs` is stricter than the Docker-era `ownsSandbox`
-// in reconcile.ts (which accepts a missing store_id); the Docker path may adopt it later (ledger).
+// in reconcile.ts (which accepts a missing store_id) and is the one predicate reconcile.ts applies to every non-selected backend (`provablyOurs`);
+// the selected backend keeps the lenient `ownsSandbox`.
 
 import { classifyExit } from "@pomtree/core";
 import type { AgentId, AgentRecord, ExitCause, SandboxBackendId, SandboxId, SandboxListing, SandboxOwner } from "@pomtree/core";

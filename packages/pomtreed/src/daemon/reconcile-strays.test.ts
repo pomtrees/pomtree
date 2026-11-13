@@ -153,3 +153,37 @@ test("egress-orphans: reclaim runs on every active backend; one failing does not
   assert.deepEqual(reclaimed.sort(), ["fake", "other", "third"]);
   assert.ok(logged.some((m) => m.includes("egress orphan reclaim failed on other") && m.includes("reclaim exploded")));
 });
+
+test("strays: a non-selected backend that fails to list for one pass in between keeps the two-pass memory, so its stray is still alerted", async () => {
+  const t = make();
+  const o = other();
+  wire(t, { other: o });
+  await holder(t, "mine", o, "other");
+  const stray = await o.start(spec("ghost"), "ghost-start");
+  const list = o.list.bind(o);
+  await t.daemon.reconcile(); // seen once
+  o.list = async () => {
+    throw new SandboxUnavailableError("engine-unreachable");
+  };
+  await t.daemon.reconcile(); // backend skipped: its memory must survive
+  assert.deepEqual(await strayAlerts(t), []);
+  o.list = list;
+  await t.daemon.reconcile(); // seen again: second sighting
+  const alerts = await strayAlerts(t);
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0]!, new RegExp(stray.id));
+});
+
+test("strays: a stray that disappears from a listable non-selected backend still resets the memory (negative control)", async () => {
+  const t = make();
+  const o = other();
+  wire(t, { other: o });
+  await holder(t, "mine", o, "other");
+  const stray = await o.start(spec("ghost"), "ghost-start");
+  await t.daemon.reconcile();
+  o.running.delete(stray.id);
+  await t.daemon.reconcile();
+  await o.start(spec("ghost"), "ghost-start-2");
+  await t.daemon.reconcile();
+  assert.deepEqual(await strayAlerts(t), []);
+});
