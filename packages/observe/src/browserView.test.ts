@@ -693,7 +693,10 @@ test("no note row sits above the canvas: the first visible child is the canvas, 
   const t = setup();
   const kids = t.root.children[0]!.children;
   const firstVisible = kids.find((n) => !n.hidden)!;
-  assert.equal(firstVisible.tagName, "canvas");
+  assert.ok(
+    firstVisible.children.some((n) => n.tagName === "canvas"),
+    "the first visible child is the canvas holder",
+  );
   assert.ok(!kids.some((n) => n.tagName === "p" && !n.hidden));
   const decl = t.kitK as unknown as { declaration(id: string): { status: { id: string; text?: string }[] } };
   const slot = decl.declaration("browser").status.find((x) => x.id === "view-only")!;
@@ -931,12 +934,31 @@ test("fit and actual size are mutually exclusive; actual draws at natural pixels
   assert.deepEqual([canvas.style.width, canvas.style.height], ["1280px", "720px"]);
   const d = t.ctx2d.draws.at(-1)!;
   assert.deepEqual([d.x, d.y, d.w, d.h], [0, 0, 1280, 720]);
-  assert.equal(t.root.children[0]!.style.overflow, "auto");
+  assert.equal(t.root.children[0]!.children.find((n) => n.children.includes(canvas))!.style.overflow, "auto");
   t.command("browser.fit", true);
   assert.deepEqual(t.lastState("browser.fit"), { checked: true });
   assert.deepEqual(t.lastState("browser.actual-size"), { checked: false });
   assert.deepEqual([canvas.style.width, canvas.style.height], ["100%", "100%"]);
   assert.deepEqual([canvas.width, canvas.height], [800, 450]);
+});
+
+test("actual size scrolls the canvas holder, never the pane that carries the status overlay", async () => {
+  const t = setup();
+  const ws = t.sockets[0]!;
+  ws.open();
+  ws.frame();
+  t.decodes[0]!.resolve(t.bitmap(t.decodes[0]!.blob, 1280, 720));
+  await t.flush();
+  t.command("browser.actual-size", true);
+  const pane = t.root.children[0]!;
+  const canvas = t.find((n) => n.tagName === "canvas")!;
+  const scroller = pane.children.find((n) => n.children.includes(canvas))!;
+  assert.equal(scroller.style.overflow, "auto", "the canvas holder scrolls");
+  assert.equal(pane.style.overflow ?? "", "", "the pane itself does not scroll");
+  const ov = pane.children.find((n) => n.className.split(" ").includes("stale-overlay"))!;
+  assert.ok(ov, "the overlay is a direct child of the non-scrolling pane, so it stays in view");
+  t.command("browser.fit", true);
+  assert.equal(scroller.style.overflow, "", "fit mode does not scroll");
 });
 
 test("copy URL writes the page URL; a blocked clipboard or no URL is reported in the stream slot with cause and action", async () => {
