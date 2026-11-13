@@ -186,9 +186,10 @@ export function egressSocketVolumeOptions(profile: EngineProfile, uid: number): 
 // SELinux relabel option for a shared read-only bind mount (Linux SELinux hosts only; macOS shares are virtiofs and need none).
 // Known limitation: relabel=shared is applied to read-only bind mounts only, by design. On an enforcing-SELinux Linux host an unlabeled
 // WRITABLE bind (the workspace bind and the sidecar spool log directory) may be denied to the container, so the operator must pre-label
-// those paths or the writable binds need relabel too. Not verified on a real SELinux host (built and tested on macOS).
+// those paths or the writable binds need relabel too. Not verified on an enforcing-SELinux host.
 // TODO(podman-selinux-writable-bind): verify on a Fedora-class enforcing-SELinux host; current behavior: only read-only binds are relabeled, and an
-// unlabeled writable bind would probably be denied. Built and tested on macOS only.
+// unlabeled writable bind would probably be denied. Rootless Podman 5.7.0 on Linux without SELinux enforcing ran INS-3 and CUS-1 (docs/validation.md), so the
+// writable binds work there; enforcing SELinux has not been run.
 const PODMAN_RELABEL = ",relabel=shared";
 
 const isPodman = (profile: EngineProfile) => profile.id === "podman";
