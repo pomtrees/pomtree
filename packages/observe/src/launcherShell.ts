@@ -288,8 +288,9 @@ function createLauncherBar(wm, cfg) {
       return;
     }
     if (input.value !== omni.query) input.value = omni.query;
-    const shown = shownItems();
-    const sig = JSON.stringify(shown.map((it) => [it.key, it.label, it.hint, it.dot, it.kind]));
+    const cut = K.rankCut(K.buildItems(ctx()), omni.query);
+    const shown = cut.shown;
+    const sig = JSON.stringify([cut.omitted, shown.map((it) => [it.key, it.label, it.hint, it.dot, it.kind])]);
     if (sig !== omniSig) {
       omniSig = sig;
       list.replaceChildren();
@@ -311,8 +312,10 @@ function createLauncherBar(wm, cfg) {
         return li;
       });
       list.hidden = shown.length === 0;
-      empty.hidden = shown.length !== 0;
-      empty.textContent = shown.length ? "" : "Nothing matches " + String.fromCharCode(8220) + omni.query + String.fromCharCode(8221) + ".";
+      empty.hidden = shown.length !== 0 && cut.omitted === 0;
+      empty.textContent = shown.length === 0
+        ? "Nothing matches " + String.fromCharCode(8220) + omni.query + String.fromCharCode(8221) + "."
+        : cut.omitted > 0 ? cut.omitted + " more agent entries are not listed; type a name or id to find them." : "";
       omniSelShown = -1;
     }
     omniLis.forEach((li, i) => {

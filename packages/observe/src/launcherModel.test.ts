@@ -395,6 +395,20 @@ test("an agent past the cap is found by exact name, prefix or id, once", () => {
   assert.equal(K.rank(items, "n").filter((i) => i.run.type === "open" && i.run.agent).length, 200);
 });
 
+test("rankCut reports how many agent entries the cap cut, so the unfiltered list can say so", () => {
+  const agents = Array.from({ length: 250 }, (_, i) => ag(`a${i}`, `n${i}`));
+  const two = [...VIEWS, { id: "log", title: "Log", multi: true }];
+  const items = K.buildItems(ctx({ agents, views: two, leaves: [leaf("t1", "tree")] }));
+  const all = K.rankCut(items, "");
+  assert.equal(all.omitted, 100, "50 per view type, two view types");
+  assert.deepEqual(plain(all.shown), plain(K.rank(items, "")), "rank is the shown part of rankCut");
+  assert.equal(K.rankCut(items, "n").omitted, 100, "a broad query is cut too");
+  assert.equal(K.rankCut(items, "n229").omitted, 0, "a narrow query reaches every match");
+  assert.equal(K.rankCut(items, ">split").omitted, 0, "actions only: nothing cut");
+  const few = K.buildItems(ctx({ agents: agents.slice(0, 200), leaves: [leaf("t1", "tree")] }));
+  assert.equal(K.rankCut(few, "").omitted, 0, "exactly the cap is not cut");
+});
+
 test("parseQuery", () => {
   assert.deepEqual(plain(K.parseQuery("  Foo   BAR ")), { actionsOnly: false, tokens: ["foo", "bar"] });
   assert.deepEqual(plain(K.parseQuery("")), { actionsOnly: false, tokens: [] });
