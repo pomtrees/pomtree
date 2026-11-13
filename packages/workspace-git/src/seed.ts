@@ -314,10 +314,18 @@ export async function verifyAndFetchResult(repo: string, bytes: Uint8Array, expe
       throw new SeedTransferError("partial", "result bundle failed git verification (missing objects or prerequisites); collect again; nothing was applied");
     }
     // Strict pass in a scratch repository that borrows the user's objects (thin-pack bases); nothing is written to the user's store.
-    const objects = resolve(repo, await out(repo, ["rev-parse", "--git-path", "objects"]));
     const sandbox = join(scratch, "strict.git");
-    await out(scratch, ["init", "-q", "--bare", sandbox]);
-    writeFileSync(join(sandbox, "objects", "info", "alternates"), `${objects}\n`);
+    try {
+      const objects = resolve(repo, await out(repo, ["rev-parse", "--git-path", "objects"]));
+      await out(scratch, ["init", "-q", "--bare", sandbox]);
+      writeFileSync(join(sandbox, "objects", "info", "alternates"), `${objects}\n`);
+    } catch {
+      // A raw git or fs error here would name the scratch path.
+      throw new SeedTransferError(
+        "partial",
+        "preparing the strict check for the result bundle failed; check free space in the temporary directory, then collect again; nothing was applied",
+      );
+    }
     try {
       await runGit(["index-pack", "--stdin", "--strict", "--fix-thin"], { cwd: sandbox, stdinFrom: { path: file, start: head.header.packOffset } });
     } catch (e) {
