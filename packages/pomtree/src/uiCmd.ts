@@ -11,6 +11,8 @@ export interface UiFlags {
   left?: boolean;
   right?: boolean;
   all?: boolean;
+  // `--focused` of ui close, maximize and minimize: the focused window instead of a named one.
+  focused?: boolean;
 }
 export interface UiExit {
   error: number;
@@ -50,6 +52,8 @@ export function buildUiCommand(args: string[], flags: UiFlags): UiBuild {
   if (flags.views !== undefined && verb !== "follow") return fail(`--views only applies to ui follow${eg(EXAMPLE.follow)}`);
   if (flags.of !== undefined && verb !== "follow") return fail(`--of only applies to ui follow${eg(EXAMPLE.follow)}`);
   if (flags.dir !== undefined && verb !== "focus") return fail(`--dir only applies to ui focus${eg("pomtree ui focus --dir left")}`);
+  if (flags.focused && verb !== "close" && verb !== "maximize" && verb !== "minimize")
+    return fail(`--focused only applies to ui close, maximize and minimize${eg("pomtree ui close --focused")}`);
   const scopes = SCOPE_FLAGS.filter((f) => flags[f]);
   if (scopes.length > 0 && verb !== "close") return fail(`--${scopes[0]} only applies to ui close${eg("pomtree ui close terminal a1 --others")}`);
   if (scopes.length > 1)
@@ -65,6 +69,11 @@ export function buildUiCommand(args: string[], flags: UiFlags): UiBuild {
     case "maximize":
     case "minimize":
     case "restore": {
+      if (flags.focused) {
+        if (rest.length > 0) return fail(`--focused addresses the focused window and takes no view, got "${rest[0]}"${eg(`pomtree ui ${verb} --focused`)}`);
+        if (flags.all) return fail(`--focused and --all cannot be combined; --all closes every window${eg("pomtree ui close --all")}`);
+        return { ok: true, command: { cmd: verb, focused: true, ...(scopes[0] && { scope: scopes[0] }) } };
+      }
       if (verb === "close" && flags.all) {
         if (rest.length > 0) return fail(`ui close --all closes every window and takes no view, got "${rest[0]}"${eg("pomtree ui close --all")}`);
         return { ok: true, command: { cmd: "close", scope: "all" } };

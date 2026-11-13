@@ -33,6 +33,7 @@ export type UiCommand =
   | { cmd: "focus"; dir: UiDir }
   | { cmd: "close"; view: string; agent?: string; report?: string; scope?: UiCloseScope }
   | { cmd: "close"; scope: "all" }
+  | { cmd: "close" | "maximize" | "minimize"; focused: true; scope?: "others" | "left" | "right" }
   | { cmd: "maximize"; view: string; agent?: string; report?: string }
   | { cmd: "minimize"; view: string; agent?: string; report?: string }
   | { cmd: "restore"; view?: string; agent?: string; report?: string }
@@ -168,14 +169,30 @@ const UiCommandKit = globalThis.UiCommandKit || (globalThis.UiCommandKit = (() =
     return { ok: true, command: out };
   };
 
-  // TODO(ui-command-focused-ref): no ui verb addresses the focused window without a ref; today every window command
-  // needs a view/subject or targets everything (close --all, arrange, reset). Trigger: scripts that need "the focused window".
+  // The focused window as the target: close (with an optional scope others/left/right), maximize or minimize, with
+  // "focused": true in place of a view and subject. The page resolves it to the focused tile when it applies the command.
+  const focusedCommand = (raw) => {
+    if (raw.focused !== true) return err("focused must be true (for example " + JSON.stringify({ cmd: "close", focused: true }) + "); omit it to name a window by view");
+    if (raw.cmd !== "close" && raw.cmd !== "maximize" && raw.cmd !== "minimize") return err("focused only applies to close, maximize and minimize, not " + show(raw.cmd) + "; name a view instead");
+    const named = ["view", "agent", "report"].filter((k) => raw[k] !== undefined)[0];
+    if (named) return err("focused addresses the focused window and takes no " + JSON.stringify(named) + "; remove one of them");
+    const bad = unknownKey(raw, raw.cmd === "close" ? ["focused", "scope"] : ["focused"]);
+    if (bad) return err(bad);
+    const out = { cmd: raw.cmd, focused: true };
+    if (raw.scope !== undefined) {
+      if (raw.scope !== "others" && raw.scope !== "left" && raw.scope !== "right") return err("close focused takes scope others, left or right, not " + show(raw.scope) + "; scope all closes every window and needs no focused");
+      out.scope = raw.scope;
+    }
+    return { ok: true, command: out };
+  };
+
   const parse = (raw) => {
     try {
       if (!plainObject(raw)) return err("command must be a JSON object (for example " + JSON.stringify({ cmd: "reset" }) + "); send one object");
       const text = JSON.stringify(raw);
       if (text.length > MAX_BODY) return err("command is " + text.length + " characters, over the " + MAX_BODY + " limit; send a smaller command");
       if (CMDS.indexOf(raw.cmd) < 0) return err("cmd " + show(raw.cmd) + " is not a command; use one of " + CMDS.join(", "));
+      if (raw.focused !== undefined) return focusedCommand(raw);
       if (raw.cmd === "open" || raw.cmd === "maximize" || raw.cmd === "minimize") return viewCommand(raw);
       if (raw.cmd === "close") return closeCommand(raw);
       if (raw.cmd === "restore") return restoreCommand(raw);

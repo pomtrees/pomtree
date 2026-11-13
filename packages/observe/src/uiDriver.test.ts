@@ -18,6 +18,7 @@ interface Opts {
   focusDirection?: boolean;
   noMenu?: boolean;
   leafOf?: string | null;
+  focused?: string | null;
   windowCommand?: boolean;
   throwOn?: string;
   fetch?: (url: string, init: { signal?: unknown }) => Promise<{ status: number }>;
@@ -56,6 +57,10 @@ function boot(o: Opts = {}) {
     leafOf: (v: string, p: object) => {
       calls.push("leafOf:" + j([v, p]));
       return o.leafOf === undefined ? "l1" : o.leafOf;
+    },
+    focusedLeaf: () => {
+      calls.push("focusedLeaf");
+      return o.focused === undefined ? "f1" : o.focused;
     },
     windowCommand: (c: string, leaf: string | null) => {
       calls.push("windowCommand:" + j([c, leaf]));
@@ -406,4 +411,31 @@ test("a frame arriving while the probe is pending cancels the notice", async () 
   s.cmd(1, { cmd: "reset" });
   await settle();
   assert.deepEqual(s.take(), ["dismiss:ui-stream", "reset"]);
+});
+
+test("a focused command acts on the focused tile and never looks a window up by view", () => {
+  const s = boot();
+  s.cmd(1, { cmd: "close", focused: true });
+  s.cmd(2, { cmd: "maximize", focused: true });
+  s.cmd(3, { cmd: "close", focused: true, scope: "others" });
+  assert.deepEqual(s.take(), [
+    "focusedLeaf",
+    'windowCommand:["window.close","f1"]',
+    "focusedLeaf",
+    'windowCommand:["window.maximize","f1"]',
+    "focusedLeaf",
+    'windowCommand:["window.close-others","f1"]',
+  ]);
+});
+
+test("a focused command with no focused window shows a notice and runs nothing", () => {
+  const s = boot({ focused: null });
+  s.cmd(1, { cmd: "minimize", focused: true });
+  const c = s.take();
+  assert.equal(c.length, 2);
+  assert.match(c[1]!, /^notify:[^:]+:Cannot minimize the focused window: no window is focused\./);
+  assert.equal(
+    c.some((x) => x.startsWith("windowCommand:")),
+    false,
+  );
 });

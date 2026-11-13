@@ -37,6 +37,12 @@ function createUiDriver(wm, cfg) {
   const windowOp = (c) => {
     const command = WindowMenuKit.fromUiCommand(c);
     if (!command) { say("Cannot " + c.cmd + ": the window menu has no such command. Reload the page and send it again."); return; }
+    if (c.focused === true) {
+      const at = api.focusedLeaf();
+      if (at === null || at === undefined) { say("Cannot " + c.cmd + " the focused window: no window is focused. Open or click a window first."); return; }
+      api.windowCommand(command, at);
+      return;
+    }
     if (c.view === undefined) { api.windowCommand(command, null); return; }
     const leaf = api.leafOf(c.view, subjectParams(c));
     if (leaf === null || leaf === undefined) { say("Cannot " + c.cmd + " " + label(c) + ": that window is not open."); return; }

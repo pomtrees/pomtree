@@ -649,6 +649,8 @@ function createWindowManager(tabs, storageKey) {
     },
     // Any leaf of the layout, minimized ones included; params are normalised like focusSubject.
     leafOf: (view, params) => LK.find(layout(), view, subjectArgs(view, params), multiOf(view)),
+    // The focused tile id, or null when none is focused (an empty layout); for ui commands that name no window.
+    focusedLeaf: () => (LK.leaves(layout()).some((l) => l.id === layout().focus) ? layout().focus : null),
     windowCommand,
     windowMenuItems: (leafId) => WMK.items(layout(), leafId, { narrow }),
     focusDirection: (dir) => {

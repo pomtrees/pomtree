@@ -149,6 +149,7 @@ interface WmApi {
   dismiss(key: string): void;
   focusSubject(view: string, params: { agent?: string; report?: string }): boolean;
   leafOf(view: string, params: { agent?: string; report?: string }): string | null;
+  focusedLeaf(): string | null;
   windowCommand(command: string, leafId: string | null): boolean;
   windowMenuItems(leafId: string): { kind: string; command?: string; label?: string; enabled?: boolean; visible?: boolean }[];
   focusDirection(dir: "left" | "right" | "up" | "down"): boolean;
@@ -1733,6 +1734,16 @@ const closeBySubject = (s: ReturnType<typeof boot>, view: string, params: { agen
   const at = s.api.leafOf(view, params);
   return at !== null && s.api.windowCommand("window.close", at);
 };
+
+test("api.focusedLeaf names the focused tile and is null when no window is open", () => {
+  const s = boot();
+  s.api.openView("terminal", "a1");
+  assert.equal(s.api.focusedLeaf(), s.api.state().focus);
+  assert.equal(s.api.focusSubject("tree", {}), true);
+  assert.equal(s.api.focusedLeaf(), s.api.leafOf("tree", {}));
+  s.api.windowCommand("window.close-all", null);
+  assert.equal(s.api.focusedLeaf(), null);
+});
 
 test("leafOf + window.close closes that tile once, then returns false", () => {
   const s = boot();
