@@ -12,6 +12,9 @@ export const BRIDGE_EXIT_USAGE = 64;
 export const BRIDGE_EXIT_UNAVAILABLE = 69;
 export const BRIDGE_EXIT_STREAM = 70;
 export const BRIDGE_HOST = "127.0.0.1";
+// The daemon closing its exec stream ends the bridge's stdin. A peer that ignores the half-close would otherwise keep the bridge running in the
+// container until the container stops, so after this long without a byte from the peer once stdin has ended, the bridge notes it on stderr, flushes stdout and exits 0.
+export const BRIDGE_STDIN_END_GRACE_MS = 2000;
 
 export type BridgeArgs = { port: number } | { exit: typeof BRIDGE_EXIT_USAGE; reason: string };
 
@@ -39,9 +42,11 @@ export interface BridgeIo {
   stdout: Writable;
   stderr: { write(line: string): unknown };
   connect: BridgeConnect;
+  // How long after stdin ends the bridge waits, without a byte from the peer, before it exits anyway (default BRIDGE_STDIN_END_GRACE_MS).
+  stdinEndGraceMs?: number;
 }
 
-/** Runs one bridge and resolves to the process exit code. stdin ends the socket's write side; the socket's end ends stdout after it flushes. */
+/** Runs one bridge and resolves to the process exit code. stdin ends the socket's write side; the socket's end ends stdout after it flushes; a peer silent for stdinEndGraceMs after stdin ended is left behind with exit 0. */
 export function runBridge(argv: readonly string[], allowed: readonly number[], io: BridgeIo): Promise<number> {
   const parsed = parseBridgeArgs(argv, allowed);
   if ("exit" in parsed) {
@@ -53,9 +58,11 @@ export function runBridge(argv: readonly string[], allowed: readonly number[], i
     const socket = io.connect(port, BRIDGE_HOST);
     let connected = false;
     let settled = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (code: number, reason?: string) => {
       if (settled) return;
       settled = true;
+      if (graceTimer) clearTimeout(graceTimer);
       if (reason) io.stderr.write(`${reason}\n`);
       socket.destroy();
       resolve(code);
@@ -85,6 +92,26 @@ export function runBridge(argv: readonly string[], allowed: readonly number[], i
       finish(BRIDGE_EXIT_STREAM, `loopback-bridge ${name} failed (${error.code ?? error.message}); the stream was closed, so retry the exec`);
     };
     io.stdin.on("error", onStdio("stdin"));
+    // stdin ending is the daemon dropping the exec. The peer then gets an idle timer: any byte it sends restarts it, so a reply still streaming
+    // is never cut, and only a peer silent for the whole grace period is left behind (one stderr note, exit 0: a clean end, as for EPIPE).
+    // stdin cannot end before the connect (it is only read once piped on connect); the guard keeps it that way, so no timer runs then and the
+    // connect failure or the connect itself decides, exactly as before.
+    const graceMs = io.stdinEndGraceMs ?? BRIDGE_STDIN_END_GRACE_MS;
+    let stdinEnded = false;
+    const armIdleTimer = () => {
+      if (settled || !stdinEnded) return;
+      if (graceTimer) clearTimeout(graceTimer);
+      graceTimer = setTimeout(() => {
+        io.stderr.write(`loopback-bridge: peer idle for ${graceMs} ms after stdin ended; closing the bridge\n`);
+        io.stdout.write("", () => finish(BRIDGE_EXIT_OK));
+      }, graceMs);
+    };
+    io.stdin.on("end", () => {
+      if (settled || !connected) return;
+      stdinEnded = true;
+      armIdleTimer();
+    });
+    socket.on("data", armIdleTimer);
     io.stdout.on("error", onStdio("stdout"));
     // Resolve only after stdout has taken every byte the socket delivered.
     socket.on("end", () => io.stdout.write("", () => finish(BRIDGE_EXIT_OK)));

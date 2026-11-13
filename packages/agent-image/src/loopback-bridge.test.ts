@@ -112,6 +112,101 @@ test("half-close: stdin ending ends the socket write side and the server's late 
   }
 });
 
+test("stdin ending with a peer that never closes ends the bridge after the grace period instead of leaving it running", async () => {
+  // allowHalfOpen server: the peer ignores the half-close and keeps its side open, as a service that does not end on EOF would.
+  const open: import("node:net").Socket[] = [];
+  const server = createServer({ allowHalfOpen: true }, (s) => {
+    open.push(s);
+    s.on("data", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const errs: string[] = [];
+    const run = runBridge([String(port)], [port], {
+      stdin,
+      stdout,
+      stderr: { write: (l) => errs.push(l) },
+      connect: (p, host) => netConnect({ port: p, host }),
+      stdinEndGraceMs: 50,
+    });
+    stdin.end("hello");
+    const code = await Promise.race([run, new Promise<string>((r) => setTimeout(() => r("still running"), 5000))]);
+    assert.equal(code, BRIDGE_EXIT_OK, "the bridge must exit once stdin has ended and the peer stays silent past the grace period");
+    assert.equal(errs.length, 1, "one stderr note says the bridge cut an idle peer");
+    assert.match(errs[0]!, /peer idle for 50 ms after stdin ended; closing the bridge/);
+  } finally {
+    for (const s of open) s.destroy();
+    server.close();
+  }
+});
+
+test("the grace period does not cut a late reply that arrives within it", async () => {
+  const server = createServer({ allowHalfOpen: true }, (s) => {
+    s.on("data", () => {});
+    s.on("end", () => setTimeout(() => s.end("late"), 100));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const read = collect(stdout);
+    const run = runBridge([String(port)], [port], {
+      stdin,
+      stdout,
+      stderr: { write: () => {} },
+      connect: (p, host) => netConnect({ port: p, host }),
+      stdinEndGraceMs: 2000,
+    });
+    stdin.end("x");
+    assert.equal(await run, BRIDGE_EXIT_OK);
+    assert.equal(read().toString(), "late");
+  } finally {
+    server.close();
+  }
+});
+
+test("a peer still streaming its reply past the grace period is not cut: the grace period is idle time, not total time", async () => {
+  // Ten chunks 40 ms apart (400 ms in all) after the peer sees stdin end, with a 100 ms grace period: only an idle timer delivers all of it.
+  const server = createServer({ allowHalfOpen: true }, (s) => {
+    s.on("data", () => {});
+    s.on("end", () => {
+      let n = 0;
+      const t = setInterval(() => {
+        s.write(`c${n};`);
+        if (++n === 10) {
+          clearInterval(t);
+          s.end();
+        }
+      }, 40);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const read = collect(stdout);
+    const errs: string[] = [];
+    const run = runBridge([String(port)], [port], {
+      stdin,
+      stdout,
+      stderr: { write: (l) => errs.push(l) },
+      connect: (p, host) => netConnect({ port: p, host }),
+      stdinEndGraceMs: 100,
+    });
+    stdin.end("x");
+    assert.equal(await run, BRIDGE_EXIT_OK);
+    assert.equal(read().toString(), "c0;c1;c2;c3;c4;c5;c6;c7;c8;c9;", "the whole reply arrives");
+    assert.deepEqual(errs, [], "no cut, so no note");
+  } finally {
+    server.close();
+  }
+});
+
 test("the socket ending first exits 0 even though stdin never ends", async () => {
   const { server, port } = await echoServer((s) => s.end("bye"));
   try {
