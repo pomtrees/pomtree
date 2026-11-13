@@ -14,8 +14,8 @@ import { COMMIT_MARK, describeFindings, scanDiff, scanMessages } from "./publish
 // reachable history was checked); the push must deliver nothing outside `sha ^exclude`.
 // Bounds: every git call runs in its own process group, and a timeout, abort or output overflow SIGKILLs the whole group (git's
 // own children, such as pack-objects, hooks and remote helpers, die with it). Each call is bounded (`gitTimeoutMs`, output
-// limit), and the whole resolution is bounded too: `resolveTimeoutMs` of wall clock and `resolveMaxBytes` of output summed over
-// all its calls, so N calls cannot run N times the per-call bound. A blown deadline is a plain error (409); a blown output budget
+// limit), and the whole resolution is bounded too: `resolveTimeoutMs` of wall clock and `resolveMaxBytes` of stdout summed over
+// all its calls (stderr is capped per call but not charged to this budget; it is never returned), so N calls cannot run N times the per-call bound. Both are code options (main.ts uses the defaults; there is no config key). A blown deadline is a plain error (409); a blown stdout budget
 // is a refusal (PublishPinError, 403). TODO(publish-pin): git still runs with the daemon's inherited environment (current
 // behavior; a scrubbed environment is not yet built).
 
@@ -59,7 +59,7 @@ export interface PublishResolverOptions {
   gitTimeoutMs?: number;
   // Wall-clock bound on one whole resolution, all git calls together (default 300 s). Over it fails closed as a plain error (409).
   resolveTimeoutMs?: number;
-  // Git output bytes one whole resolution may buffer, summed over all its calls (default 512 MiB). Over it is a refusal (403).
+  // Git stdout bytes one whole resolution may buffer, summed over all its calls (default 512 MiB); stderr is not charged. Over it is a refusal (403).
   resolveMaxBytes?: number;
   // The git runner; the default is execGit. Injected by tests so they run without a repository or a child process.
   runGit?: GitRunner;
@@ -145,7 +145,7 @@ export const execGit: GitRunner = (args, opts) =>
   });
 
 // Everything one resolution needs: the injected runner, the bounds and the signal, bound once per call. `signal` is the
-// caller's signal joined with the resolution deadline; `bytesLeft` is the output budget the remaining calls share.
+// caller's signal joined with the resolution deadline; `bytesLeft` is the stdout budget the remaining calls share.
 interface Ctx {
   run: GitRunner;
   mirror: string;
@@ -159,13 +159,13 @@ interface Ctx {
 }
 
 // Every git call goes through here, so the whole-resolution bounds hold for all of them. The call's output cap is the smaller of
-// its own and what the budget has left; its output is charged to the budget once it returns.
+// its own and what the budget has left; its stdout is charged to the budget once it returns.
 async function call(c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<string> {
   const budgeted = Math.min(maxBytes, c.bytesLeft);
   const overDeadline = () =>
     new GitRunError(
       "ETIMEOUT",
-      `publish resolution exceeded its ${c.deadlineMs} ms deadline; retry the publish, or raise publish resolver resolveTimeoutMs if the repository is that large`,
+      `publish resolution exceeded its ${c.deadlineMs} ms deadline; retry the publish, or publish a smaller range (fewer commits not yet on the remote)`,
     );
   if (c.deadline.aborted) throw overDeadline();
   let out: string;
@@ -175,7 +175,7 @@ async function call(c: Ctx, args: string[], maxBytes = MAX_BUFFER): Promise<stri
     if (e instanceof GitRunError && e.code === "EABORT" && c.deadline.aborted) throw overDeadline();
     if (e instanceof GitRunError && e.code === "EOVERFLOW" && budgeted < maxBytes)
       throw new PublishPinError(
-        `git output of this resolution exceeds its ${c.maxBytes}-byte budget; narrow the range (fetch the remote so the pushed history is shorter) or raise publish resolver resolveMaxBytes`,
+        `git output of this resolution exceeds its ${c.maxBytes}-byte budget; publish a smaller range (fetch the remote first, or push fewer commits at a time)`,
       );
     throw e;
   }

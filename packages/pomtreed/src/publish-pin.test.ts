@@ -917,7 +917,7 @@ test("stub: the whole-resolution deadline fails closed as a plain error naming t
   await assert.rejects(stubResolve(slow, { resolveTimeoutMs: 100 })("a", "main", "origin/main"), (e: unknown) => {
     assert.ok(e instanceof GitRunError && e.code === "ETIMEOUT", "plain error, so the daemon keeps its 409");
     assert.ok(!(e instanceof PublishPinError));
-    assert.match((e as Error).message, /resolution exceeded its 100 ms deadline.*resolveTimeoutMs/);
+    assert.match((e as Error).message, /resolution exceeded its 100 ms deadline.*publish a smaller range/);
     return true;
   });
   const pin = await stubResolve(slow, { resolveTimeoutMs: 60_000 })("a", "main", "origin/main");
@@ -948,7 +948,7 @@ test("stub: the whole-resolution output budget is a refusal (403) that names the
   };
   await assert.rejects(stubResolve(hundred, { resolveMaxBytes: 250 })("a", "main", "origin/main"), (e: unknown) => {
     assert.ok(e instanceof PublishPinError, "a size refusal is a 403");
-    assert.match((e as Error).message, /250-byte budget.*resolveMaxBytes/);
+    assert.match((e as Error).message, /250-byte budget.*publish a smaller range/);
     return true;
   });
   const roomy = await stubResolve(hundred, { resolveMaxBytes: 1_000_000 })("a", "main", "origin/main");
