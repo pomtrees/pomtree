@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync } from "node:fs";
 import test from "node:test";
 import { createRequest } from "@pomtree/sandbox-kit";
-// TODO(live-gate-home): the live gate lives in the e2e package, which adapters cannot depend on, so it is imported by path. Current
-// behavior: this relative import is the only cross-package one in sandbox-sail; move liveSkip into @pomtree/testing and import it there.
-import { liveSkip } from "../../e2e/src/live-gate.ts";
+import { liveSkip } from "@pomtree/testing";
 import { sailProvider } from "./provider.ts";
 
 // The live tier: real Sailboxes API calls. It runs only when the operator opts in through the live gate (PTREE_LIVE_PROVIDERS lists
