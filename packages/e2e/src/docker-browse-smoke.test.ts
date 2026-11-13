@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,11 +11,12 @@ import { DirReportStore } from "@pomtree/report-dir";
 import { DockerSandbox } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
 import { GitWorkspace } from "@pomtree/workspace-git";
+import { gateEngine, gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../sandbox-docker/src/docker-gate.ts";
 import { agentBindPlan, detectBridgeGateway } from "../../pomtreed/src/agent-net.ts";
 import { harnessArgv } from "../../pomtreed/src/harness-argv.ts";
 import { browseToolViolation, startModelStub } from "../../../examples/hn-digest/content-live-stub.mts";
 import { SECRET, gitRepo } from "./harness.ts";
-import { startLiveModel } from "./live-model.ts";
+import { SANDBOX_BACKEND_ENV, startLiveModel } from "./live-model.ts";
 
 // No-spend Docker smoke of the `browse` allowlist profile: the REAL agent image runs a REAL Pi, launched through
 // pomtreed's own harnessArgv for a `browse` template, against a local stub upstream behind the real key-issuing proxy; the stub records the
@@ -30,12 +30,13 @@ const PROVIDER = "openrouter";
 const MODEL = "anthropic/claude-haiku-5.5";
 
 function dockerSkip(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (!image) return "PTREE_E2E_IMAGE unset";
   try {
-    execFileSync("docker", ["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
+    gateExecFileSync(["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
   } catch {
-    return `${image} unavailable (docker unreachable or image not built; this test never pulls)`;
+    return `${image} unavailable (engine unreachable or image not built; this test never pulls)`;
   }
   return false;
 }
@@ -80,7 +81,7 @@ test("smoke: a real Pi in a `browse` template's container declares exactly web_f
     sessionRoot,
     image: image!,
     capacity: { maxSessions: 1 },
-    makeSandbox: (mounts) => new DockerSandbox({ mounts, egressAuditRoot }),
+    makeSandbox: (mounts) => new DockerSandbox({ mounts, egressAuditRoot, ...gateSandboxDeps() }),
   });
   const orchestrator = new LocalOrchestrator();
   const keyFile = join(stateDir, "upstream.key"); // the key as pomtreed takes it: a mode-0600 file, removed with stateDir
@@ -90,7 +91,12 @@ test("smoke: a real Pi in a `browse` template's container declares exactly web_f
     secret: SECRET,
     stateDir,
     provider: PROVIDER,
-    env: { POMTREED_PI_CATALOG_DIR: catalog, POMTREED_MODEL_BASE_URL: `${new URL(stub.baseUrl).origin}/api`, POMTREED_MODEL_UPSTREAM_KEY_FILE: keyFile },
+    env: {
+      [SANDBOX_BACKEND_ENV]: gateEngine().profile.id,
+      POMTREED_PI_CATALOG_DIR: catalog,
+      POMTREED_MODEL_BASE_URL: `${new URL(stub.baseUrl).origin}/api`,
+      POMTREED_MODEL_UPSTREAM_KEY_FILE: keyFile,
+    },
   });
   let apiUrl: string | undefined;
   const socketPath = join(stateDir, "pomtreed.sock");
@@ -135,7 +141,12 @@ test("smoke: a real Pi in a `browse` template's container declares exactly web_f
   });
   const server = await listen(daemon, socketPath);
   // Bind where pomtreed binds its agent endpoint (loopback on Docker Desktop, the bridge gateway on Linux); containers use host.docker.internal.
-  const plan = await agentBindPlan(process.platform, () => detectBridgeGateway(async (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10_000 })));
+  const { profile } = gateEngine();
+  const plan = await agentBindPlan(
+    process.platform,
+    () => detectBridgeGateway(async (_binary, a) => gateExecFileSync(a, { timeout: 10_000 }), false, profile),
+    profile,
+  );
   const agents = await listenAgents(daemon, plan.host, 0);
   apiUrl = `http://host.docker.internal:${agents.port}`;
   try {

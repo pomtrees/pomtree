@@ -7,7 +7,6 @@
 // Gated:PTREE_DOCKER_TESTS=1, PTREE_NET_TESTS=1 and PTREE_E2E_IMAGE=<agent image built from this revision, via
 // `AGENT_IMAGE_TAG=<tag> node packages/agent-image/scripts/build.ts`>. Without them it skips with the reason.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BROWSER_BACKGROUND } from "../../packages/sandbox-docker/src/egress.ts";
 import { articlePageText, evidenceOf, modelResult, READ_FIRST_PAGE_CALL, textsIn } from "./content-harness.mts";
+import { gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../packages/sandbox-docker/src/docker-gate.ts";
 import { liveDefaultDeadlineMs, createLiveBaseRepo, openLiveContentRuntime, planCaps, requireLiveUpstream } from "./content-live-runtime.mts";
 import { CONFIG_DEFAULTS } from "../../packages/core/src/index.ts";
 import { resolveLiveConfig } from "./content-live.mts";
@@ -52,13 +52,14 @@ const strayAuthorities = (authorities: Iterable<string>): string[] => {
 const image = process.env.PTREE_E2E_IMAGE;
 
 function skipReason(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (process.env.PTREE_NET_TESTS !== "1") return "PTREE_NET_TESTS not set (the article is a public page; offline CI skips)";
   if (!image) return "PTREE_E2E_IMAGE unset";
   try {
-    execFileSync("docker", ["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
+    gateExecFileSync(["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
   } catch {
-    return `${image} unavailable (docker unreachable or image not built; this test never pulls)`;
+    return `${image} unavailable (engine unreachable or image not built; this test never pulls)`;
   }
   return false;
 }
@@ -151,15 +152,15 @@ function sourceFetch() {
 
 const inspected: { name: string; networkMode?: string; capDrop?: string[] }[] = [];
 
-// The article worker's container is short-lived: poll `docker ps` during the run and keep the first successful inspect of each container.
+// The article worker's container is short-lived: poll the engine's `ps` during the run and keep the first successful inspect of each container.
 function pollContainers(): () => void {
   const seen = new Set<string>();
   const timer = setInterval(() => {
     try {
-      for (const id of execFileSync("docker", ["ps", "-q"], { encoding: "utf8", timeout: 5000 }).split("\n").filter(Boolean)) {
+      for (const id of gateExecFileSync(["ps", "-q"], { timeout: 5000 }).split("\n").filter(Boolean)) {
         if (seen.has(id)) continue;
         seen.add(id);
-        const j = JSON.parse(execFileSync("docker", ["inspect", id], { encoding: "utf8", timeout: 5000 })) as {
+        const j = JSON.parse(gateExecFileSync(["inspect", id], { timeout: 5000 })) as {
           Name: string;
           Config: { Env?: string[] };
           HostConfig: { NetworkMode: string; CapDrop: string[] | null };
@@ -209,6 +210,7 @@ test("browser smoke: one story, a real Pi browsing worker in the hardened contai
     config: { ...CONTENT_CONFIG_DEFAULTS, "workflow.fetch.userAgent": TEST_FETCH_USER_AGENT },
     resolveDns: async () => [{ address: "93.184.216.34", family: 4 }],
     image: image!,
+    engine: gateSandboxDeps(),
     articleMethod: "browser",
   });
   const stopPolling = pollContainers();
@@ -364,6 +366,7 @@ async function runClipFlow(set: string[]): Promise<ClipRun> {
     sourceFetch: sourceFetch(),
     resolveDns: async () => [{ address: "93.184.216.34", family: 4 }],
     image: image!,
+    engine: gateSandboxDeps(),
     articleMethod: "browser",
     config: resolved.values,
   });

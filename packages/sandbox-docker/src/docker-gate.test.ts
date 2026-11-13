@@ -285,7 +285,18 @@ const GATED_SUITES = [
   "../e2e/src/cli-hold.ts",
   "../e2e/src/cli-recovery.test.ts",
   "../e2e/src/cli-credentials.test.ts",
+  "../e2e/src/browser-live-run.test.ts",
+  "../e2e/src/docker-browse-smoke.test.ts",
+  "../harness-pi/src/pi-ext-live.test.ts",
+  "../pomtreed/src/agent-net.docker.test.ts",
+  "../../examples/hn-digest/content-live-smoke.test.mts",
+  "../../examples/hn-digest/content-live-browser-smoke.test.mts",
+  // Drivers that take the engine as an option (the gated suites pass gateSandboxDeps()): only the hard-coded binary is scanned.
+  "../e2e/src/browser-live-run.ts",
+  "../../examples/hn-digest/content-live-runtime.mts",
+  "../../examples/hn-digest/model-runtime.mts",
 ].map((f) => new URL(`../${f}`, import.meta.url));
+const ENGINE_OPTION_DRIVERS = new Set(["browser-live-run.ts", "content-live-runtime.mts", "model-runtime.mts"]);
 
 // The text of each `new DockerSandbox(...)` call, to its balanced closing parenthesis.
 function sandboxCalls(src: string): string[] {
@@ -307,16 +318,20 @@ function sandboxCalls(src: string): string[] {
 // The exec/execFile/spawn/engine exemption is intentionally loose: a scan cannot tell a recording stub from a real runner, so any call that
 // names one of those properties is trusted to be a stub. The hard-coded-binary pattern still applies to those files, and the helper tests
 // above prove the real wrappers; this guard only catches the common slip of an unthreaded constructor or CLI call.
-function unthreaded(src: string): string[] {
-  const found = sandboxCalls(src)
-    .filter((c) => !/\b(exec|execFile|spawn|engine)\b\s*[:,}]/.test(c) && !c.includes("gateSandboxDeps("))
-    .map((c) => `new DockerSandbox without gateSandboxDeps(): ${c.slice(0, 60)}`);
+function unthreaded(src: string, driver = false): string[] {
+  const found = driver
+    ? []
+    : sandboxCalls(src)
+        .filter((c) => !/\b(exec|execFile|spawn|engine)\b\s*[:,}]/.test(c) && !c.includes("gateSandboxDeps("))
+        .map((c) => `new DockerSandbox without gateSandboxDeps(): ${c.slice(0, 60)}`);
   for (const m of src.matchAll(/\w+\(\s*["']docker["']\s*,/g)) found.push(`hard-coded docker binary: ${m[0]}`);
   return found;
 }
 
 test("every gated suite builds DockerSandbox from the gate's engine and calls no hard-coded docker (negative: unthreaded sources are caught)", () => {
-  for (const url of GATED_SUITES) assert.deepEqual(unthreaded(readFileSync(url, "utf8")), [], url.pathname);
+  for (const url of GATED_SUITES)
+    assert.deepEqual(unthreaded(readFileSync(url, "utf8"), ENGINE_OPTION_DRIVERS.has(url.pathname.split("/").at(-1)!)), [], url.pathname);
+  assert.equal(unthreaded('execFileSync("docker", ["info"]);', true).length, 1, "a driver may not hard-code docker either");
   assert.equal(unthreaded("const sb = new DockerSandbox({ mounts, egressNetwork });").length, 1);
   assert.equal(unthreaded('execFileSync("docker", ["info"]);').length, 1);
   assert.deepEqual(unthreaded("const sb = new DockerSandbox({ ...gateSandboxDeps(), mounts });"), []);

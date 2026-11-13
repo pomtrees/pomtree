@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CONFIG_DEFAULTS, CONFIG_REGISTRY, containerConfigEnv, type MountProvider } from "@pomtree/core";
 import { egressPolicy } from "@pomtree/pomtreed";
-import { DiskEgressAudit, DockerSandbox } from "@pomtree/sandbox-docker";
+import { cliSocketEnv, DiskEgressAudit, DockerSandbox, type EngineProfile } from "@pomtree/sandbox-docker";
 import { openStore } from "@pomtree/store-sqlite";
 import {
   evaluateAudit,
@@ -46,7 +46,7 @@ import {
   urlsInArgs,
 } from "./browser-live.ts";
 import { imageRevisionSkip } from "./image-gate.ts";
-import { pinnedImage, readUpstreamKeyFile, startLiveModel } from "./live-model.ts";
+import { liveEngine, pinnedImage, readUpstreamKeyFile, SANDBOX_BACKEND_ENV, startLiveModel } from "./live-model.ts";
 import { assertModelProxyReachable, sandboxModelRouteProbe } from "./model-preflight.ts";
 import { SECRET } from "./harness.ts";
 import { sandboxOpKey } from "../../pomtreed/src/daemon/sandbox-ops.ts";
@@ -160,6 +160,9 @@ export interface RunOptions extends Args {
   // authority, no receipt) instead of asserting a receipt. Needs no public web.
   expectLocalRefused?: boolean;
   skipRevisionCheck?: boolean; // the Docker-gated test performs its own gate
+  // The engine to drive: its profile and socket. A gated test passes gateSandboxDeps() so the run targets the engine the gate verified;
+  // the default is the profile named by POMTREED_SANDBOX_BACKEND (docker when unset) on that engine's default socket.
+  engine?: { profile: EngineProfile; socket?: string };
   log?: (m: string) => void;
 }
 
@@ -180,19 +183,30 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
   } catch (e) {
     return refuse((e as Error).message);
   }
+  let engine: { profile: EngineProfile; socket?: string };
   try {
-    execFileSync("docker", ["image", "inspect", o.image], { stdio: "ignore", timeout: 10_000 });
+    engine = o.engine ?? { profile: liveEngine(o.env) };
+  } catch (e) {
+    return refuse((e as Error).message);
+  }
+  // The engine CLI, against the engine's own socket (the docker profile keeps the process environment, as the gate does).
+  const engineCli = (args: string[], options: { stdio?: "ignore" } = {}): string => {
+    const env = engine.profile.id !== "docker" && engine.socket !== undefined ? { ...process.env, ...cliSocketEnv(engine.profile, engine.socket) } : undefined;
+    // A named Podman connection outranks CONTAINER_HOST, so drop it (as docker-gate's gateCommand does).
+    if (env) delete env.CONTAINER_CONNECTION;
+    return execFileSync(engine.profile.binary, args, { timeout: 10_000, encoding: "utf8", ...options, ...(env && { env }) });
+  };
+  const modelEnv = { ...o.env, [SANDBOX_BACKEND_ENV]: engine.profile.id };
+  try {
+    engineCli(["image", "inspect", o.image], { stdio: "ignore" });
   } catch {
-    return refuse(`image ${o.image} unavailable (docker unreachable or not built; this never pulls)`);
+    return refuse(`image ${o.image} unavailable (${engine.profile.binary} unreachable or not built; this never pulls)`);
   }
   if (!o.skipRevisionCheck) {
     const rev = git("rev-parse", "--short", "HEAD");
     const paths = [":(top)packages/agent-image", ":(top)packages/sandbox-docker"];
     const dirty = git("diff", "HEAD", "--stat", "--", ...paths) !== "" || git("ls-files", "--others", "--exclude-standard", "--", ...paths) !== "";
-    const label = execFileSync("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', o.image], {
-      encoding: "utf8",
-      timeout: 10_000,
-    }).trim();
+    const label = engineCli(["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', o.image]).trim();
     const skip = imageRevisionSkip(o.image, label, rev, dirty);
     if (skip) return refuse(skip);
   }
@@ -219,7 +233,7 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
   let sandbox: DockerSandbox | undefined;
   let sandboxId: string | undefined;
   try {
-    live = await startLiveModel({ store, secret: SECRET, stateDir, provider, env: o.env, upstreamKey });
+    live = await startLiveModel({ store, secret: SECRET, stateDir, provider, env: modelEnv, upstreamKey });
     const hostId = "browser-live-host";
     const rec = await store.registry.create({
       parent: null,
@@ -311,7 +325,15 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
     };
     const ws = { kind: "workspace" as const, workspace: "ws-browser-live", containerPath: "/work" };
     const auditRoot = join(root, "audit");
-    sandbox = new DockerSandbox({ mounts, egressProxyImage: pinnedImage(o.image), egressAuditRoot: auditRoot, startRetries: 0, startTimeoutMs: 30_000 });
+    sandbox = new DockerSandbox({
+      mounts,
+      profile: engine.profile,
+      ...(engine.socket !== undefined && { socket: engine.socket }),
+      egressProxyImage: pinnedImage(o.image, engine.profile),
+      egressAuditRoot: auditRoot,
+      startRetries: 0,
+      startTimeoutMs: 30_000,
+    });
     try {
       await assertModelProxyReachable({
         platform: process.platform,
@@ -403,7 +425,7 @@ export async function runBrowserLive(o: RunOptions): Promise<{ exitCode: 0 | 2 |
     }
     let hostConfig: { NetworkMode?: string; CapDrop?: string[] | null } = {};
     try {
-      hostConfig = JSON.parse(execFileSync("docker", ["inspect", `pomtree-${h.id}`], { encoding: "utf8", timeout: 10_000 }))[0].HostConfig;
+      hostConfig = JSON.parse(engineCli(["inspect", `pomtree-${h.id}`]))[0].HostConfig;
     } catch {
       // left empty: the audit check then fails visibly
     }

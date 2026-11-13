@@ -6,11 +6,11 @@
 // `AGENT_IMAGE_TAG=at3-agent:test node packages/agent-image/scripts/build.ts`>. Without them it skips with the reason. The image's baked revision is only
 // reported by `pomtree doctor` (no gate fails on it); building from the checked-out HEAD keeps it matching.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { gateExecFileSync, gateSandboxDeps, runtimeSkip } from "../../packages/sandbox-docker/src/docker-gate.ts";
 import { articlePageText, evidenceOf, modelResult, READ_FIRST_PAGE_CALL, textsIn } from "./content-harness.mts";
 import { CONTENT_CONFIG_DEFAULTS } from "./content-bounds.mts";
 import { TEST_FETCH_USER_AGENT } from "./runtime.mts";
@@ -23,12 +23,13 @@ const HTML = readFileSync(new URL("./content-fixtures/article-positive.html", im
 const image = process.env.PTREE_E2E_IMAGE;
 
 function dockerSkip(): string | false {
-  if (process.env.PTREE_DOCKER_TESTS !== "1") return "PTREE_DOCKER_TESTS not set (lite run)";
+  const early = runtimeSkip("docker daemon unreachable");
+  if (early) return early;
   if (!image) return "PTREE_E2E_IMAGE unset";
   try {
-    execFileSync("docker", ["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
+    gateExecFileSync(["image", "inspect", image], { stdio: "ignore", timeout: 10_000 });
   } catch {
-    return `${image} unavailable (docker unreachable or image not built; this test never pulls)`;
+    return `${image} unavailable (engine unreachable or image not built; this test never pulls)`;
   }
   return false;
 }
@@ -148,6 +149,7 @@ async function withRig<T>(
     sourceFetch: sourceFetch(sources),
     config: { ...CONTENT_CONFIG_DEFAULTS, "workflow.fetch.userAgent": TEST_FETCH_USER_AGENT },
     image: image!,
+    engine: gateSandboxDeps(),
     ...(templates && { templates }),
   });
   try {
